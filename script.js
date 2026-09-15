@@ -732,6 +732,10 @@ function setupAudioAnalyzer(stream) {
 
 // Включает/выключает реальную передачу микрофона (не UI-индикатор), учитывая
 // ручной мьют/дефен и состояние Voice Gate. Не трогает трек демонстрации звука.
+// Также приглушает самопрослушивание ("Слышать себя") синхронно с гейтом —
+// раньше micMonitorGain брал звук ДО гейта и был слышен всегда, даже когда
+// микрофон реально отключён для собеседников, что вводило в заблуждение при
+// проверке порога срабатывания.
 function applyGateToMicTrack() {
     if (!localMediaStream) return;
     const shouldTransmit = !isMuted && !isDeafened && (!gateEnabled || gateOpen);
@@ -740,6 +744,9 @@ function applyGateToMicTrack() {
             track.enabled = shouldTransmit;
         }
     });
+    if (micMonitorGain) {
+        micMonitorGain.gain.value = (micMonitorEnabled && shouldTransmit) ? 1 : 0;
+    }
 }
 
 // RMS в дБFS по временной области — честная громкость сигнала, в отличие от простого
@@ -1590,9 +1597,7 @@ noiseCheck.addEventListener('change', () => {
 // пересоздавать поток или трогать анализатор/индикатор уровня.
 micMonitorCheck.addEventListener('change', () => {
     micMonitorEnabled = micMonitorCheck.checked;
-    if (micMonitorGain) {
-        micMonitorGain.gain.value = micMonitorEnabled ? 1 : 0;
-    }
+    applyGateToMicTrack();
     if (micMonitorEnabled && audioContext && audioContext.state === 'suspended') {
         audioContext.resume().catch(() => {});
     }
