@@ -3,9 +3,12 @@ const socket = io();
 const loginContainer = document.getElementById('login-container');
 const appContainer = document.getElementById('app-container');
 const usernameInput = document.getElementById('username');
+const passwordInput = document.getElementById('password-input');
 const avatarInput = document.getElementById('avatar-input');
+const avatarInputGroup = document.getElementById('avatar-input-group');
 const registerBtn = document.getElementById('register-btn');
-const googleLoginBtn = document.getElementById('google-login-btn');
+const authTabs = document.querySelectorAll('.auth-tab');
+const authError = document.getElementById('auth-error');
 
 const roomButtons = document.querySelectorAll('.room-btn');
 const connectRoomBtn = document.getElementById('connect-room-btn');
@@ -52,7 +55,7 @@ const remoteVideos = document.getElementById('remote-videos');
 
 let myPeer = null;
 let myPeerId = null;
-let currentUser = { username: '', avatar: '', room: null };
+let currentUser = { username: '', avatar: '', room: null, token: null };
 let pendingAvatarFile = null; // выбранный файл аватарки, ещё не загруженный на сервер
 let selectedRoom = null; 
 
@@ -286,7 +289,8 @@ function saveProfileToStorage() {
     try {
         localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify({
             username: currentUser.username,
-            avatar: currentUser.avatar
+            avatar: currentUser.avatar,
+            token: currentUser.token || null
         }));
     } catch (e) {
         console.warn('[Внимание] Не удалось сохранить профиль локально:', e);
@@ -306,25 +310,102 @@ function clearProfileStorage() {
     try { localStorage.removeItem(PROFILE_STORAGE_KEY); } catch (e) { /* ignore */ }
 }
 
-googleLoginBtn.addEventListener('click', () => {
-    currentUser.username = 'User_' + Math.floor(Math.random() * 900 + 100);
-    currentUser.avatar = 'https://api.dicebear.com/7.x/bottts/svg?seed=' + currentUser.username;
-    usernameInput.value = currentUser.username;
-    avatarInput.value = currentUser.avatar;
-    registerBtn.click();
+// ---------- Вход: вкладки "Вход" / "Регистрация", пароль ----------
+let authMode = 'login'; // 'login' | 'register'
+
+function showAuthError(message) {
+    authError.textContent = message;
+    authError.style.display = message ? 'block' : 'none';
+}
+
+function setAuthMode(mode) {
+    authMode = mode;
+    authTabs.forEach(tab => tab.classList.toggle('active', tab.dataset.tab === mode));
+    avatarInputGroup.style.display = mode === 'register' ? 'block' : 'none';
+    passwordInput.setAttribute('autocomplete', mode === 'register' ? 'new-password' : 'current-password');
+    registerBtn.textContent = mode === 'register' ? 'Зарегистрироваться' : 'Войти';
+    showAuthError('');
+}
+
+authTabs.forEach(tab => {
+    tab.addEventListener('click', () => setAuthMode(tab.dataset.tab));
 });
 
-registerBtn.addEventListener('click', async () => {
-    currentUser.username = usernameInput.value.trim();
-    currentUser.avatar = avatarInput.value.trim() || `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(currentUser.username)}`;
-
-    if (!currentUser.username) {
-        alert('Введите имя!');
-        return;
-    }
+// Общая точка входа после успешной регистрации/логина — сохраняет токен и профиль,
+// заполняет поля и заходит в приложение.
+async function applyAuthSuccess(data) {
+    currentUser.username = data.username;
+    currentUser.avatar = data.avatar || `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(data.username)}`;
+    currentUser.token = data.token || null;
+    usernameInput.value = currentUser.username;
+    avatarInput.value = currentUser.avatar;
 
     saveProfileToStorage();
     await completeLogin();
+}
+
+// Основная кнопка: в зависимости от вкладки либо логинит по паролю, либо регистрирует.
+registerBtn.addEventListener('click', async () => {
+    const username = usernameInput.value.trim();
+    const password = passwordInput.value;
+    showAuthError('');
+
+    if (!username) {
+        showAuthError('Введите ник');
+        return;
+    }
+    if (!password) {
+        showAuthError('Введите пароль');
+        return;
+    }
+
+    registerBtn.disabled = true;
+    const originalLabel = registerBtn.textContent;
+    registerBtn.textContent = authMode === 'register' ? 'Регистрируем...' : 'Входим...';
+
+    try {
+        const endpoint = authMode === 'register' ? '/auth/register' : '/auth/login';
+        const body = authMode === 'register'
+            ? { username, password, avatar: avatarInput.value.trim() }
+            : { username, password };
+
+        const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+            showAuthError(data.error || 'Что-то пошло не так');
+            return;
+        }
+
+        await applyAuthSuccess(data);
+    } catch (e) {
+        console.error('[Ошибка] Вход/регистрация:', e);
+        showAuthError('Не удалось связаться с сервером');
+    } finally {
+        registerBtn.disabled = false;
+        registerBtn.textContent = originalLabel;
+    }
+});
+
+// Сервер сообщает, что выбранный ник занят зарегистрированным аккаунтом и подставил другой.
+socket.on('username protected', ({ requested, assignedUsername }) => {
+    currentUser.username = assignedUsername;
+    saveProfileToStorage();
+
+    if (usernameInput) usernameInput.value = assignedUsername;
+    if (profileUsernameInput) profileUsernameInput.value = assignedUsername;
+
+    const localWrapName = document.querySelector('#local-video-wrap .video-username');
+    if (localWrapName) {
+        localWrapName.innerText = `${assignedUsername} (Вы)`;
+        localWrapName.style.color = getUserColor(assignedUsername);
+    }
+
+    alert(`Ник «${requested}» принадлежит зарегистрированному аккаунту. Вам временно присвоен ник «${assignedUsername}». Если это ваш аккаунт — войдите через вкладку «Вход».`);
 });
 
 // Сам вход в приложение — вынесено отдельно, чтобы можно было вызвать
@@ -362,10 +443,11 @@ function initPeer() {
     myPeer.on('open', (id) => {
         myPeerId = id;
         console.log('[Peer] Мой Peer ID:', id);
-        socket.emit('register user', { 
-            username: currentUser.username, 
-            avatar: currentUser.avatar, 
-            peerId: id 
+        socket.emit('register user', {
+            username: currentUser.username,
+            avatar: currentUser.avatar,
+            peerId: id,
+            token: currentUser.token || null
         });
     });
 
@@ -821,14 +903,17 @@ function renderRemoteVideoState(peerId) {
         wrap.id = `video-${peerId}`;
         wrap.className = 'video-wrapper fade-in';
         wrap.innerHTML = `
-            <span class="video-username">${userInfo.username}</span>
+            <span class="video-username" style="color:${getUserColor(userInfo.username)}">${userInfo.username}</span>
             <button class="fullscreen-btn" onclick="toggleFullscreen(this)">На весь экран</button>
             <video autoplay playsinline></video>
         `;
         remoteVideos.appendChild(wrap);
     } else {
         const nameSpan = wrap.querySelector('.video-username');
-        if (nameSpan) nameSpan.innerText = userInfo.username;
+        if (nameSpan) {
+            nameSpan.innerText = userInfo.username;
+            nameSpan.style.color = getUserColor(userInfo.username);
+        }
     }
 
     const videoEl = wrap.querySelector('video');
@@ -907,7 +992,7 @@ function updateVoiceUsersList() {
                 <span class="status-badge mic-mute-badge${(user.micMuted || user.deafened) ? ' visible' : ''}" id="mic-badge-${id}" title="Микрофон выключен">${MIC_OFF_ICON_SVG}</span>
                 <span class="status-badge deafen-badge${user.deafened ? ' visible' : ''}" id="deafen-badge-${id}" title="Наушники выключены">${DEAFEN_OFF_ICON_SVG}</span>
             </div>
-            <span>${escapeHtml(user.username || 'Участник')}</span>
+            <span style="color:${getUserColor(user.username)}">${escapeHtml(user.username || 'Участник')}</span>
         `;
         voiceUsersContainer.appendChild(row);
     }
@@ -1011,7 +1096,7 @@ function showLocalVideo(stream) {
         wrap.id = 'local-video-wrap';
         wrap.className = 'video-wrapper fade-in';
         wrap.innerHTML = `
-            <span class="video-username">${currentUser.username} (Вы)</span>
+            <span class="video-username" style="color:${getUserColor(currentUser.username)}">${currentUser.username} (Вы)</span>
             <button class="fullscreen-btn" onclick="toggleFullscreen(this)">На весь экран</button>
             <video autoplay muted playsinline></video>
         `;
@@ -1224,6 +1309,26 @@ gateEnabledCheck.addEventListener('change', (e) => {
     applyGateToMicTrack();
 });
 
+// ---------- Уникальный цвет ника ----------
+// Стабильный хэш из имени -> HSL-цвет. У одного и того же ника всегда один и тот же
+// цвет (на всех устройствах и после перезахода), у разных ников — заметно разные цвета.
+function hashStringToInt(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+        hash = (hash << 5) - hash + str.charCodeAt(i);
+        hash |= 0;
+    }
+    return Math.abs(hash);
+}
+
+function getUserColor(name) {
+    const safeName = name || 'Участник';
+    const hash = hashStringToInt(safeName);
+    const hue = hash % 360;
+    // Насыщенность/светлота подобраны так, чтобы цвет было хорошо видно на тёмном фоне
+    return `hsl(${hue}, 70%, 65%)`;
+}
+
 function escapeHtml(str) {
     const div = document.createElement('div');
     div.textContent = str;
@@ -1235,8 +1340,8 @@ function renderChatMessage({ username, user, avatar, text, image_url, created_at
     const msg = document.createElement('div');
     msg.className = 'chat-message fade-in';
 
-    let html = `<strong>${escapeHtml(name)}:</strong> `;
-    if (text) html += `<span>${escapeHtml(text)}</span>`;
+    let html = `<strong class="msg-sender" style="color:${getUserColor(name)}">${escapeHtml(name)}:</strong> `;
+    if (text) html += `<span class="msg-text">${escapeHtml(text)}</span>`;
     if (image_url) {
         html += `<div class="chat-image-wrap"><img src="${image_url}" class="chat-image" alt="Изображение" onclick="openImageLightbox('${image_url}')"></div>`;
     }
@@ -1337,6 +1442,7 @@ logoutBtn.addEventListener('click', () => {
     if (stored && stored.username) {
         currentUser.username = stored.username;
         currentUser.avatar = stored.avatar || '';
+        currentUser.token = stored.token || null;
         usernameInput.value = currentUser.username;
         avatarInput.value = currentUser.avatar;
         await completeLogin();
@@ -1395,8 +1501,28 @@ saveProfileBtn.addEventListener('click', async () => {
             newAvatar = profileAvatarUrlInput.value.trim();
         }
 
-        currentUser.username = newUsername;
-        currentUser.avatar = newAvatar;
+        // Если это зарегистрированный аккаунт (есть токен) — сначала сохраняем ник/аватарку
+        // на сервере. Он же проверит, не занят ли новый ник, и перевыпустит токен.
+        if (currentUser.token) {
+            const res = await fetch('/auth/profile', {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${currentUser.token}`
+                },
+                body: JSON.stringify({ username: newUsername, avatar: newAvatar })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Не удалось сохранить профиль на сервере');
+
+            currentUser.token = data.token;
+            currentUser.username = data.username;
+            currentUser.avatar = data.avatar || newAvatar;
+        } else {
+            currentUser.username = newUsername;
+            currentUser.avatar = newAvatar;
+        }
+
         pendingAvatarFile = null;
         saveProfileToStorage();
 
@@ -1407,16 +1533,87 @@ saveProfileBtn.addEventListener('click', async () => {
         updateVoiceUsersList();
 
         const localWrapName = document.querySelector('#local-video-wrap .video-username');
-        if (localWrapName) localWrapName.innerText = `${currentUser.username} (Вы)`;
+        if (localWrapName) {
+            localWrapName.innerText = `${currentUser.username} (Вы)`;
+            localWrapName.style.color = getUserColor(currentUser.username);
+        }
 
-        socket.emit('update profile', { username: currentUser.username, avatar: currentUser.avatar });
+        socket.emit('update profile', {
+            username: currentUser.username,
+            avatar: currentUser.avatar,
+            token: currentUser.token || null
+        });
 
         settingsModal.style.display = 'none';
     } catch (err) {
         console.error('[Ошибка] Сохранение профиля:', err);
-        alert('Не удалось сохранить профиль');
+        alert(err.message || 'Не удалось сохранить профиль');
     } finally {
         saveProfileBtn.disabled = false;
         saveProfileBtn.innerText = 'Сохранить профиль';
+    }
+});
+// ---------- Изменение размера панелей перетаскиванием (как в Discord) ----------
+function makeColumnResizable(resizerEl, targetEl, { min, max, storageKey, invert = false }) {
+    if (!resizerEl || !targetEl) return;
+
+    // Восстанавливаем сохранённую ширину
+    const saved = localStorage.getItem(storageKey);
+    if (saved) {
+        const w = Math.min(max, Math.max(min, parseInt(saved, 10)));
+        if (!Number.isNaN(w)) targetEl.style.width = w + 'px';
+    }
+
+    let startX = 0;
+    let startWidth = 0;
+
+    function onMouseMove(e) {
+        const delta = e.clientX - startX;
+        const rawWidth = invert ? startWidth - delta : startWidth + delta;
+        const newWidth = Math.min(max, Math.max(min, rawWidth));
+        targetEl.style.width = newWidth + 'px';
+    }
+
+    function onMouseUp() {
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+        document.body.classList.remove('resizing-col');
+        resizerEl.classList.remove('resizing');
+        localStorage.setItem(storageKey, parseInt(targetEl.style.width, 10));
+    }
+
+    resizerEl.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        startX = e.clientX;
+        startWidth = targetEl.getBoundingClientRect().width;
+        document.body.classList.add('resizing-col');
+        resizerEl.classList.add('resizing');
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+    });
+}
+
+makeColumnResizable(
+    document.getElementById('sidebar-resizer'),
+    document.getElementById('sidebar'),
+    { min: 180, max: 420, storageKey: 'mute:sidebarWidth' }
+);
+
+makeColumnResizable(
+    document.getElementById('chat-resizer'),
+    document.getElementById('chat-panel'),
+    { min: 260, max: 640, storageKey: 'mute:chatWidth', invert: true }
+);
+
+// ---------- Запрет копирования всего, кроме текста сообщений и полей ввода ----------
+document.addEventListener('copy', (e) => {
+    const target = e.target;
+    const isAllowed = target && (
+        target.closest('.msg-text') ||
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA'
+    );
+    if (!isAllowed) {
+        e.preventDefault();
     }
 });

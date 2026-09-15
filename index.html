@@ -34,6 +34,22 @@
             font-family: 'Inter', system-ui, -apple-system, sans-serif;
         }
 
+        /* Ничего не выделяется и не копируется по умолчанию (ники, кнопки, списки и т.д.) —
+           кроме текста самих сообщений в чате (.msg-text), который явно возвращаем ниже. */
+        body {
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        input, textarea {
+            user-select: text;
+            -webkit-user-select: text;
+        }
+        .msg-text {
+            user-select: text;
+            -webkit-user-select: text;
+            cursor: text;
+        }
+
         body {
             background-color: var(--bg-app);
             color: var(--text);
@@ -168,21 +184,49 @@
         .btn-secondary:hover { background: #2b3142; }
         .btn-secondary:active { transform: scale(0.98); }
 
-        .btn-google {
-            background: #fff;
-            color: #111;
-            border: none;
+        .auth-tabs {
+            display: flex;
+            background: var(--bg-input);
             border-radius: 8px;
-            padding: 12px;
+            padding: 4px;
+            gap: 4px;
+        }
+        .auth-tab {
+            flex: 1;
+            border: none;
+            background: transparent;
+            color: var(--text-muted);
+            padding: 8px;
+            border-radius: 6px;
+            font-size: 13px;
             font-weight: 600;
             cursor: pointer;
+            transition: 0.15s;
+        }
+        .auth-tab.active {
+            background: var(--accent);
+            color: #fff;
+        }
+
+        .auth-error {
+            color: var(--danger);
+            font-size: 13px;
+            text-align: center;
+        }
+
+        .auth-divider {
             display: flex;
             align-items: center;
-            justify-content: center;
             gap: 10px;
-            transition: background 0.2s;
+            color: var(--text-faint);
+            font-size: 12px;
         }
-        .btn-google:hover { background: #f3f4f6; }
+        .auth-divider::before, .auth-divider::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: var(--border-soft);
+        }
 
         #app-container {
             display: none;
@@ -224,11 +268,47 @@
 
         .sidebar {
             width: 240px;
+            flex-shrink: 0;
             background: var(--bg-raised);
             display: flex;
             flex-direction: column;
             padding: 16px;
             gap: 20px;
+        }
+
+        /* Разделитель для изменения размера панели перетаскиванием (как в ДС) */
+        .resizer {
+            width: 6px;
+            flex-shrink: 0;
+            cursor: col-resize;
+            background: transparent;
+            position: relative;
+        }
+        .resizer::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            left: 2px;
+            width: 2px;
+            border-radius: 2px;
+            background: transparent;
+            transition: background 0.15s;
+        }
+        .resizer:hover::after,
+        .resizer.resizing::after {
+            background: var(--accent);
+        }
+        .resizer.resizing {
+            background: transparent;
+        }
+        /* Пока тянем — блокируем выделение текста и наводим курсор изменения размера на весь документ */
+        body.resizing-col {
+            cursor: col-resize !important;
+            user-select: none !important;
+        }
+        body.resizing-col * {
+            user-select: none !important;
         }
 
         .sidebar-section h3 {
@@ -738,21 +818,30 @@
                     <line x1="8" y1="22" x2="16" y2="22"></line>
                 </svg>
             </div>
-            <h2>Регистрация профиля</h2>
+            <h2>Mute</h2>
             <p class="subtitle">Голос, видео и демонстрация экрана — в одном месте</p>
+
+            <div class="auth-tabs">
+                <button type="button" class="auth-tab active" id="tab-login" data-tab="login">Вход</button>
+                <button type="button" class="auth-tab" id="tab-register" data-tab="register">Регистрация</button>
+            </div>
+
             <div class="input-group">
-                <label>Ваше имя</label>
-                <input type="text" id="username" placeholder="Введите никнейм">
+                <label>Ник</label>
+                <input type="text" id="username" placeholder="Введите никнейм" autocomplete="username">
             </div>
             <div class="input-group">
+                <label>Пароль</label>
+                <input type="password" id="password-input" placeholder="Введите пароль" autocomplete="current-password">
+            </div>
+            <div class="input-group" id="avatar-input-group" style="display:none">
                 <label>Ссылка на аватарку (необязательно)</label>
                 <input type="text" id="avatar-input" placeholder="https://example.com/avatar.png">
             </div>
-            <button class="btn-primary" id="register-btn">Войти в чат</button>
-            <button class="btn-google" id="google-login-btn">
-                <svg width="18" height="18" viewBox="0 0 24 24"><path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.66-5.17 3.66-9.17z"/><path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.13 0-5.78-2.11-6.73-4.96H1.18v3.14C3.15 21.32 7.22 24 12 24z"/><path fill="#FBBC05" d="M5.27 14.24c-.25-.72-.38-1.49-.38-2.24s.13-1.52.38-2.24V6.62H1.18C.43 8.13 0 9.83 0 11.6s.43 3.47 1.18 4.98l4.09-2.34z"/><path fill="#EA4335" d="M12 4.75c1.76 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.22 0 3.15 2.68 1.18 6.62l4.09 3.14c.95-2.85 3.6-4.96 6.73-4.96z"/></svg>
-                Войти через Google
-            </button>
+
+            <p class="auth-error" id="auth-error" style="display:none"></p>
+
+            <button class="btn-primary" id="register-btn">Войти</button>
         </div>
     </div>
 
@@ -765,7 +854,7 @@
             <div class="server-icon room-btn" data-room="Комната 5" title="Комната 5">5</div>
         </div>
 
-        <div class="sidebar">
+        <div class="sidebar" id="sidebar">
             <div class="sidebar-section">
                 <h3>Участники канала</h3>
                 <div class="sidebar-list">
@@ -817,6 +906,8 @@
             </div>
         </div>
 
+        <div class="resizer" id="sidebar-resizer" title="Потяните, чтобы изменить размер"></div>
+
         <div class="workspace">
             <div class="top-bar">
                 <span id="room-title">Выберите комнату слева (от 1 до 5)</span>
@@ -831,7 +922,9 @@
                     <div id="remote-videos"></div>
                 </div>
 
-                <div class="chat-panel">
+                <div class="resizer" id="chat-resizer" title="Потяните, чтобы изменить размер"></div>
+
+                <div class="chat-panel" id="chat-panel">
                     <div id="messages"></div>
                     <div class="chat-input-area">
                         <input type="text" id="message-input" placeholder="Написать в общий чат...">

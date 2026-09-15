@@ -6,12 +6,16 @@ const multer = require('multer');
 const { Pool } = require('pg');
 const cloudinary = require('cloudinary').v2;
 const { Server } = require('socket.io');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
 app.use(express.static(__dirname)); // Клиентские файлы лежат в корне репозитория
+app.use(express.json());
 
 // ---------- База данных: Postgres (Neon) — общий чат хранится тут, не на диске сервера ----------
 if (!process.env.DATABASE_URL) {
@@ -34,6 +38,23 @@ async function initDb() {
             image_url TEXT,
             created_at BIGINT NOT NULL
         );
+    `);
+
+    // Аккаунты: вход по паролю.
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            username TEXT NOT NULL,
+            password_hash TEXT,
+            email TEXT,
+            avatar TEXT,
+            created_at BIGINT NOT NULL
+        );
+    `);
+    // Ник должен быть уникален без учёта регистра — проверяем и создаём индекс отдельно,
+    // чтобы не ловить ошибку, если в старых данных уже есть регистронезависимые дубликаты.
+    await pool.query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower_idx ON users (LOWER(username));
     `);
 }
 
@@ -108,6 +129,158 @@ app.post('/upload', (req, res) => {
     });
 });
 
+// ---------- Аккаунты: регистрация/вход по паролю ----------
+// JWT нужен, чтобы после входа клиент мог доказать серверу, что он — действительно
+// владелец ника (иначе пароль был бы бессмысленным: кто угодно мог бы представиться
+// чужим зарегистрированным ником прямо в чате, без всякого пароля).
+const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
+if (!process.env.JWT_SECRET) {
+    console.warn('⚠️  JWT_SECRET не задан — сгенерирован временный на время работы процесса. ' +
+        'После перезапуска сервера все выданные токены станут недействительны (потребуется перевход). ' +
+        'Задайте свой JWT_SECRET в .env, чтобы вход сохранялся между перезапусками.');
+}
+
+const USERNAME_MIN = 2;
+const USERNAME_MAX = 24;
+const PASSWORD_MIN = 6;
+
+function signToken(user) {
+    return jwt.sign({ uid: user.id, username: user.username }, JWT_SECRET, { expiresIn: '30d' });
+}
+
+function verifyToken(token) {
+    try {
+        return jwt.verify(token, JWT_SECRET);
+    } catch (e) {
+        return null;
+    }
+}
+
+function validateUsername(username) {
+    if (typeof username !== 'string') return 'Введите ник';
+    const trimmed = username.trim();
+    if (trimmed.length < USERNAME_MIN || trimmed.length > USERNAME_MAX) {
+        return `Ник должен быть от ${USERNAME_MIN} до ${USERNAME_MAX} символов`;
+    }
+    return null;
+}
+
+function validatePassword(password) {
+    if (typeof password !== 'string' || password.length < PASSWORD_MIN) {
+        return `Пароль должен быть не короче ${PASSWORD_MIN} символов`;
+    }
+    return null;
+}
+
+async function findUserByUsername(username) {
+    const result = await pool.query('SELECT * FROM users WHERE LOWER(username) = LOWER($1)', [username]);
+    return result.rows[0] || null;
+}
+
+// Регистрация нового аккаунта с паролем.
+app.post('/auth/register', async (req, res) => {
+    const username = (req.body && req.body.username || '').trim();
+    const password = (req.body && req.body.password) || '';
+    const avatar = (req.body && req.body.avatar || '').trim() || null;
+
+    const usernameError = validateUsername(username);
+    if (usernameError) return res.status(400).json({ error: usernameError });
+
+    const passwordError = validatePassword(password);
+    if (passwordError) return res.status(400).json({ error: passwordError });
+
+    try {
+        const existing = await findUserByUsername(username);
+        if (existing) {
+            return res.status(409).json({ error: 'Такой ник уже занят' });
+        }
+
+        const passwordHash = await bcrypt.hash(password, 10);
+        const finalAvatar = avatar || `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(username)}`;
+
+        const result = await pool.query(
+            `INSERT INTO users (username, password_hash, avatar, created_at)
+             VALUES ($1, $2, $3, $4) RETURNING id, username, avatar`,
+            [username, passwordHash, finalAvatar, Date.now()]
+        );
+        const user = result.rows[0];
+
+        res.json({ token: signToken(user), username: user.username, avatar: user.avatar });
+    } catch (err) {
+        console.error('❌ Ошибка регистрации:', err);
+        res.status(500).json({ error: 'Не удалось зарегистрироваться' });
+    }
+});
+
+// Вход в существующий аккаунт с паролем.
+app.post('/auth/login', async (req, res) => {
+    const username = (req.body && req.body.username || '').trim();
+    const password = (req.body && req.body.password) || '';
+
+    if (!username || !password) {
+        return res.status(400).json({ error: 'Введите ник и пароль' });
+    }
+
+    try {
+        const user = await findUserByUsername(username);
+        // Не уточняем отдельно "нет такого ника" vs "неверный пароль" — чтобы не помогать
+        // перебору существующих ников.
+        if (!user || !user.password_hash) {
+            return res.status(401).json({ error: 'Неверный ник или пароль' });
+        }
+
+        const match = await bcrypt.compare(password, user.password_hash);
+        if (!match) {
+            return res.status(401).json({ error: 'Неверный ник или пароль' });
+        }
+
+        res.json({ token: signToken(user), username: user.username, avatar: user.avatar });
+    } catch (err) {
+        console.error('❌ Ошибка входа:', err);
+        res.status(500).json({ error: 'Не удалось войти' });
+    }
+});
+
+// Обновление ника/аватарки для владельца аккаунта (вызывается из настроек профиля).
+// Требует валидный токен — иначе изменить чужой аккаунт нельзя.
+app.put('/auth/profile', async (req, res) => {
+    const authHeader = req.headers.authorization || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    const decoded = token && verifyToken(token);
+
+    if (!decoded) {
+        return res.status(401).json({ error: 'Не авторизован' });
+    }
+
+    const username = (req.body && req.body.username || '').trim();
+    const avatar = (req.body && req.body.avatar || '').trim() || null;
+
+    const usernameError = validateUsername(username);
+    if (usernameError) return res.status(400).json({ error: usernameError });
+
+    try {
+        if (username.toLowerCase() !== decoded.username.toLowerCase()) {
+            const existing = await findUserByUsername(username);
+            if (existing && existing.id !== decoded.uid) {
+                return res.status(409).json({ error: 'Такой ник уже занят' });
+            }
+        }
+
+        const result = await pool.query(
+            `UPDATE users SET username = $1, avatar = COALESCE($2, avatar) WHERE id = $3 RETURNING id, username, avatar`,
+            [username, avatar, decoded.uid]
+        );
+        const user = result.rows[0];
+        if (!user) return res.status(404).json({ error: 'Аккаунт не найден' });
+
+        // Ник мог измениться — перевыпускаем токен с актуальным username.
+        res.json({ token: signToken(user), username: user.username, avatar: user.avatar });
+    } catch (err) {
+        console.error('❌ Ошибка обновления профиля:', err);
+        res.status(500).json({ error: 'Не удалось сохранить профиль' });
+    }
+});
+
 const rooms = {}; // Структура: { roomName: { socketId: { username, avatar, peerId } } }
 
 io.on('connection', (socket) => {
@@ -119,17 +292,65 @@ io.on('connection', (socket) => {
         socket.emit('chat history', history);
     }).catch(err => console.error('❌ Ошибка чтения истории чата:', err));
 
-    socket.on('register user', (userData) => {
-        socket.data = userData; // Сохраняем данные юзера (username, avatar, peerId)
+    // Ник закреплён за зарегистрированным аккаунтом (пароль) только когда
+    // валидным JWT-токеном подтверждено, что это действительно его владелец. Без токена
+    // взять чужой занятый ник нельзя — сервер сам подставит свободный вариант с суффиксом.
+    socket.on('register user', async (userData) => {
+        const requested = ((userData && userData.username) || '').trim() || 'Гость';
+        let username = requested;
+        const avatar = (userData && userData.avatar) || '';
+        const token = userData && userData.token;
+
+        try {
+            if (token) {
+                const decoded = verifyToken(token);
+                if (decoded && decoded.username) {
+                    username = decoded.username; // сервер — источник истины по нику владельца аккаунта
+                }
+            } else {
+                const owner = await findUserByUsername(requested);
+                if (owner && owner.password_hash) {
+                    const suffix = String(Math.floor(1000 + Math.random() * 9000));
+                    username = `${requested}_${suffix}`.slice(0, USERNAME_MAX);
+                    socket.emit('username protected', { requested, assignedUsername: username });
+                }
+            }
+        } catch (err) {
+            console.error('❌ Ошибка проверки ника при регистрации сокета:', err);
+        }
+
+        socket.data = { username, avatar, peerId: userData && userData.peerId };
     });
 
-    socket.on('update profile', ({ username, avatar }) => {
+    socket.on('update profile', async ({ username, avatar, token }) => {
         if (!socket.data) return;
-        if (typeof username === 'string' && username.trim()) {
-            socket.data.username = username.trim();
-        }
+
         if (typeof avatar === 'string' && avatar.trim()) {
             socket.data.avatar = avatar.trim();
+        }
+
+        if (typeof username === 'string' && username.trim()) {
+            const requested = username.trim();
+            let finalUsername = requested;
+
+            try {
+                if (token) {
+                    const decoded = verifyToken(token);
+                    if (decoded && decoded.username) {
+                        finalUsername = decoded.username;
+                    }
+                } else if (requested.toLowerCase() !== socket.data.username.toLowerCase()) {
+                    const owner = await findUserByUsername(requested);
+                    if (owner && owner.password_hash) {
+                        socket.emit('username protected', { requested, assignedUsername: socket.data.username });
+                        finalUsername = socket.data.username; // оставляем прежний ник, чужой не отдаём
+                    }
+                }
+            } catch (err) {
+                console.error('❌ Ошибка проверки ника при обновлении профиля:', err);
+            }
+
+            socket.data.username = finalUsername;
         }
 
         if (currentUserRoom && rooms[currentUserRoom] && rooms[currentUserRoom][socket.id]) {
