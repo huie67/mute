@@ -77,8 +77,6 @@ let remoteGainNodes = {};
 
 let audioContext = null;
 let analyserNode = null;
-let gateAnalyserNode = null;
-let lastGateVolumeDb = -100;
 let gateThreshold = -45;
 let micMonitorGain = null;
 let micMonitorEnabled = false;
@@ -108,10 +106,10 @@ let micVolume = 1; // 0..2 (0%..200%), усиление своего микро�
 // - closeThreshold — чуть ниже (гистерезис), чтобы гейт не "дребезжал" на границе порога;
 // - hangover — короткая задержка перед закрытием, чтобы не обрезать хвосты слов.
 let gateEnabled = true;
-let gateOpen = false;
+let gateOpen = true;
 let gateCloseTimer = null;
 const GATE_HYSTERESIS_DB = 4;
-const GATE_HANGOVER_MS = 350;
+const GATE_HANGOVER_MS = 300;
 
 // ---------- Настройки звука: сохранение между заходами ----------
 const AUDIO_SETTINGS_KEY = 'mute:audioSettings';
@@ -671,9 +669,7 @@ function teardownAudioGraph() {
     if (processedTrack) { try { processedTrack.stop(); } catch (e) { /* ignore */ } }
     processedTrack = null;
     if (analyserNode) { try { analyserNode.disconnect(); } catch (e) { /* ignore */ } }
-    if (gateAnalyserNode) { try { gateAnalyserNode.disconnect(); } catch (e) { /* ignore */ } }
     analyserNode = null;
-    gateAnalyserNode = null;
     sourceNode = null;
 }
 
@@ -685,27 +681,21 @@ function setupAudioAnalyzer(stream) {
     try {
         sourceNode = audioContext.createMediaStreamSource(stream);
 
-        // Отдельный анализатор сырого сигнала нужен только для визуального индикатора.
-        // Сам Voice Gate анализирует уже ОБРАБОТАННЫЙ сигнал — после шумоподавления.
-        // Поэтому порог относится к тому звуку, который реально должен уйти собеседнику,
-        // а не к уровню фонового шума до обработки.
+        // Анализатор уровня/Voice Gate — сидит прямо на сыром источнике, до всякого
+        // выключения передачи, поэтому индикатор и порог срабатывания продолжают
+        // "видеть" микрофон даже когда сам гейт закрыт.
         analyserNode = audioContext.createAnalyser();
         analyserNode.fftSize = 1024;
         analyserNode.smoothingTimeConstant = 0.2;
         sourceNode.connect(analyserNode);
 
-        // Цепочка шумоподавления -> анализатор Voice Gate -> громкость -> исходящий трек
+        // Цепочка шумоподавления -> громкость своего микрофона -> исходящий трек
         let chainEnd = sourceNode;
         noiseProfileNodes = buildNoiseSuppressionChain(audioContext, noiseProfile);
         noiseProfileNodes.forEach(node => {
             chainEnd.connect(node);
             chainEnd = node;
         });
-
-        gateAnalyserNode = audioContext.createAnalyser();
-        gateAnalyserNode.fftSize = 1024;
-        gateAnalyserNode.smoothingTimeConstant = 0.15;
-        chainEnd.connect(gateAnalyserNode);
 
         micGainNode = audioContext.createGain();
         micGainNode.gain.value = micVolume;
@@ -758,51 +748,32 @@ function getRmsDb(analyser, floatBuffer) {
 }
 
 function processAudioLevel() {
-    if (!analyserNode || !gateAnalyserNode) return;
+    if (!analyserNode) return;
     const localAnalyser = analyserNode;
-    const localGateAnalyser = gateAnalyserNode;
-    const meterData = new Float32Array(localAnalyser.fftSize);
-    const gateData = new Float32Array(localGateAnalyser.fftSize);
+    const dataArray = new Float32Array(localAnalyser.fftSize);
 
     function check() {
-        if (analyserNode !== localAnalyser || gateAnalyserNode !== localGateAnalyser) return;
+        if (analyserNode !== localAnalyser) return; // граф пересобран (смена мика/профиля) — останавливаем старый цикл
+        let volumeDb = getRmsDb(localAnalyser, dataArray);
 
-        // Индикатор показывает уровень микрофона до нашего WebAudio-фильтра.
-        const meterDb = getRmsDb(localAnalyser, meterData);
-        const meterPercent = Math.max(0, Math.min(100, ((meterDb + 70) / 60) * 100));
+        let meterPercent = Math.max(0, Math.min(100, ((volumeDb + 70) / 60) * 100));
         micMeter.style.width = `${meterPercent}%`;
 
-        // Порог срабатывания проверяется ПОСЛЕ шумоподавления. Это важно:
-        // тихий фон не должен открывать гейт только потому, что сырой микрофон громкий.
-        const volumeDb = getRmsDb(localGateAnalyser, gateData);
-        lastGateVolumeDb = volumeDb;
-
-        if (gateEnabled) {
-            if (volumeDb >= gateThreshold) {
-                gateOpen = true;
-                if (gateCloseTimer) {
-                    clearTimeout(gateCloseTimer);
-                    gateCloseTimer = null;
-                }
-            } else if (volumeDb < gateThreshold - GATE_HYSTERESIS_DB && gateOpen && !gateCloseTimer) {
-                gateCloseTimer = setTimeout(() => {
-                    // Пока ждали закрытия, пользователь мог начать говорить.
-                    // Повторно проверяем актуальный уровень перед закрытием.
-                    if (gateEnabled && lastGateVolumeDb < gateThreshold - GATE_HYSTERESIS_DB) {
-                        gateOpen = false;
-                        applyGateToMicTrack();
-                    }
-                    gateCloseTimer = null;
-                }, GATE_HANGOVER_MS);
-            }
-        } else {
+        // Гистерезис + hangover: открываем канал сразу при превышении порога,
+        // закрываем только после короткой задержки ниже порога — так не режет слова.
+        if (volumeDb > gateThreshold) {
             gateOpen = true;
             if (gateCloseTimer) {
                 clearTimeout(gateCloseTimer);
                 gateCloseTimer = null;
             }
+        } else if (volumeDb < gateThreshold - GATE_HYSTERESIS_DB && gateOpen && !gateCloseTimer) {
+            gateCloseTimer = setTimeout(() => {
+                gateOpen = false;
+                gateCloseTimer = null;
+                applyGateToMicTrack();
+            }, GATE_HANGOVER_MS);
         }
-
         applyGateToMicTrack();
 
         const myAvatarElem = document.getElementById(`avatar-${myPeerId}`);
@@ -1635,13 +1606,6 @@ thresholdSlider.addEventListener('input', (e) => {
     thresholdValueDisplay.innerText = `${gateThreshold} дБ`;
     let posPercent = ((gateThreshold + 70) / 60) * 100;
     thresholdIndicator.style.left = `${posPercent}%`;
-
-    // При движении ползунка не оставляем старый таймер от предыдущего порога.
-    // На следующем кадре Voice Gate сразу пересчитает состояние по новому значению.
-    if (gateCloseTimer) {
-        clearTimeout(gateCloseTimer);
-        gateCloseTimer = null;
-    }
     saveAudioSettings({ gateThreshold });
 });
 
