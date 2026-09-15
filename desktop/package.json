@@ -1,0 +1,32 @@
+{
+  "name": "mute-desktop",
+  "version": "1.0.0",
+  "description": "Десктоп-клиент для голосового чата Mute",
+  "main": "main.js",
+  "author": "",
+  "license": "ISC",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.huie67.mute",
+    "productName": "Mute",
+    "files": [
+      "main.js",
+      "preload-picker.js",
+      "picker.html"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}
