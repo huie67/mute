@@ -42,7 +42,7 @@ function createMainWindow() {
 // По умолчанию Electron блокирует запросы на медиа-доступ — их нужно явно разрешить,
 // иначе getUserMedia() в script.js будет падать с ошибкой доступа.
 function setupPermissions() {
-    const allowed = ['media', 'mediaKeySystem', 'notifications', 'clipboard-read', 'clipboard-sanitized-write'];
+    const allowed = ['media', 'mediaKeySystem', 'notifications', 'clipboard-read', 'clipboard-sanitized-write', 'fullscreen', 'automatic-fullscreen', 'pointerLock'];
 
     session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
         callback(allowed.includes(permission));
