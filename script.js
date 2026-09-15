@@ -23,6 +23,7 @@ const logoutConfirmBtn = document.getElementById('logout-confirm-btn');
 const closeSettings = document.getElementById('close-settings');
 const micSelect = document.getElementById('mic-select');
 const micMeter = document.getElementById('mic-meter');
+const micMonitorCheck = document.getElementById('mic-monitor-check');
 const thresholdSlider = document.getElementById('threshold-slider');
 const thresholdValueDisplay = document.getElementById('threshold-value');
 const thresholdIndicator = document.getElementById('threshold-indicator');
@@ -74,6 +75,8 @@ let remoteGainNodes = {};
 let audioContext = null;
 let analyserNode = null;
 let gateThreshold = -45;
+let micMonitorGain = null;
+let micMonitorEnabled = false;
 
 // ---------- Voice Gate: реально отключает передачу микрофона при тишине/фоновом шуме ----------
 // Лёгкая реализация на AnalyserNode (без тяжёлых ML-моделей шумоподавления):
@@ -530,6 +533,17 @@ function setupAudioAnalyzer(stream) {
         analyserNode = audioContext.createAnalyser();
         analyserNode.fftSize = 256;
         source.connect(analyserNode);
+
+        // Самопрослушивание микрофона ("Слышать себя"): свой узел усиления, который живёт
+        // постоянно — при смене микрофона/устройства просто переподключаем к нему новый
+        // источник, громкость (включено/выключено) не сбрасывается.
+        if (!micMonitorGain) {
+            micMonitorGain = audioContext.createGain();
+            micMonitorGain.gain.value = micMonitorEnabled ? 1 : 0;
+            micMonitorGain.connect(audioContext.destination);
+        }
+        source.connect(micMonitorGain);
+
         processAudioLevel();
     } catch (e) {
         console.error('[Ошибка] Аудиоанализатор:', e);
@@ -1288,6 +1302,18 @@ async function loadMicrophones() {
 
 micSelect.addEventListener('change', (e) => initMediaStream(e.target.value));
 noiseCheck.addEventListener('change', () => initMediaStream(micSelect.value));
+
+// "Слышать себя": просто крутим громкость постоянного gain-узла — не нужно
+// пересоздавать поток или трогать анализатор/индикатор уровня.
+micMonitorCheck.addEventListener('change', () => {
+    micMonitorEnabled = micMonitorCheck.checked;
+    if (micMonitorGain) {
+        micMonitorGain.gain.value = micMonitorEnabled ? 1 : 0;
+    }
+    if (micMonitorEnabled && audioContext && audioContext.state === 'suspended') {
+        audioContext.resume().catch(() => {});
+    }
+});
 echoCheck.addEventListener('change', () => initMediaStream(micSelect.value));
 agcCheck.addEventListener('change', () => initMediaStream(micSelect.value));
 

@@ -951,7 +951,7 @@
     </div>
 
     <!-- Модалка подтверждения выхода из профиля -->
-    <div id="logout-confirm-modal" class="modal-overlay">
+    <div id="logout-confirm-modal" class="modal-overlay" style="z-index: 2100;">
         <div class="modal-card fade-in" style="width: 360px; gap: 20px;">
             <h3>Выйти из профиля?</h3>
             <p style="color: var(--text-muted); font-size: 14px; margin: -8px 0 0;">При следующем входе нужно будет ввести ник и пароль заново.</p>
@@ -996,6 +996,12 @@
                     <div id="mic-meter"></div>
                     <div id="threshold-indicator"></div>
                 </div>
+            </div>
+            <div class="control-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="mic-monitor-check"> Слышать себя (проверка микрофона)
+                </label>
+                <span class="profile-hint">Включает микрофон в динамики, чтобы услышать, как вас слышат другие. Используйте наушники — иначе будет эхо/свист</span>
             </div>
             <div class="control-group">
                 <label>Порог срабатывания (Gate): <span id="threshold-value">-45 дБ</span></label>
