@@ -382,6 +382,10 @@ function initPeer() {
 
 async function initMediaStream(deviceId = null) {
     try {
+        // Запоминаем старый трек микрофона ДО его остановки — он понадобится,
+        // чтобы найти нужный сендер в активных звонках и точечно его заменить.
+        const oldMicTrack = rawAudioStream ? rawAudioStream.getAudioTracks()[0] : null;
+
         if (rawAudioStream) {
             rawAudioStream.getTracks().forEach(t => t.stop());
         }
@@ -397,19 +401,25 @@ async function initMediaStream(deviceId = null) {
         };
 
         rawAudioStream = await navigator.mediaDevices.getUserMedia(constraints);
-        
+
         if (!localMediaStream) {
             localMediaStream = new MediaStream();
-        } else {
-            localMediaStream.getAudioTracks().forEach(track => {
-                localMediaStream.removeTrack(track);
-            });
+        } else if (oldMicTrack && localMediaStream.getAudioTracks().includes(oldMicTrack)) {
+            // Убираем именно старый трек микрофона, а не вообще все аудиотреки —
+            // иначе заодно слетал бы и слот звука демонстрации экрана.
+            localMediaStream.removeTrack(oldMicTrack);
         }
 
-        rawAudioStream.getAudioTracks().forEach(track => {
-            track.enabled = !(isMuted || isDeafened);
-            localMediaStream.addTrack(track);
-        });
+        const newMicTrack = rawAudioStream.getAudioTracks()[0];
+        newMicTrack.enabled = !(isMuted || isDeafened);
+        localMediaStream.addTrack(newMicTrack);
+
+        // Раньше новый трек оставался только в localMediaStream, а во ВСЕ уже
+        // установленные звонки продолжал уходить старый (уже остановленный) трек —
+        // из-за этого при смене микрофона/настроек звука собеседники переставали
+        // вас слышать, хотя локально всё выглядело нормально. Теперь подменяем трек
+        // во всех активных соединениях так же, как это уже делается для видео.
+        replaceMicTrackForAllPeers(newMicTrack, oldMicTrack);
 
         if (activeVideoStream) {
             activeVideoStream.getVideoTracks().forEach(track => {
@@ -701,7 +711,16 @@ socket.on('room users', (usersInRoom) => {
     }
 
     if (currentUser.room === selectedRoom) {
-        connectedUsers[myPeerId] = { username: currentUser.username, avatar: currentUser.avatar };
+        // Раньше здесь полностью перезаписывалась своя запись без micMuted/deafened —
+        // из-за этого свой же значок мьюта "слетал" каждый раз, когда кто угодно
+        // заходил в канал или выходил из него (сервер рассылает 'room users' всем).
+        // Состояние мьюта/дефена у нас уже есть локально (isMuted/isDeafened) — берём его оттуда.
+        connectedUsers[myPeerId] = {
+            username: currentUser.username,
+            avatar: currentUser.avatar,
+            micMuted: isMuted,
+            deafened: isDeafened
+        };
         updateVoiceUsersList();
 
         for (let peerId in usersInRoom) {
@@ -1046,6 +1065,23 @@ function replaceVideoTrackForAllPeers(track) {
             const videoSender = senders.find(s => s.track && s.track.kind === 'video');
             if (videoSender) {
                 videoSender.replaceTrack(track).catch(err => console.warn('[Внимание] Ошибка замены видеотрека:', err));
+            }
+        }
+    }
+}
+
+// Как и со звуком демонстрации: аудиотреков в соединении два (микрофон + демо),
+// поэтому ищем сендер именно по ССЫЛКЕ на СТАРЫЙ трек микрофона, а не просто
+// по kind === 'audio' — иначе можно случайно подменить звук демонстрации.
+function replaceMicTrackForAllPeers(newTrack, oldTrack) {
+    if (!oldTrack) return;
+    for (let peerId in activeCalls) {
+        const call = activeCalls[peerId];
+        if (call && call.peerConnection) {
+            const senders = call.peerConnection.getSenders();
+            const micSender = senders.find(s => s.track === oldTrack);
+            if (micSender) {
+                micSender.replaceTrack(newTrack).catch(err => console.warn('[Внимание] Ошибка замены трека микрофона:', err));
             }
         }
     }
