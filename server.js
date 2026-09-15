@@ -11,7 +11,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-app.use(express.static('public')); // Папка с клиентскими файлами
+app.use(express.static(__dirname)); // Клиентские файлы лежат в корне репозитория
 
 // ---------- База данных: Postgres (Neon) — общий чат хранится тут, не на диске сервера ----------
 if (!process.env.DATABASE_URL) {
