@@ -15,11 +15,19 @@ function createMainWindow() {
         minHeight: 600,
         show: false,
         autoHideMenuBar: true,
+        title: 'Mute',
+        icon: path.join(__dirname, 'icon.ico'),
         webPreferences: {
             contextIsolation: true,
             nodeIntegration: false,
             sandbox: true
         }
+    });
+
+    // Не даём странице переименовать окно (например, если сайт когда-нибудь
+    // начнёт менять title под счётчик непрочитанных сообщений и т.п.)
+    mainWindow.on('page-title-updated', (event) => {
+        event.preventDefault();
     });
 
     Menu.setApplicationMenu(null);
