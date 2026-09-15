@@ -950,6 +950,18 @@
         </div>
     </div>
 
+    <!-- Модалка подтверждения выхода из профиля -->
+    <div id="logout-confirm-modal" class="modal-overlay">
+        <div class="modal-card fade-in" style="width: 360px; gap: 20px;">
+            <h3>Выйти из профиля?</h3>
+            <p style="color: var(--text-muted); font-size: 14px; margin: -8px 0 0;">При следующем входе нужно будет ввести ник и пароль заново.</p>
+            <div style="display:flex; gap: 10px;">
+                <button class="btn-secondary" id="logout-cancel-btn" style="flex:1;">Отмена</button>
+                <button class="btn-primary btn-danger" id="logout-confirm-btn" style="flex:1;">Выйти</button>
+            </div>
+        </div>
+    </div>
+
     <div id="settings-modal" class="modal-overlay">
         <div class="modal-card fade-in">
             <h3>Профиль</h3>

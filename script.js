@@ -17,6 +17,9 @@ const muteBtn = document.getElementById('mute-btn');
 const deafenBtn = document.getElementById('deafen-btn');
 const settingsBtn = document.getElementById('settings-btn');
 const settingsModal = document.getElementById('settings-modal');
+const logoutConfirmModal = document.getElementById('logout-confirm-modal');
+const logoutCancelBtn = document.getElementById('logout-cancel-btn');
+const logoutConfirmBtn = document.getElementById('logout-confirm-btn');
 const closeSettings = document.getElementById('close-settings');
 const micSelect = document.getElementById('mic-select');
 const micMeter = document.getElementById('mic-meter');
@@ -1429,9 +1432,32 @@ document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && imageLightbox.style.display === 'flex') closeImageLightbox();
 });
 
+// Своя модалка подтверждения выхода вместо нативного confirm(). Помимо более приятного
+// вида, это чинит баг в Electron-приложении: браузерный (синхронный) confirm() блокирует
+// рендер-процесс, и последующий location.reload() иногда происходит в состоянии, из которого
+// окно не возвращает фокус клавиатуре/мыши — поля ника и пароля после этого визуально есть,
+// но недоступны для ввода/клика. Обычный DOM-модал такой проблемы не вызывает.
 const logoutBtn = document.getElementById('logout-btn');
-logoutBtn.addEventListener('click', () => {
-    if (!confirm('Выйти из профиля? При следующем входе нужно будет ввести имя заново.')) return;
+
+function openLogoutConfirm() {
+    logoutConfirmModal.style.display = 'flex';
+}
+
+function closeLogoutConfirm() {
+    logoutConfirmModal.style.display = 'none';
+}
+
+logoutBtn.addEventListener('click', openLogoutConfirm);
+logoutCancelBtn.addEventListener('click', closeLogoutConfirm);
+logoutConfirmModal.addEventListener('click', (e) => {
+    if (e.target === logoutConfirmModal) closeLogoutConfirm();
+});
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && logoutConfirmModal.style.display === 'flex') closeLogoutConfirm();
+});
+
+logoutConfirmBtn.addEventListener('click', () => {
+    closeLogoutConfirm();
     clearProfileStorage();
     location.reload();
 });
