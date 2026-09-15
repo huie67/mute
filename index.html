@@ -350,6 +350,43 @@
             gap: 10px;
             font-size: 13px;
         }
+        .voice-user-row.clickable {
+            cursor: pointer;
+            border-radius: 6px;
+            padding: 3px 6px;
+            margin: -3px -6px;
+            transition: background 0.15s;
+        }
+        .voice-user-row.clickable:hover {
+            background: var(--bg-raised);
+        }
+
+        .user-volume-popover {
+            position: fixed;
+            z-index: 3000;
+            width: 220px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            box-shadow: var(--shadow-card);
+            padding: 12px 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .user-volume-popover-title {
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+        .user-volume-popover-value {
+            font-size: 12px;
+            color: var(--text-faint);
+            text-align: right;
+        }
+        .user-volume-popover input[type="range"] {
+            width: 100%;
+            padding: 0;
+        }
 
         .user-avatar {
             width: 28px;
@@ -991,6 +1028,11 @@
                 <select id="mic-select"></select>
             </div>
             <div class="control-group">
+                <label>Громкость своего микрофона: <span id="mic-volume-value">100%</span></label>
+                <input type="range" id="mic-volume-slider" min="0" max="200" step="5" value="100">
+                <span class="profile-hint">Усиливает или приглушает ваш голос перед отправкой собеседникам</span>
+            </div>
+            <div class="control-group">
                 <label>Чувствительность микрофона (Тест уровня)</label>
                 <div class="meter-bar">
                     <div id="mic-meter"></div>
@@ -1014,8 +1056,18 @@
                 </label>
             </div>
             <div class="control-group">
+                <label>Тип шумоподавления</label>
+                <select id="noise-profile-select">
+                    <option value="off">Выключено</option>
+                    <option value="standard" selected>Стандартное</option>
+                    <option value="aggressive">Сильное (шумное помещение)</option>
+                    <option value="telephone">Телефонное (максимум подавления)</option>
+                </select>
+                <span class="profile-hint">Стандартное — мягкий срез гула для обычной комнаты. Сильное — плюс вырез сетевой наводки и жёсткая компрессия, для вентилятора/стройки/кондиционера. Телефонное — узкая полоса, режет почти всё лишнее, но голос звучит суше</span>
+            </div>
+            <div class="control-group">
                 <label class="checkbox-label">
-                    <input type="checkbox" id="noise-suppression-check" checked> Шумоподавление (Noise Suppression)
+                    <input type="checkbox" id="noise-suppression-check" checked> Базовое шумоподавление (браузер)
                 </label>
                 <label class="checkbox-label">
                     <input type="checkbox" id="echo-cancellation-check" checked> Подавление эха (Echo Cancellation)

@@ -32,6 +32,9 @@ const gateEnabledCheck = document.getElementById('gate-enabled-check');
 const noiseCheck = document.getElementById('noise-suppression-check');
 const echoCheck = document.getElementById('echo-cancellation-check');
 const agcCheck = document.getElementById('agc-check');
+const noiseProfileSelect = document.getElementById('noise-profile-select');
+const micVolumeSlider = document.getElementById('mic-volume-slider');
+const micVolumeValueDisplay = document.getElementById('mic-volume-value');
 
 const profileAvatarPreview = document.getElementById('profile-avatar-preview');
 const profileAvatarUrlInput = document.getElementById('profile-avatar-url');
@@ -78,6 +81,25 @@ let gateThreshold = -45;
 let micMonitorGain = null;
 let micMonitorEnabled = false;
 
+// ---------- Граф обработки своего микрофона ----------
+// sourceNode — узел на "сырой" (необработанный) поток с микрофона. От него отдельно
+// отходит analyserNode (для индикатора уровня и Voice Gate), поэтому анализ громкости
+// продолжает работать ВСЕГДА, даже когда сам микрофон выключен Voice Gate'ом/мьютом —
+// раньше анализатор слушал тот же трек, который выключался гейтом, из-за чего после
+// падения громкости в тишину уровень намертво зависал на нуле и гейт больше никогда
+// не открывался сам собой.
+// Дальше сырой сигнал идёт через цепочку шумоподавления (noiseProfileNodes) и свой
+// gain-узел громкости микрофона (micGainNode) в MediaStreamDestination — и уже этот,
+// обработанный, трек (processedTrack) реально уходит собеседникам и включается/
+// выключается Voice Gate'ом и кнопкой "Микрофон".
+let sourceNode = null;
+let noiseProfileNodes = [];
+let micGainNode = null;
+let destinationNode = null;
+let processedTrack = null;
+let noiseProfile = 'standard'; // 'off' | 'standard' | 'aggressive' | 'telephone'
+let micVolume = 1; // 0..2 (0%..200%), усиление своего микрофона перед отправкой
+
 // ---------- Voice Gate: реально отключает передачу микрофона при тишине/фоновом шуме ----------
 // Лёгкая реализация на AnalyserNode (без тяжёлых ML-моделей шумоподавления):
 // - openThreshold — громкость, выше которой канал точно открыт;
@@ -88,6 +110,64 @@ let gateOpen = true;
 let gateCloseTimer = null;
 const GATE_HYSTERESIS_DB = 4;
 const GATE_HANGOVER_MS = 300;
+
+// ---------- Настройки звука: сохранение между заходами ----------
+const AUDIO_SETTINGS_KEY = 'mute:audioSettings';
+function loadAudioSettings() {
+    try {
+        const raw = localStorage.getItem(AUDIO_SETTINGS_KEY);
+        return raw ? JSON.parse(raw) : {};
+    } catch (e) { return {}; }
+}
+function saveAudioSettings(patch) {
+    try {
+        const merged = Object.assign(loadAudioSettings(), patch);
+        localStorage.setItem(AUDIO_SETTINGS_KEY, JSON.stringify(merged));
+    } catch (e) { /* ignore */ }
+}
+
+// ---------- Локальная громкость каждого собеседника (только у себя) ----------
+// Хранится по нику, а не по peerId — peerId у человека новый при каждом заходе,
+// а ник стабилен, поэтому громкость, выставленная один раз, не сбрасывается.
+const REMOTE_VOLUME_STORAGE_KEY = 'mute:remoteVolumes';
+let remoteVoiceGainNodes = {};
+function loadRemoteVolumes() {
+    try {
+        const raw = localStorage.getItem(REMOTE_VOLUME_STORAGE_KEY);
+        return raw ? JSON.parse(raw) : {};
+    } catch (e) { return {}; }
+}
+function getRemoteVolumePercent(username) {
+    const all = loadRemoteVolumes();
+    const key = username || '';
+    return (key in all) ? all[key] : 100;
+}
+function saveRemoteVolume(username, percent) {
+    try {
+        const all = loadRemoteVolumes();
+        all[username || ''] = percent;
+        localStorage.setItem(REMOTE_VOLUME_STORAGE_KEY, JSON.stringify(all));
+    } catch (e) { /* ignore */ }
+}
+
+(function applySavedAudioSettings() {
+    const saved = loadAudioSettings();
+    if (typeof saved.gateThreshold === 'number') gateThreshold = saved.gateThreshold;
+    if (typeof saved.gateEnabled === 'boolean') gateEnabled = saved.gateEnabled;
+    if (typeof saved.noiseProfile === 'string') noiseProfile = saved.noiseProfile;
+    if (typeof saved.micVolume === 'number') micVolume = saved.micVolume;
+    if (typeof saved.noiseSuppression === 'boolean' && noiseCheck) noiseCheck.checked = saved.noiseSuppression;
+    if (typeof saved.echoCancellation === 'boolean' && echoCheck) echoCheck.checked = saved.echoCancellation;
+    if (typeof saved.agc === 'boolean' && agcCheck) agcCheck.checked = saved.agc;
+
+    if (gateEnabledCheck) gateEnabledCheck.checked = gateEnabled;
+    if (thresholdSlider) thresholdSlider.value = gateThreshold;
+    if (thresholdValueDisplay) thresholdValueDisplay.innerText = `${gateThreshold} дБ`;
+    if (thresholdIndicator) thresholdIndicator.style.left = `${((gateThreshold + 70) / 60) * 100}%`;
+    if (noiseProfileSelect) noiseProfileSelect.value = noiseProfile;
+    if (micVolumeSlider) micVolumeSlider.value = Math.round(micVolume * 100);
+    if (micVolumeValueDisplay) micVolumeValueDisplay.innerText = `${Math.round(micVolume * 100)}%`;
+})();
 
 // ---------- Звуковые уведомления (сообщение / вход / выход из комнаты) ----------
 // Все три звука сделаны из одного и того же исходного колокольчика (mp3, который
@@ -470,9 +550,11 @@ function initPeer() {
 
 async function initMediaStream(deviceId = null) {
     try {
-        // Запоминаем старый трек микрофона ДО его остановки — он понадобится,
-        // чтобы найти нужный сендер в активных звонках и точечно его заменить.
-        const oldMicTrack = rawAudioStream ? rawAudioStream.getAudioTracks()[0] : null;
+        // Запоминаем старый ИСХОДЯЩИЙ трек (тот, что реально уходит собеседникам) ДО его
+        // остановки — он понадобится, чтобы найти нужный сендер в активных звонках и
+        // точечно его заменить. Это трек из графа обработки (processedTrack), а не сырой
+        // трек микрофона — именно он лежит в localMediaStream и передаётся по WebRTC.
+        const oldOutputTrack = processedTrack;
 
         if (rawAudioStream) {
             rawAudioStream.getTracks().forEach(t => t.stop());
@@ -490,24 +572,30 @@ async function initMediaStream(deviceId = null) {
 
         rawAudioStream = await navigator.mediaDevices.getUserMedia(constraints);
 
+        // Строим граф обработки: сырой сигнал -> шумоподавление -> громкость микрофона ->
+        // processedTrack. Сырой сигнал одновременно уходит в analyserNode (индикатор
+        // уровня и Voice Gate), поэтому он "живой" независимо от того, включена ли
+        // сейчас передача собеседникам.
+        setupAudioAnalyzer(rawAudioStream);
+        const newOutputTrack = processedTrack;
+
         if (!localMediaStream) {
             localMediaStream = new MediaStream();
-        } else if (oldMicTrack && localMediaStream.getAudioTracks().includes(oldMicTrack)) {
+        } else if (oldOutputTrack && localMediaStream.getAudioTracks().includes(oldOutputTrack)) {
             // Убираем именно старый трек микрофона, а не вообще все аудиотреки —
             // иначе заодно слетал бы и слот звука демонстрации экрана.
-            localMediaStream.removeTrack(oldMicTrack);
+            localMediaStream.removeTrack(oldOutputTrack);
         }
 
-        const newMicTrack = rawAudioStream.getAudioTracks()[0];
-        newMicTrack.enabled = !(isMuted || isDeafened);
-        localMediaStream.addTrack(newMicTrack);
+        localMediaStream.addTrack(newOutputTrack);
+        applyGateToMicTrack();
 
         // Раньше новый трек оставался только в localMediaStream, а во ВСЕ уже
         // установленные звонки продолжал уходить старый (уже остановленный) трек —
         // из-за этого при смене микрофона/настроек звука собеседники переставали
         // вас слышать, хотя локально всё выглядело нормально. Теперь подменяем трек
         // во всех активных соединениях так же, как это уже делается для видео.
-        replaceMicTrackForAllPeers(newMicTrack, oldMicTrack);
+        replaceMicTrackForAllPeers(newOutputTrack, oldOutputTrack);
 
         if (activeVideoStream) {
             activeVideoStream.getVideoTracks().forEach(track => {
@@ -516,33 +604,117 @@ async function initMediaStream(deviceId = null) {
                 }
             });
         }
-
-        setupAudioAnalyzer(rawAudioStream);
     } catch (e) {
         console.error('[Ошибка] Доступ к микрофону:', e);
         alert('Не удалось получить доступ к микрофону. Проверьте разрешения.');
     }
 }
 
+// Строит цепочку узлов шумоподавления под выбранный профиль. Работает ПОВЕРХ
+// браузерного шумоподавления (чекбокс "Базовое шумоподавление") как дополнительная
+// обработка сигнала через Web Audio — поэтому профили реально звучат по-разному,
+// а не просто переключают один и тот же флажок:
+// - off:        без дополнительной обработки;
+// - standard:   мягкий срез гула снизу + лёгкая компрессия — для обычной комнаты;
+// - aggressive: более жёсткий срез снизу + узкий вырез сетевой наводки (50 Гц,
+//               гул проводки/блоков питания) + сильная компрессия — для шумного
+//               помещения (вентилятор, кондиционер, стройка за окном);
+// - telephone:  узкая "телефонная" полоса 300–3400 Гц — максимально режет и бас,
+//               и шипение, ценой лёгкой потери насыщенности голоса.
+function buildNoiseSuppressionChain(ctx, profile) {
+    const nodes = [];
+    if (profile === 'off') return nodes;
+
+    const highpass = ctx.createBiquadFilter();
+    highpass.type = 'highpass';
+    highpass.frequency.value = profile === 'telephone' ? 300 : (profile === 'aggressive' ? 160 : 90);
+    highpass.Q.value = 0.7;
+    nodes.push(highpass);
+
+    if (profile === 'aggressive') {
+        const notch = ctx.createBiquadFilter();
+        notch.type = 'notch';
+        notch.frequency.value = 50;
+        notch.Q.value = 8;
+        nodes.push(notch);
+    }
+
+    const compressor = ctx.createDynamicsCompressor();
+    compressor.threshold.value = profile === 'aggressive' ? -36 : -28;
+    compressor.knee.value = 20;
+    compressor.ratio.value = profile === 'aggressive' ? 8 : (profile === 'telephone' ? 5 : 3);
+    compressor.attack.value = 0.003;
+    compressor.release.value = 0.25;
+    nodes.push(compressor);
+
+    const lowpass = ctx.createBiquadFilter();
+    lowpass.type = 'lowpass';
+    lowpass.frequency.value = profile === 'telephone' ? 3400 : (profile === 'aggressive' ? 7000 : 9000);
+    nodes.push(lowpass);
+
+    return nodes;
+}
+
+// Полностью отключает и обнуляет предыдущий граф обработки перед пересборкой
+// (смена микрофона/профиля шумоподавления) — иначе старые узлы и исходящий
+// трек продолжали бы висеть в памяти и в звонках.
+function teardownAudioGraph() {
+    if (sourceNode) { try { sourceNode.disconnect(); } catch (e) { /* ignore */ } }
+    noiseProfileNodes.forEach(node => { try { node.disconnect(); } catch (e) { /* ignore */ } });
+    noiseProfileNodes = [];
+    if (micGainNode) { try { micGainNode.disconnect(); } catch (e) { /* ignore */ } }
+    micGainNode = null;
+    if (destinationNode) { try { destinationNode.disconnect(); } catch (e) { /* ignore */ } }
+    destinationNode = null;
+    if (processedTrack) { try { processedTrack.stop(); } catch (e) { /* ignore */ } }
+    processedTrack = null;
+    if (analyserNode) { try { analyserNode.disconnect(); } catch (e) { /* ignore */ } }
+    analyserNode = null;
+    sourceNode = null;
+}
+
 function setupAudioAnalyzer(stream) {
     if (!audioContext) {
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
     }
+    teardownAudioGraph();
     try {
-        const source = audioContext.createMediaStreamSource(stream);
-        analyserNode = audioContext.createAnalyser();
-        analyserNode.fftSize = 256;
-        source.connect(analyserNode);
+        sourceNode = audioContext.createMediaStreamSource(stream);
 
-        // Самопрослушивание микрофона ("Слышать себя"): свой узел усиления, который живёт
-        // постоянно — при смене микрофона/устройства просто переподключаем к нему новый
-        // источник, громкость (включено/выключено) не сбрасывается.
+        // Анализатор уровня/Voice Gate — сидит прямо на сыром источнике, до всякого
+        // выключения передачи, поэтому индикатор и порог срабатывания продолжают
+        // "видеть" микрофон даже когда сам гейт закрыт.
+        analyserNode = audioContext.createAnalyser();
+        analyserNode.fftSize = 1024;
+        analyserNode.smoothingTimeConstant = 0.2;
+        sourceNode.connect(analyserNode);
+
+        // Цепочка шумоподавления -> громкость своего микрофона -> исходящий трек
+        let chainEnd = sourceNode;
+        noiseProfileNodes = buildNoiseSuppressionChain(audioContext, noiseProfile);
+        noiseProfileNodes.forEach(node => {
+            chainEnd.connect(node);
+            chainEnd = node;
+        });
+
+        micGainNode = audioContext.createGain();
+        micGainNode.gain.value = micVolume;
+        chainEnd.connect(micGainNode);
+
+        destinationNode = audioContext.createMediaStreamDestination();
+        micGainNode.connect(destinationNode);
+        processedTrack = destinationNode.stream.getAudioTracks()[0];
+
+        // Самопрослушивание микрофона ("Слышать себя"): подключаем к уже обработанному
+        // сигналу (после шумоподавления и громкости микрофона) — так слышно именно то,
+        // что реально уходит собеседникам. Узел усиления живёт постоянно, чтобы
+        // включённость самопрослушивания не сбрасывалась при пересборке графа.
         if (!micMonitorGain) {
             micMonitorGain = audioContext.createGain();
             micMonitorGain.gain.value = micMonitorEnabled ? 1 : 0;
             micMonitorGain.connect(audioContext.destination);
         }
-        source.connect(micMonitorGain);
+        micGainNode.connect(micMonitorGain);
 
         processAudioLevel();
     } catch (e) {
@@ -562,16 +734,27 @@ function applyGateToMicTrack() {
     });
 }
 
+// RMS в дБFS по временной области — честная громкость сигнала, в отличие от простого
+// среднего по частотным бинам (которое из-за квантования в байт легко "залипает" в
+// нуле на тихом звуке и делает порог срабатывания малочувствительным/дёрганым).
+function getRmsDb(analyser, floatBuffer) {
+    analyser.getFloatTimeDomainData(floatBuffer);
+    let sumSquares = 0;
+    for (let i = 0; i < floatBuffer.length; i++) {
+        sumSquares += floatBuffer[i] * floatBuffer[i];
+    }
+    const rms = Math.sqrt(sumSquares / floatBuffer.length);
+    return rms > 0 ? 20 * Math.log10(rms) : -100;
+}
+
 function processAudioLevel() {
     if (!analyserNode) return;
-    const dataArray = new Uint8Array(analyserNode.frequencyBinCount);
+    const localAnalyser = analyserNode;
+    const dataArray = new Float32Array(localAnalyser.fftSize);
 
     function check() {
-        if (!analyserNode) return;
-        analyserNode.getByteFrequencyData(dataArray);
-        let sum = dataArray.reduce((a, b) => a + b, 0);
-        let avg = sum / dataArray.length;
-        let volumeDb = avg > 0 ? 20 * Math.log10(avg / 255) : -70;
+        if (analyserNode !== localAnalyser) return; // граф пересобран (смена мика/профиля) — останавливаем старый цикл
+        let volumeDb = getRmsDb(localAnalyser, dataArray);
 
         let meterPercent = Math.max(0, Math.min(100, ((volumeDb + 70) / 60) * 100));
         micMeter.style.width = `${meterPercent}%`;
@@ -620,14 +803,25 @@ function setupRemoteAudioAnalyzer(stream, peerId) {
             document.body.appendChild(audioEl);
         }
         audioEl.srcObject = micStream;
-        audioEl.muted = isDeafened;
+        // Звук идёт не напрямую из <audio>, а через gain-узел ниже — тогда громкость
+        // конкретного собеседника можно менять только у себя, не трогая ни его реальный
+        // уровень записи, ни то, что слышат остальные.
+        audioEl.muted = true;
 
         const source = audioContext.createMediaStreamSource(micStream);
 
         const remoteAnalyser = audioContext.createAnalyser();
-        remoteAnalyser.fftSize = 256;
+        remoteAnalyser.fftSize = 1024;
+        remoteAnalyser.smoothingTimeConstant = 0.2;
         source.connect(remoteAnalyser);
         remoteAnalysers[peerId] = remoteAnalyser;
+
+        const username = (connectedUsers[peerId] && connectedUsers[peerId].username) || '';
+        const voiceGain = audioContext.createGain();
+        voiceGain.gain.value = isDeafened ? 0 : getRemoteVolumePercent(username) / 100;
+        source.connect(voiceGain);
+        voiceGain.connect(audioContext.destination);
+        remoteVoiceGainNodes[peerId] = voiceGain;
 
         processRemoteAudioLevel(peerId);
     } catch (e) {
@@ -693,14 +887,11 @@ function refreshDemoAudioGains() {
 function processRemoteAudioLevel(peerId) {
     const analyser = remoteAnalysers[peerId];
     if (!analyser) return;
-    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+    const dataArray = new Float32Array(analyser.fftSize);
 
     function checkRemote() {
-        if (!remoteAnalysers[peerId]) return;
-        analyser.getByteFrequencyData(dataArray);
-        let sum = dataArray.reduce((a, b) => a + b, 0);
-        let avg = sum / dataArray.length;
-        let volumeDb = avg > 0 ? 20 * Math.log10(avg / 255) : -70;
+        if (remoteAnalysers[peerId] !== analyser) return;
+        let volumeDb = getRmsDb(analyser, dataArray);
 
         const avatarElem = document.getElementById(`avatar-${peerId}`);
         if (avatarElem) {
@@ -793,6 +984,7 @@ function cleanupCalls() {
     activeCalls = {};
     remoteAnalysers = {};
     remoteGainNodes = {};
+    remoteVoiceGainNodes = {};
     for (let peerId in remoteStreamsByPeer) delete remoteStreamsByPeer[peerId];
     sharingPeers.clear();
     remoteVideos.innerHTML = '';
@@ -896,6 +1088,7 @@ function handleIncomingCall(call) {
         delete activeCalls[call.peer];
         delete remoteAnalysers[call.peer];
         delete remoteGainNodes[call.peer];
+        delete remoteVoiceGainNodes[call.peer];
         delete remoteStreamsByPeer[call.peer];
         sharingPeers.delete(call.peer);
     });
@@ -956,6 +1149,7 @@ socket.on('user disconnected', (peerId) => {
     delete connectedUsers[peerId];
     delete remoteAnalysers[peerId];
     delete remoteGainNodes[peerId];
+    delete remoteVoiceGainNodes[peerId];
     delete remoteStreamsByPeer[peerId];
     sharingPeers.delete(peerId);
     updateVoiceUsersList();
@@ -1011,8 +1205,63 @@ function updateVoiceUsersList() {
             </div>
             <span style="color:${getUserColor(user.username)}">${escapeHtml(user.username || 'Участник')}</span>
         `;
+        // Громкость каждого собеседника можно менять только у себя — по клику на его
+        // строку в списке. На себя самого это не вешаем (собственную громкость менять
+        // не через что — её регулирует "Громкость своего микрофона" в настройках).
+        if (id !== myPeerId) {
+            row.classList.add('clickable');
+            row.title = 'Нажать, чтобы изменить громкость только для себя';
+            row.addEventListener('click', () => openUserVolumePopover(id, row, user.username || 'Участник'));
+        }
         voiceUsersContainer.appendChild(row);
     }
+}
+
+// ---------- Попап громкости конкретного собеседника (только локально, у себя) ----------
+function closeUserVolumePopover() {
+    const existing = document.getElementById('user-volume-popover');
+    if (existing) existing.remove();
+    document.removeEventListener('mousedown', onDocMouseDownForVolumePopover, true);
+}
+
+function onDocMouseDownForVolumePopover(e) {
+    const pop = document.getElementById('user-volume-popover');
+    if (pop && !pop.contains(e.target)) closeUserVolumePopover();
+}
+
+function openUserVolumePopover(peerId, anchorEl, username) {
+    closeUserVolumePopover();
+
+    const percent = getRemoteVolumePercent(username);
+    const pop = document.createElement('div');
+    pop.id = 'user-volume-popover';
+    pop.className = 'user-volume-popover fade-in';
+    pop.innerHTML = `
+        <div class="user-volume-popover-title">Громкость: <span style="color:${getUserColor(username)}">${escapeHtml(username)}</span></div>
+        <input type="range" id="user-volume-range" min="0" max="200" step="5" value="${percent}">
+        <div class="user-volume-popover-value">${percent}%</div>
+        <span class="profile-hint">Меняется только у вас — собеседник об этом не узнает</span>
+    `;
+    document.body.appendChild(pop);
+
+    const anchorRect = anchorEl.getBoundingClientRect();
+    const popWidth = 220;
+    pop.style.left = `${Math.max(8, Math.min(anchorRect.left, window.innerWidth - popWidth - 8))}px`;
+    pop.style.top = `${Math.min(anchorRect.bottom + 6, window.innerHeight - 110)}px`;
+
+    const rangeInput = pop.querySelector('#user-volume-range');
+    const valueLabel = pop.querySelector('.user-volume-popover-value');
+    rangeInput.addEventListener('input', (e) => {
+        const val = parseInt(e.target.value, 10);
+        valueLabel.innerText = `${val}%`;
+        saveRemoteVolume(username, val);
+        if (remoteVoiceGainNodes[peerId] && !isDeafened) {
+            remoteVoiceGainNodes[peerId].gain.value = val / 100;
+        }
+    });
+    rangeInput.addEventListener('click', (e) => e.stopPropagation());
+
+    setTimeout(() => document.addEventListener('mousedown', onDocMouseDownForVolumePopover, true), 0);
 }
 
 // Обновляет значки конкретного участника без перерисовки всего списка.
@@ -1274,8 +1523,12 @@ deafenBtn.addEventListener('click', () => {
 
     refreshDemoAudioGains();
 
-    document.querySelectorAll('audio[id^="audio-elem-"]').forEach(audio => {
-        audio.muted = isDeafened;
+    // Голос собеседников тоже идёт через gain-узлы (см. setupRemoteAudioAnalyzer) — при
+    // дефене обнуляем их, при отмене дефена возвращаем именно ту громкость, которую
+    // пользователь выставил каждому индивидуально, а не единую 100%.
+    Object.keys(remoteVoiceGainNodes).forEach(peerId => {
+        const username = (connectedUsers[peerId] && connectedUsers[peerId].username) || '';
+        remoteVoiceGainNodes[peerId].gain.value = isDeafened ? 0 : getRemoteVolumePercent(username) / 100;
     });
 
     deafenBtn.classList.toggle('active', isDeafened);
@@ -1301,7 +1554,10 @@ async function loadMicrophones() {
 }
 
 micSelect.addEventListener('change', (e) => initMediaStream(e.target.value));
-noiseCheck.addEventListener('change', () => initMediaStream(micSelect.value));
+noiseCheck.addEventListener('change', () => {
+    saveAudioSettings({ noiseSuppression: noiseCheck.checked });
+    initMediaStream(micSelect.value);
+});
 
 // "Слышать себя": просто крутим громкость постоянного gain-узла — не нужно
 // пересоздавать поток или трогать анализатор/индикатор уровня.
@@ -1314,14 +1570,43 @@ micMonitorCheck.addEventListener('change', () => {
         audioContext.resume().catch(() => {});
     }
 });
-echoCheck.addEventListener('change', () => initMediaStream(micSelect.value));
-agcCheck.addEventListener('change', () => initMediaStream(micSelect.value));
+echoCheck.addEventListener('change', () => {
+    saveAudioSettings({ echoCancellation: echoCheck.checked });
+    initMediaStream(micSelect.value);
+});
+agcCheck.addEventListener('change', () => {
+    saveAudioSettings({ agc: agcCheck.checked });
+    initMediaStream(micSelect.value);
+});
+
+// Тип шумоподавления — отдельная DSP-цепочка (см. buildNoiseSuppressionChain), а не
+// просто ещё один флажок, поэтому требует пересборки графа обработки звука.
+if (noiseProfileSelect) {
+    noiseProfileSelect.addEventListener('change', (e) => {
+        noiseProfile = e.target.value;
+        saveAudioSettings({ noiseProfile });
+        initMediaStream(micSelect.value);
+    });
+}
+
+// Громкость своего микрофона — просто крутим gain уже существующего узла,
+// без пересборки графа и без обрыва звонков.
+if (micVolumeSlider) {
+    micVolumeSlider.addEventListener('input', (e) => {
+        const percent = parseInt(e.target.value, 10);
+        micVolume = percent / 100;
+        if (micVolumeValueDisplay) micVolumeValueDisplay.innerText = `${percent}%`;
+        if (micGainNode) micGainNode.gain.value = micVolume;
+        saveAudioSettings({ micVolume });
+    });
+}
 
 thresholdSlider.addEventListener('input', (e) => {
     gateThreshold = parseInt(e.target.value, 10);
     thresholdValueDisplay.innerText = `${gateThreshold} дБ`;
     let posPercent = ((gateThreshold + 70) / 60) * 100;
     thresholdIndicator.style.left = `${posPercent}%`;
+    saveAudioSettings({ gateThreshold });
 });
 
 gateEnabledCheck.addEventListener('change', (e) => {
@@ -1336,6 +1621,7 @@ gateEnabledCheck.addEventListener('change', (e) => {
         gateOpen = true;
     }
     applyGateToMicTrack();
+    saveAudioSettings({ gateEnabled });
 });
 
 // ---------- Уникальный цвет ника ----------
