@@ -1057,6 +1057,11 @@
                 </label>
             </div>
             <div class="control-group">
+                <label>Задержка закрытия гейта: <span id="gate-hangover-value">300 мс</span></label>
+                <input type="range" id="gate-hangover-slider" min="50" max="1500" step="50" value="300">
+                <span class="profile-hint">Сколько микрофон остаётся включённым после того, как вы замолчали, прежде чем гейт закроется снова. Больше — меньше режет окончания слов, меньше — быстрее отсекает тишину</span>
+            </div>
+            <div class="control-group">
                 <label>Тип шумоподавления</label>
                 <select id="noise-profile-select">
                     <option value="off">Выключено</option>

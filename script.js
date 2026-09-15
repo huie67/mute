@@ -29,6 +29,8 @@ const thresholdValueDisplay = document.getElementById('threshold-value');
 const thresholdIndicator = document.getElementById('threshold-indicator');
 
 const gateEnabledCheck = document.getElementById('gate-enabled-check');
+const gateHangoverSlider = document.getElementById('gate-hangover-slider');
+const gateHangoverValueDisplay = document.getElementById('gate-hangover-value');
 const noiseCheck = document.getElementById('noise-suppression-check');
 const echoCheck = document.getElementById('echo-cancellation-check');
 const agcCheck = document.getElementById('agc-check');
@@ -109,7 +111,10 @@ let gateEnabled = true;
 let gateOpen = true;
 let gateCloseTimer = null;
 const GATE_HYSTERESIS_DB = 4;
-const GATE_HANGOVER_MS = 300;
+// Раньше было жёстко зашито 300 мс — теперь регулируется ползунком в настройках
+// (задержка перед тем, как гейт снова закроется/перестанет передавать после того,
+// как вы замолчали; ползунок называется в интерфейсе "Задержка закрытия гейта").
+let gateHangoverMs = 300;
 
 // ---------- Настройки звука: сохранение между заходами ----------
 const AUDIO_SETTINGS_KEY = 'mute:audioSettings';
@@ -154,6 +159,7 @@ function saveRemoteVolume(username, percent) {
     const saved = loadAudioSettings();
     if (typeof saved.gateThreshold === 'number') gateThreshold = saved.gateThreshold;
     if (typeof saved.gateEnabled === 'boolean') gateEnabled = saved.gateEnabled;
+    if (typeof saved.gateHangoverMs === 'number') gateHangoverMs = saved.gateHangoverMs;
     if (typeof saved.noiseProfile === 'string') noiseProfile = saved.noiseProfile;
     if (typeof saved.micVolume === 'number') micVolume = saved.micVolume;
     if (typeof saved.noiseSuppression === 'boolean' && noiseCheck) noiseCheck.checked = saved.noiseSuppression;
@@ -161,6 +167,8 @@ function saveRemoteVolume(username, percent) {
     if (typeof saved.agc === 'boolean' && agcCheck) agcCheck.checked = saved.agc;
 
     if (gateEnabledCheck) gateEnabledCheck.checked = gateEnabled;
+    if (gateHangoverSlider) gateHangoverSlider.value = gateHangoverMs;
+    if (gateHangoverValueDisplay) gateHangoverValueDisplay.innerText = `${gateHangoverMs} мс`;
     if (thresholdSlider) thresholdSlider.value = gateThreshold;
     if (thresholdValueDisplay) thresholdValueDisplay.innerText = `${gateThreshold} дБ`;
     if (thresholdIndicator) thresholdIndicator.style.left = `${((gateThreshold + 70) / 60) * 100}%`;
@@ -796,7 +804,7 @@ function processAudioLevel() {
                 gateOpen = false;
                 gateCloseTimer = null;
                 applyGateToMicTrack();
-            }, GATE_HANGOVER_MS);
+            }, gateHangoverMs);
         }
         applyGateToMicTrack();
 
@@ -970,6 +978,14 @@ connectRoomBtn.addEventListener('click', () => {
 
         socket.emit('join room', { room: selectedRoom, peerId: myPeerId });
 
+        // На всякий случай "будим" аудиоконтекст: браузер мог перевести его в
+        // состояние suspended (например, вкладка долго была в фоне) — без этого
+        // ни исходящий звук, ни входящий от собеседников может не пойти, хотя
+        // внешне всё выглядит подключённым.
+        if (audioContext && audioContext.state === 'suspended') {
+            audioContext.resume().catch(() => {});
+        }
+
         // Звук собственного входа в комнату
         playJoinSound();
 
@@ -1039,7 +1055,21 @@ socket.on('room users', (usersInRoom) => {
         updateVoiceUsersList();
 
         for (let peerId in usersInRoom) {
-            if (peerId !== myPeerId && !activeCalls[peerId]) {
+            // ВАЖНО: раньше звонок инициировали ОБЕ стороны одновременно (каждый, у кого
+            // ещё нет activeCalls[peerId], звонит другому) — при входе/повторном входе в
+            // канал это почти всегда означало ДВЕ параллельные PeerJS-связи между одной
+            // и той же парой людей. У обеих сторон они регистрировались под одним и тем
+            // же ключом (peerId) в activeCalls, а звуковой <audio>-элемент и узлы
+            // анализатора/громкости тоже общие по id. Когда позже закрывалась "лишняя"
+            // (более старая/более медленная) из двух связей, её обработчик 'close' удалял
+            // этот общий <audio>-элемент и узлы — даже если ВТОРАЯ, актуальная связь
+            // всё ещё была жива и по ней продолжали идти данные. Из-за этого после
+            // выхода и повторного захода в канал человека переставали слышать без
+            // видимой ошибки. Теперь звонок инициирует только одна сторона —
+            // детерминированно, по сравнению peerId — а вторая всегда просто отвечает
+            // через myPeer.on('call'), так что на каждую пару гарантированно ровно одна
+            // связь.
+            if (peerId !== myPeerId && !activeCalls[peerId] && myPeerId < peerId) {
                 const call = myPeer.call(peerId, localMediaStream, {
                     metadata: { username: currentUser.username, avatar: currentUser.avatar }
                 });
@@ -1159,7 +1189,14 @@ function renderRemoteVideoState(peerId) {
 
 socket.on('user connected', ({ username, avatar, peerId }) => {
     const isNewcomer = !connectedUsers[peerId];
-    connectedUsers[peerId] = { username, avatar };
+    // Раньше здесь запись полностью перезаписывалась заново собранным объектом
+    // без micMuted/deafened — а событие 'room users' (с уже верным статусом мута)
+    // приходит непосредственно ПЕРЕД этим событием, и его тут же затирало.
+    // Из-за этого человек, зашедший в канал уже в муте, первое время (а то и
+    // насовсем, если никто больше не переключал мьют) отображался как НЕ в муте.
+    // Теперь просто дополняем существующую запись, а не заменяем её целиком.
+    const prev = connectedUsers[peerId] || {};
+    connectedUsers[peerId] = { ...prev, username, avatar };
     updateVoiceUsersList();
 
     // Звук входа — только если мы сами сейчас в голосовом канале и зашёл не мы сами
@@ -1640,6 +1677,14 @@ thresholdSlider.addEventListener('input', (e) => {
     thresholdIndicator.style.left = `${posPercent}%`;
     saveAudioSettings({ gateThreshold });
 });
+
+if (gateHangoverSlider) {
+    gateHangoverSlider.addEventListener('input', (e) => {
+        gateHangoverMs = parseInt(e.target.value, 10);
+        if (gateHangoverValueDisplay) gateHangoverValueDisplay.innerText = `${gateHangoverMs} мс`;
+        saveAudioSettings({ gateHangoverMs });
+    });
+}
 
 gateEnabledCheck.addEventListener('change', (e) => {
     gateEnabled = e.target.checked;
