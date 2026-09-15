@@ -895,6 +895,12 @@
             <div class="control-group">
                 <label>Порог срабатывания (Gate): <span id="threshold-value">-45 дБ</span></label>
                 <input type="range" id="threshold-slider" min="-70" max="-10" step="1" value="-45">
+                <span class="profile-hint">Микрофон отключается, когда громкость ниже этого уровня — так фон и шумы не летят в чат</span>
+            </div>
+            <div class="control-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="gate-enabled-check" checked> Автоматическая активация микрофона (Voice Gate)
+                </label>
             </div>
             <div class="control-group">
                 <label class="checkbox-label">

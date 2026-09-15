@@ -21,6 +21,7 @@ const thresholdSlider = document.getElementById('threshold-slider');
 const thresholdValueDisplay = document.getElementById('threshold-value');
 const thresholdIndicator = document.getElementById('threshold-indicator');
 
+const gateEnabledCheck = document.getElementById('gate-enabled-check');
 const noiseCheck = document.getElementById('noise-suppression-check');
 const echoCheck = document.getElementById('echo-cancellation-check');
 const agcCheck = document.getElementById('agc-check');
@@ -67,6 +68,17 @@ let remoteGainNodes = {};
 let audioContext = null;
 let analyserNode = null;
 let gateThreshold = -45;
+
+// ---------- Voice Gate: реально отключает передачу микрофона при тишине/фоновом шуме ----------
+// Лёгкая реализация на AnalyserNode (без тяжёлых ML-моделей шумоподавления):
+// - openThreshold — громкость, выше которой канал точно открыт;
+// - closeThreshold — чуть ниже (гистерезис), чтобы гейт не "дребезжал" на границе порога;
+// - hangover — короткая задержка перед закрытием, чтобы не обрезать хвосты слов.
+let gateEnabled = true;
+let gateOpen = true;
+let gateCloseTimer = null;
+const GATE_HYSTERESIS_DB = 4;
+const GATE_HANGOVER_MS = 300;
 
 // ---------- Звуковые уведомления (сообщение / вход / выход из комнаты) ----------
 // Все три звука сделаны из одного и того же исходного колокольчика (mp3, который
@@ -429,6 +441,18 @@ function setupAudioAnalyzer(stream) {
     }
 }
 
+// Включает/выключает реальную передачу микрофона (не UI-индикатор), учитывая
+// ручной мьют/дефен и состояние Voice Gate. Не трогает трек демонстрации звука.
+function applyGateToMicTrack() {
+    if (!localMediaStream) return;
+    const shouldTransmit = !isMuted && !isDeafened && (!gateEnabled || gateOpen);
+    localMediaStream.getAudioTracks().forEach(track => {
+        if (track !== currentDemoAudioTrack) {
+            track.enabled = shouldTransmit;
+        }
+    });
+}
+
 function processAudioLevel() {
     if (!analyserNode) return;
     const dataArray = new Uint8Array(analyserNode.frequencyBinCount);
@@ -443,13 +467,27 @@ function processAudioLevel() {
         let meterPercent = Math.max(0, Math.min(100, ((volumeDb + 70) / 60) * 100));
         micMeter.style.width = `${meterPercent}%`;
 
+        // Гистерезис + hangover: открываем канал сразу при превышении порога,
+        // закрываем только после короткой задержки ниже порога — так не режет слова.
+        if (volumeDb > gateThreshold) {
+            gateOpen = true;
+            if (gateCloseTimer) {
+                clearTimeout(gateCloseTimer);
+                gateCloseTimer = null;
+            }
+        } else if (volumeDb < gateThreshold - GATE_HYSTERESIS_DB && gateOpen && !gateCloseTimer) {
+            gateCloseTimer = setTimeout(() => {
+                gateOpen = false;
+                gateCloseTimer = null;
+                applyGateToMicTrack();
+            }, GATE_HANGOVER_MS);
+        }
+        applyGateToMicTrack();
+
         const myAvatarElem = document.getElementById(`avatar-${myPeerId}`);
         if (myAvatarElem) {
-            if (volumeDb > gateThreshold && !isMuted && !isDeafened) {
-                myAvatarElem.classList.add('speaking');
-            } else {
-                myAvatarElem.classList.remove('speaking');
-            }
+            const isSpeaking = !isMuted && !isDeafened && (!gateEnabled || gateOpen);
+            myAvatarElem.classList.toggle('speaking', isSpeaking);
         }
         requestAnimationFrame(check);
     }
@@ -1086,11 +1124,7 @@ function broadcastMuteState() {
 muteBtn.addEventListener('click', () => {
     if (isDeafened) return;
     isMuted = !isMuted;
-    if (localMediaStream) {
-        localMediaStream.getAudioTracks().forEach(t => {
-            if (t !== currentDemoAudioTrack) t.enabled = !isMuted;
-        });
-    }
+    applyGateToMicTrack();
     muteBtn.classList.toggle('active', isMuted);
     playMuteToggleTone(isMuted);
     broadcastMuteState();
@@ -1098,12 +1132,7 @@ muteBtn.addEventListener('click', () => {
 
 deafenBtn.addEventListener('click', () => {
     isDeafened = !isDeafened;
-    
-    if (localMediaStream) {
-        localMediaStream.getAudioTracks().forEach(t => {
-            if (t !== currentDemoAudioTrack) t.enabled = !isDeafened;
-        });
-    }
+    applyGateToMicTrack();
 
     refreshDemoAudioGains();
 
@@ -1143,6 +1172,20 @@ thresholdSlider.addEventListener('input', (e) => {
     thresholdValueDisplay.innerText = `${gateThreshold} дБ`;
     let posPercent = ((gateThreshold + 70) / 60) * 100;
     thresholdIndicator.style.left = `${posPercent}%`;
+});
+
+gateEnabledCheck.addEventListener('change', (e) => {
+    gateEnabled = e.target.checked;
+    if (!gateEnabled) {
+        // Гейт выключен — считаем канал всегда "открытым" по громкости,
+        // передача теперь зависит только от ручного мьюта/дефена.
+        if (gateCloseTimer) {
+            clearTimeout(gateCloseTimer);
+            gateCloseTimer = null;
+        }
+        gateOpen = true;
+    }
+    applyGateToMicTrack();
 });
 
 function escapeHtml(str) {
