@@ -677,6 +677,14 @@ function setupAudioAnalyzer(stream) {
     if (!audioContext) {
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
     }
+    // AudioContext может создаться в состоянии 'suspended' (политики автозапуска
+    // браузера/Electron) — тогда analyserNode не получает свежие данные, и
+    // Voice Gate выглядит "мёртвым": уровень и порог не реагируют вообще ни на
+    // что. Раньше resume() вызывался только при включении самопрослушивания —
+    // теперь будим контекст сразу же, при каждой попытке его использовать.
+    if (audioContext.state === 'suspended') {
+        audioContext.resume().catch((e) => console.warn('[AudioContext] resume() не удался:', e));
+    }
     teardownAudioGraph();
     try {
         sourceNode = audioContext.createMediaStreamSource(stream);
@@ -758,6 +766,15 @@ function processAudioLevel() {
 
         let meterPercent = Math.max(0, Math.min(100, ((volumeDb + 70) / 60) * 100));
         micMeter.style.width = `${meterPercent}%`;
+
+        // Наглядный статус прямо в интерфейсе — чтобы проверить работу Voice Gate
+        // не открывая консоль разработчика.
+        const gateDebugStatus = document.getElementById('gate-debug-status');
+        if (gateDebugStatus) {
+            const ctxState = audioContext ? audioContext.state : 'нет контекста';
+            const gateState = !gateEnabled ? 'выключен' : (gateOpen ? 'открыт' : 'закрыт');
+            gateDebugStatus.innerText = `Уровень: ${volumeDb.toFixed(1)} дБ · Гейт: ${gateState} · Аудио-контекст: ${ctxState}`;
+        }
 
         // Гистерезис + hangover: открываем канал сразу при превышении порога,
         // закрываем только после короткой задержки ниже порога — так не режет слова.
@@ -1487,6 +1504,16 @@ window.toggleFullscreen = function(btn) {
         });
     }
 };
+
+// Подстраховка от повторного 'suspended' у AudioContext (браузер/Electron может
+// приостановить его снова, например при сворачивании окна) — на любой клик
+// пробуем разбудить, иначе Voice Gate и индикатор уровня молча перестанут
+// реагировать на звук без какой-либо видимой ошибки.
+document.addEventListener('click', () => {
+    if (audioContext && audioContext.state === 'suspended') {
+        audioContext.resume().catch(() => {});
+    }
+});
 
 document.addEventListener('fullscreenchange', () => {
     refreshDemoAudioGains();
