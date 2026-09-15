@@ -1,0 +1,929 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Голосовой чат</title>
+    <style>
+        :root {
+            --bg-app: #0f1117;
+            --bg-raised: #14171f;
+            --bg-card: #181b22;
+            --bg-input: #101217;
+            --border: #232733;
+            --border-soft: #1c2029;
+            --text: #f3f4f6;
+            --text-muted: #9ca3af;
+            --text-faint: #6b7280;
+            --accent: #6366f1;
+            --accent-hover: #4f46e5;
+            --accent-soft: rgba(99, 102, 241, 0.15);
+            --danger: #ef4444;
+            --danger-hover: #dc2626;
+            --success: #22c55e;
+            --radius-sm: 8px;
+            --radius-md: 12px;
+            --radius-lg: 18px;
+            --shadow-card: 0 20px 45px rgba(0,0,0,0.45);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-app);
+            color: var(--text);
+            height: 100vh;
+            display: flex;
+            overflow: hidden;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(6px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes pulseGlow {
+            0% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.6); }
+            70% { box-shadow: 0 0 0 10px rgba(34, 197, 94, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+        }
+
+        .fade-in {
+            animation: fadeIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+
+        #login-container {
+            position: fixed;
+            inset: 0;
+            background:
+                radial-gradient(circle at 15% 15%, rgba(99,102,241,0.12), transparent 40%),
+                radial-gradient(circle at 85% 85%, rgba(99,102,241,0.08), transparent 40%),
+                var(--bg-app);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+
+        .login-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            padding: 40px;
+            border-radius: var(--radius-lg);
+            width: 400px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            box-shadow: var(--shadow-card);
+        }
+
+        .login-brand {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: var(--accent);
+        }
+
+        .login-card h2 {
+            font-size: 20px;
+            text-align: center;
+            font-weight: 600;
+        }
+
+        .login-card p.subtitle {
+            text-align: center;
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-top: -12px;
+        }
+
+        .input-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .input-group label {
+            font-size: 12px;
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+        .login-card input {
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 12px;
+            color: #fff;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .login-card input:focus {
+            border-color: var(--accent);
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: var(--radius-sm);
+            padding: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s, transform 0.1s;
+        }
+        .btn-primary:hover { background: var(--accent-hover); }
+        .btn-primary:active { transform: scale(0.98); }
+        .btn-primary:disabled {
+            background: var(--border);
+            color: var(--text-faint);
+            cursor: not-allowed;
+            transform: none;
+        }
+        .btn-danger { background: var(--danger) !important; }
+        .btn-danger:hover { background: var(--danger-hover) !important; }
+
+        .btn-sm {
+            padding: 8px 16px;
+            font-size: 13px;
+        }
+
+        .btn-secondary {
+            background: #1f2430;
+            color: var(--text);
+            border: none;
+            border-radius: var(--radius-sm);
+            padding: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s, transform 0.1s;
+        }
+        .btn-secondary:hover { background: #2b3142; }
+        .btn-secondary:active { transform: scale(0.98); }
+
+        .btn-google {
+            background: #fff;
+            color: #111;
+            border: none;
+            border-radius: 8px;
+            padding: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            transition: background 0.2s;
+        }
+        .btn-google:hover { background: #f3f4f6; }
+
+        #app-container {
+            display: none;
+            width: 100vw;
+            height: 100vh;
+            flex-direction: row;
+        }
+
+        .servers-rail {
+            width: 72px;
+            background: #0b0d12;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding-top: 16px;
+            gap: 12px;
+        }
+
+        .server-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: var(--bg-card);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-weight: bold;
+            cursor: pointer;
+            transition: 0.2s;
+            border: 2px solid transparent;
+            font-size: 14px;
+            color: var(--text-muted);
+        }
+        .server-icon:hover, .server-icon.active {
+            border-radius: 16px;
+            background: var(--accent);
+            color: #fff;
+        }
+
+        .sidebar {
+            width: 240px;
+            background: var(--bg-raised);
+            display: flex;
+            flex-direction: column;
+            padding: 16px;
+            gap: 20px;
+        }
+
+        .sidebar-section h3 {
+            font-size: 11px;
+            text-transform: uppercase;
+            color: var(--text-faint);
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+
+        .sidebar-list {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .sidebar-item {
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 14px;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .sidebar-item svg { flex-shrink: 0; }
+
+        .voice-users-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            padding-left: 8px;
+            margin-top: 6px;
+        }
+
+        .voice-user-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 13px;
+        }
+
+        .user-avatar {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            object-fit: cover;
+            background: #374151;
+            border: 2px solid transparent;
+            transition: border-color 0.2s;
+        }
+        .user-avatar.speaking {
+            border-color: var(--success) !important;
+            animation: pulseGlow 1.5s infinite;
+        }
+
+        .user-avatar-wrap {
+            position: relative;
+            display: inline-flex;
+            flex-shrink: 0;
+        }
+
+        .status-badge {
+            display: none;
+            position: absolute;
+            bottom: -2px;
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: var(--danger);
+            border: 2px solid var(--bg-raised);
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+        }
+        .status-badge.visible { display: flex; }
+        .status-badge svg { display: block; }
+
+        /* Значок мьюта микрофона — справа снизу */
+        .mic-mute-badge { right: -2px; }
+        /* Значок дефена (выключенных наушников) — левее, рядом с микрофоном */
+        .deafen-badge { right: 12px; }
+
+        .workspace {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: var(--bg-app);
+        }
+
+        .top-bar {
+            height: 60px;
+            border-bottom: 1px solid var(--border-soft);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 24px;
+        }
+
+        .channel-action-panel {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: row;
+            overflow: hidden;
+        }
+
+        .call-area {
+            flex: 1;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #remote-videos {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 16px;
+            padding: 16px;
+            align-content: start;
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        #remote-videos:empty::after {
+            content: 'Здесь появятся видео и демонстрации участников звонка';
+            color: var(--text-faint);
+            font-size: 13px;
+            padding: 16px;
+        }
+
+        .video-wrapper {
+            background: var(--bg-raised);
+            border: 1px solid var(--border-soft);
+            border-radius: var(--radius-md);
+            overflow: hidden;
+            position: relative;
+            width: 320px;
+            aspect-ratio: 16 / 9;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            cursor: pointer;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.25);
+        }
+
+        .video-wrapper video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        .video-wrapper span {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.7);
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-size: 12px;
+            z-index: 2;
+        }
+
+        .fullscreen-btn {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(0,0,0,0.7);
+            border: none;
+            color: #fff;
+            padding: 6px 10px;
+            border-radius: 6px;
+            font-size: 12px;
+            cursor: pointer;
+            z-index: 2;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+        .video-wrapper:hover .fullscreen-btn {
+            opacity: 1;
+        }
+
+        #screen-btn:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
+
+        .chat-panel {
+            width: 340px;
+            flex-shrink: 0;
+            background: var(--bg-raised);
+            border-left: 1px solid var(--border-soft);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        #messages {
+            flex: 1;
+            padding: 16px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            font-size: 14px;
+        }
+
+        .chat-input-area {
+            padding: 16px;
+            border-top: 1px solid var(--border-soft);
+            display: flex;
+            gap: 8px;
+        }
+
+        .chat-input-area input {
+            flex: 1;
+            width: 100%;
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            padding: 10px;
+            border-radius: var(--radius-sm);
+            color: #fff;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        .chat-input-area input:focus {
+            border-color: var(--accent);
+        }
+
+        .attach-btn {
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            color: #fff;
+            border-radius: var(--radius-sm);
+            padding: 0 12px;
+            font-size: 16px;
+            cursor: pointer;
+            flex-shrink: 0;
+            transition: background 0.15s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .attach-btn:hover { background: #1a1e28; }
+        .attach-btn:disabled {
+            opacity: 0.5;
+            cursor: default;
+        }
+
+        .chat-message {
+            word-break: break-word;
+        }
+
+        .chat-image-wrap {
+            margin-top: 6px;
+        }
+
+        .chat-image {
+            max-width: 100%;
+            max-height: 220px;
+            border-radius: var(--radius-sm);
+            cursor: zoom-in;
+            display: block;
+            transition: opacity 0.15s;
+        }
+        .chat-image:hover { opacity: 0.9; }
+
+        /* Полноэкранный просмотр фото из чата */
+        #image-lightbox {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.92);
+            z-index: 3000;
+            justify-content: center;
+            align-items: center;
+            cursor: zoom-out;
+        }
+        #image-lightbox img {
+            max-width: 92vw;
+            max-height: 92vh;
+            border-radius: 8px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+        }
+        #image-lightbox .lightbox-close {
+            position: absolute;
+            top: 20px;
+            right: 28px;
+            color: #fff;
+            background: none;
+            border: none;
+            cursor: pointer;
+            opacity: 0.8;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #image-lightbox .lightbox-close:hover { opacity: 1; }
+
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.7);
+            backdrop-filter: blur(4px);
+            justify-content: center;
+            align-items: center;
+            z-index: 2000;
+        }
+
+        .modal-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            padding: 30px;
+            border-radius: var(--radius-lg);
+            width: 440px;
+            max-height: 86vh;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            box-shadow: var(--shadow-card);
+        }
+
+        .modal-card h3 { font-size: 18px; }
+
+        .modal-section-divider {
+            border: none;
+            border-top: 1px solid var(--border-soft);
+            margin: 4px 0;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .control-group label { font-size: 13px; color: var(--text-muted); }
+
+        .control-group input[type="text"] {
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            color: #fff;
+            padding: 10px;
+            border-radius: var(--radius-sm);
+            outline: none;
+            font-size: 14px;
+            transition: border-color 0.2s;
+        }
+        .control-group input[type="text"]:focus { border-color: var(--accent); }
+
+        select, input[type="range"] {
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            color: #fff;
+            padding: 10px;
+            border-radius: 6px;
+            outline: none;
+        }
+
+        .checkbox-label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            color: #d1d5db;
+            cursor: pointer;
+        }
+
+        .meter-bar {
+            height: 6px;
+            background: var(--bg-input);
+            border-radius: 3px;
+            overflow: hidden;
+            position: relative;
+        }
+        #mic-meter {
+            height: 100%;
+            width: 0%;
+            background: var(--success);
+            transition: width 0.05s ease;
+        }
+        #threshold-indicator {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: var(--danger);
+            left: 50%;
+        }
+
+        /* Профиль в настройках: аватар + ник */
+        .profile-row {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .profile-avatar-preview {
+            width: 64px;
+            height: 64px;
+            border-radius: 50%;
+            object-fit: cover;
+            background: #374151;
+            border: 2px solid var(--border);
+            flex-shrink: 0;
+        }
+
+        .profile-avatar-controls {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .avatar-source-row {
+            display: flex;
+            gap: 8px;
+        }
+        .avatar-source-row input[type="text"] {
+            flex: 1;
+        }
+
+        .btn-file-label {
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            color: var(--text);
+            border-radius: var(--radius-sm);
+            padding: 10px 14px;
+            font-size: 13px;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: background 0.15s;
+        }
+        .btn-file-label:hover { background: #1a1e28; }
+
+        .profile-hint {
+            font-size: 11px;
+            color: var(--text-faint);
+        }
+
+        .bottom-actions {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-top: auto;
+            padding-top: 16px;
+            border-top: 1px solid var(--border-soft);
+        }
+
+        .action-row {
+            display: flex;
+            gap: 6px;
+        }
+
+        .action-btn {
+            flex: 1;
+            padding: 8px;
+            background: #1f2430;
+            border: none;
+            border-radius: 6px;
+            color: #fff;
+            font-size: 13px;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+        .action-btn:hover { background: #2b3142; }
+        .action-btn.active { background: var(--danger); }
+
+        .icon-btn {
+            flex: 1;
+            height: 42px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #1f2430;
+            border: none;
+            border-radius: var(--radius-sm);
+            color: var(--text-muted);
+            font-size: 17px;
+            cursor: pointer;
+            transition: background 0.15s, color 0.15s;
+        }
+        .icon-btn:hover { background: #2b3142; color: #fff; }
+        .icon-btn svg { display: block; }
+        .icon-btn .icon-off { display: none; }
+        .icon-btn.active { background: var(--danger); color: #fff; }
+        .icon-btn.active .icon-on { display: none; }
+        .icon-btn.active .icon-off { display: block; }
+        .icon-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    </style>
+</head>
+<body>
+
+    <div id="login-container">
+        <div class="login-card fade-in">
+            <div class="login-brand">
+                <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="9" y="2" width="6" height="12" rx="3"></rect>
+                    <path d="M5 10a7 7 0 0 0 14 0"></path>
+                    <line x1="12" y1="19" x2="12" y2="22"></line>
+                    <line x1="8" y1="22" x2="16" y2="22"></line>
+                </svg>
+            </div>
+            <h2>Регистрация профиля</h2>
+            <p class="subtitle">Голос, видео и демонстрация экрана — в одном месте</p>
+            <div class="input-group">
+                <label>Ваше имя</label>
+                <input type="text" id="username" placeholder="Введите никнейм">
+            </div>
+            <div class="input-group">
+                <label>Ссылка на аватарку (необязательно)</label>
+                <input type="text" id="avatar-input" placeholder="https://example.com/avatar.png">
+            </div>
+            <button class="btn-primary" id="register-btn">Войти в чат</button>
+            <button class="btn-google" id="google-login-btn">
+                <svg width="18" height="18" viewBox="0 0 24 24"><path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.66-5.17 3.66-9.17z"/><path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.13 0-5.78-2.11-6.73-4.96H1.18v3.14C3.15 21.32 7.22 24 12 24z"/><path fill="#FBBC05" d="M5.27 14.24c-.25-.72-.38-1.49-.38-2.24s.13-1.52.38-2.24V6.62H1.18C.43 8.13 0 9.83 0 11.6s.43 3.47 1.18 4.98l4.09-2.34z"/><path fill="#EA4335" d="M12 4.75c1.76 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.22 0 3.15 2.68 1.18 6.62l4.09 3.14c.95-2.85 3.6-4.96 6.73-4.96z"/></svg>
+                Войти через Google
+            </button>
+        </div>
+    </div>
+
+    <div id="app-container" class="fade-in">
+        <div class="servers-rail" id="servers-rail">
+            <div class="server-icon room-btn" data-room="Комната 1" title="Комната 1">1</div>
+            <div class="server-icon room-btn" data-room="Комната 2" title="Комната 2">2</div>
+            <div class="server-icon room-btn" data-room="Комната 3" title="Комната 3">3</div>
+            <div class="server-icon room-btn" data-room="Комната 4" title="Комната 4">4</div>
+            <div class="server-icon room-btn" data-room="Комната 5" title="Комната 5">5</div>
+        </div>
+
+        <div class="sidebar">
+            <div class="sidebar-section">
+                <h3>Участники канала</h3>
+                <div class="sidebar-list">
+                    <div class="sidebar-item" id="room-name-display">
+                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>
+                        <span>Вы не в ГС</span>
+                    </div>
+                    <div class="voice-users-list" id="voice-users-container"></div>
+                </div>
+            </div>
+            
+            <div class="bottom-actions">
+                <div class="action-row">
+                    <button class="icon-btn" id="mute-btn" title="Микрофон (Мьют)">
+                        <svg class="icon-on" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="9" y="2" width="6" height="12" rx="3"></rect>
+                            <path d="M5 10a7 7 0 0 0 14 0"></path>
+                            <line x1="12" y1="19" x2="12" y2="22"></line>
+                            <line x1="8" y1="22" x2="16" y2="22"></line>
+                        </svg>
+                        <svg class="icon-off" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="9" y="2" width="6" height="12" rx="3"></rect>
+                            <path d="M5 10a7 7 0 0 0 14 0"></path>
+                            <line x1="12" y1="19" x2="12" y2="22"></line>
+                            <line x1="8" y1="22" x2="16" y2="22"></line>
+                            <line x1="3" y1="3" x2="21" y2="21"></line>
+                        </svg>
+                    </button>
+                    <button class="icon-btn" id="deafen-btn" title="Заглушить звук всех собеседников">
+                        <svg class="icon-on" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M4 14v-2a8 8 0 0 1 16 0v2"></path>
+                            <rect x="2" y="14" width="5" height="7" rx="2"></rect>
+                            <rect x="17" y="14" width="5" height="7" rx="2"></rect>
+                        </svg>
+                        <svg class="icon-off" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M4 14v-2a8 8 0 0 1 16 0v2"></path>
+                            <rect x="2" y="14" width="5" height="7" rx="2"></rect>
+                            <rect x="17" y="14" width="5" height="7" rx="2"></rect>
+                            <line x1="3" y1="3" x2="21" y2="21"></line>
+                        </svg>
+                    </button>
+                    <button class="icon-btn" id="settings-btn" title="Настройки">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="3"></circle>
+                            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div class="workspace">
+            <div class="top-bar">
+                <span id="room-title">Выберите комнату слева (от 1 до 5)</span>
+                <div class="channel-action-panel">
+                    <button class="btn-primary" id="connect-room-btn" style="padding: 8px 16px; font-size: 13px; display: none;">Подключиться</button>
+                    <button class="btn-primary" id="screen-btn" style="padding: 8px 16px; font-size: 13px;" disabled title="Сначала подключитесь к голосовому каналу">Демонстрация / Вебка</button>
+                </div>
+            </div>
+
+            <div class="main-content">
+                <div class="call-area">
+                    <div id="remote-videos"></div>
+                </div>
+
+                <div class="chat-panel">
+                    <div id="messages"></div>
+                    <div class="chat-input-area">
+                        <input type="text" id="message-input" placeholder="Написать в общий чат...">
+                        <button class="attach-btn" id="attach-image-btn" type="button" title="Прикрепить фото">
+                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+                            </svg>
+                        </button>
+                        <input type="file" id="attach-image-input" accept="image/*" style="display:none">
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Модалка выбора типа трансляции (Экран или Вебкамера) -->
+    <div id="stream-select-modal" class="modal-overlay">
+        <div class="modal-card fade-in">
+            <h3>Выберите источник трансляции</h3>
+            <button class="btn-primary" id="share-screen-choice">Демонстрация экрана</button>
+            <button class="btn-primary" id="share-cam-choice">Веб-камера</button>
+            <button class="action-btn" id="close-stream-modal" style="background:#262a35; padding: 10px;">Отмена</button>
+        </div>
+    </div>
+
+    <div id="settings-modal" class="modal-overlay">
+        <div class="modal-card fade-in">
+            <h3>Профиль</h3>
+            <div class="profile-row">
+                <img id="profile-avatar-preview" class="profile-avatar-preview" src="" alt="Аватар">
+                <div class="profile-avatar-controls">
+                    <div class="avatar-source-row">
+                        <input type="text" id="profile-avatar-url" placeholder="Ссылка на аватарку">
+                        <label class="btn-file-label" for="profile-avatar-file">Файл…</label>
+                        <input type="file" id="profile-avatar-file" accept="image/*" style="display:none">
+                    </div>
+                    <span class="profile-hint">Можно вставить ссылку или загрузить файл — сработает то, что укажете последним</span>
+                </div>
+            </div>
+            <div class="control-group">
+                <label>Никнейм</label>
+                <input type="text" id="profile-username">
+            </div>
+            <button class="btn-primary" id="save-profile-btn">Сохранить профиль</button>
+            <button class="btn-secondary" id="logout-btn" style="font-size: 13px; padding: 8px;">Выйти из профиля</button>
+
+            <hr class="modal-section-divider">
+
+            <h3>Настройки звука</h3>
+            <div class="control-group">
+                <label>Микрофон</label>
+                <select id="mic-select"></select>
+            </div>
+            <div class="control-group">
+                <label>Чувствительность микрофона (Тест уровня)</label>
+                <div class="meter-bar">
+                    <div id="mic-meter"></div>
+                    <div id="threshold-indicator"></div>
+                </div>
+            </div>
+            <div class="control-group">
+                <label>Порог срабатывания (Gate): <span id="threshold-value">-45 дБ</span></label>
+                <input type="range" id="threshold-slider" min="-70" max="-10" step="1" value="-45">
+            </div>
+            <div class="control-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="noise-suppression-check" checked> Шумоподавление (Noise Suppression)
+                </label>
+                <label class="checkbox-label">
+                    <input type="checkbox" id="echo-cancellation-check" checked> Подавление эха (Echo Cancellation)
+                </label>
+                <label class="checkbox-label">
+                    <input type="checkbox" id="agc-check" checked> Автоматическая регулировка усиления (AGC)
+                </label>
+            </div>
+            <button class="btn-primary" id="close-settings" style="margin-top: 10px;">Закрыть</button>
+        </div>
+    </div>
+
+    <!-- Полноэкранный просмотр фото из чата -->
+    <div id="image-lightbox">
+        <button class="lightbox-close" id="lightbox-close" title="Закрыть">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+        </button>
+        <img id="lightbox-image" src="" alt="Фото">
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>
