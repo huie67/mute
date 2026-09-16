@@ -35,6 +35,7 @@ const noiseCheck = document.getElementById('noise-suppression-check');
 const echoCheck = document.getElementById('echo-cancellation-check');
 const agcCheck = document.getElementById('agc-check');
 const noiseProfileSelect = document.getElementById('noise-profile-select');
+const clickSuppressionCheck = document.getElementById('click-suppression-check');
 const micVolumeSlider = document.getElementById('mic-volume-slider');
 const micVolumeValueDisplay = document.getElementById('mic-volume-value');
 
@@ -76,6 +77,16 @@ let activeCalls = {};
 let connectedUsers = {}; 
 let remoteAnalysers = {}; 
 let remoteGainNodes = {}; 
+// Громкость звука демонстрации по каждому собеседнику (в процентах, 0-150).
+// Персистится в localStorage, чтобы настройка не сбрасывалась между заходами.
+let demoVolumes = {};
+try {
+    const savedDemoVolumes = JSON.parse(localStorage.getItem('demoVolumes') || '{}');
+    if (savedDemoVolumes && typeof savedDemoVolumes === 'object') demoVolumes = savedDemoVolumes;
+} catch (e) { /* ignore */ }
+function saveDemoVolumes() {
+    try { localStorage.setItem('demoVolumes', JSON.stringify(demoVolumes)); } catch (e) { /* ignore */ }
+}
 
 let audioContext = null;
 let analyserNode = null;
@@ -101,6 +112,7 @@ let destinationNode = null;
 let processedTrack = null;
 let noiseProfile = 'standard'; // 'off' | 'standard' | 'aggressive' | 'telephone'
 let micVolume = 1; // 0..2 (0%..200%), усиление своего микрофона перед отправкой
+let clickSuppressionEnabled = true; // подавление коротких резких щелчков (клавиатура, мышь, стук)
 
 // ---------- Voice Gate: реально отключает передачу микрофона при тишине/фоновом шуме ----------
 // Лёгкая реализация на AnalyserNode (без тяжёлых ML-моделей шумоподавления):
@@ -165,6 +177,8 @@ function saveRemoteVolume(username, percent) {
     if (typeof saved.noiseSuppression === 'boolean' && noiseCheck) noiseCheck.checked = saved.noiseSuppression;
     if (typeof saved.echoCancellation === 'boolean' && echoCheck) echoCheck.checked = saved.echoCancellation;
     if (typeof saved.agc === 'boolean' && agcCheck) agcCheck.checked = saved.agc;
+    if (typeof saved.clickSuppression === 'boolean') clickSuppressionEnabled = saved.clickSuppression;
+    if (clickSuppressionCheck) clickSuppressionCheck.checked = clickSuppressionEnabled;
 
     if (gateEnabledCheck) gateEnabledCheck.checked = gateEnabled;
     if (gateHangoverSlider) gateHangoverSlider.value = gateHangoverMs;
@@ -629,8 +643,68 @@ async function initMediaStream(deviceId = null) {
 //               помещения (вентилятор, кондиционер, стройка за окном);
 // - telephone:  узкая "телефонная" полоса 300–3400 Гц — максимально режет и бас,
 //               и шипение, ценой лёгкой потери насыщенности голоса.
+// Отдельный узел подавления коротких резких щелчков (клавиатура, клик мыши, стук
+// по столу) — в отличие от статичных фильтров/компрессора выше, которые режут
+// диапазон частот целиком и одинаково давят и голос, и шум, этот узел следит за
+// СООТНОШЕНИЕМ быстрой (~ мс) и медленной (~ сотни мс) огибающей громкости сигнала:
+// - речь нарастает и держится десятки-сотни миллисекунд — быстрая и медленная
+//   огибающие успевают "сойтись", соотношение остаётся низким — сигнал не трогаем;
+// - клик клавиатуры/щелчок — это резкий всплеск на несколько миллисекунд, который
+//   быстрая огибающая ловит мгновенно, а медленная почти не успевает измениться —
+//   соотношение резко подскакивает, и на это время сигнал приглушается.
+// Реализовано на ScriptProcessorNode (не AudioWorklet) специально для простоты
+// подключения без отдельного файла-модуля и без асинхронной загрузки.
+function createClickSuppressorNode(ctx) {
+    const bufferSize = 512;
+    const node = ctx.createScriptProcessor(bufferSize, 1, 1);
+
+    let fastEnv = 0;   // огибающая с быстрым откликом — ловит сами щелчки
+    let slowEnv = 0;   // огибающая с медленным откликом — "обычный" уровень сигнала
+    let attenuation = 1; // текущий коэффициент приглушения (сглаживается, чтобы не давать свои щелчки)
+
+    const fastAttack = 0.6;   // как быстро fastEnv реагирует на нарастание
+    const fastRelease = 0.55; // и на спад
+    const slowAttack = 0.02;
+    const slowRelease = 0.01;
+    const RATIO_THRESHOLD = 2.6;   // во сколько раз fast должен превысить slow, чтобы посчитать это щелчком
+    const FLOOR = 0.006;           // не реагируем на совсем тихий шум/тишину
+    const MIN_ATTENUATION = 0.12;  // насколько давим сигнал на пике щелчка (не в ноль — чтобы не звучало как выпадение)
+    const SMOOTH_UP = 0.35;    // скорость приглушения (быстро — чтобы успеть погасить щелчок)
+    const SMOOTH_DOWN = 0.06;  // скорость возврата к нормальной громкости (медленнее — без резких скачков)
+
+    node.onaudioprocess = (e) => {
+        const input = e.inputBuffer.getChannelData(0);
+        const output = e.outputBuffer.getChannelData(0);
+
+        if (!clickSuppressionEnabled) {
+            output.set(input);
+            return;
+        }
+
+        for (let i = 0; i < input.length; i++) {
+            const sample = input[i];
+            const abs = Math.abs(sample);
+
+            fastEnv += (abs > fastEnv ? fastAttack : fastRelease) * (abs - fastEnv);
+            slowEnv += (abs > slowEnv ? slowAttack : slowRelease) * (abs - slowEnv);
+
+            const isClick = fastEnv > FLOOR && slowEnv > 0 && (fastEnv / (slowEnv + 1e-6)) > RATIO_THRESHOLD;
+            const targetAttenuation = isClick ? MIN_ATTENUATION : 1;
+
+            attenuation += (targetAttenuation < attenuation ? SMOOTH_UP : SMOOTH_DOWN) * (targetAttenuation - attenuation);
+
+            output[i] = sample * attenuation;
+        }
+    };
+
+    return node;
+}
+
 function buildNoiseSuppressionChain(ctx, profile) {
     const nodes = [];
+    if (clickSuppressionEnabled) {
+        nodes.push(createClickSuppressorNode(ctx));
+    }
     if (profile === 'off') return nodes;
 
     const highpass = ctx.createBiquadFilter();
@@ -887,7 +961,8 @@ function setupRemoteDemoAudio(stream, peerId) {
 
         const source = audioContext.createMediaStreamSource(demoStream);
         const gainNode = audioContext.createGain();
-        gainNode.gain.value = 0; // по умолчанию тихо, пока не открыт фулскрин именно на этом видео
+        const initialVolume = demoVolumes[peerId] ?? 100;
+        gainNode.gain.value = isDeafened ? 0 : (initialVolume / 100);
         source.connect(gainNode);
         gainNode.connect(audioContext.destination);
 
@@ -905,14 +980,57 @@ function getFullscreenPeerId() {
     return el.id.slice('video-'.length);
 }
 
-// Включает звук демонстрации ТОЛЬКО у того участника, чьё видео сейчас в фулскрине,
-// у всех остальных — тишина. Вызывается при входе/выходе из фулскрина и при дефене.
+// Громкость звука демонстрации у каждого собеседника управляется ползунком
+// (см. setupDemoVolumeControl) и запоминается в demoVolumes — раньше звук
+// демки был слышен только в полноэкранном режиме, теперь он всегда играет
+// с той громкостью, которую выставил слушатель (по умолчанию 100%).
+// Дефен по-прежнему полностью глушит всё входящее аудио, включая демку.
 function refreshDemoAudioGains() {
-    const focusedPeerId = getFullscreenPeerId();
     Object.keys(remoteGainNodes).forEach(id => {
         if (!remoteGainNodes[id]) return;
-        const shouldPlay = !isDeafened && id === focusedPeerId;
-        remoteGainNodes[id].gain.value = shouldPlay ? 1 : 0;
+        const volumePercent = demoVolumes[id] ?? 100;
+        remoteGainNodes[id].gain.value = isDeafened ? 0 : (volumePercent / 100);
+    });
+}
+
+// Вешает обработчики на кнопку-иконку громкости и слайдер конкретного участника:
+// клик по иконке открывает/закрывает всплывающий ползунок, а перетаскивание
+// слайдера сразу меняет громкость его демонстрации через gain-узел (без влияния
+// на то, что слышат остальные, и без изменения громкости его микрофона).
+function setupDemoVolumeControl(peerId) {
+    const btn = document.getElementById(`demo-vol-btn-${peerId}`);
+    const popup = document.getElementById(`demo-vol-popup-${peerId}`);
+    const slider = document.getElementById(`demo-vol-slider-${peerId}`);
+    const valueLabel = document.getElementById(`demo-vol-value-${peerId}`);
+    if (!btn || !popup || !slider) return;
+
+    btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isOpen = popup.classList.toggle('show');
+        btn.classList.toggle('popup-open', isOpen);
+    });
+
+    slider.addEventListener('input', (e) => {
+        e.stopPropagation();
+        const percent = parseInt(e.target.value, 10);
+        demoVolumes[peerId] = percent;
+        if (valueLabel) valueLabel.innerText = `${percent}%`;
+        if (remoteGainNodes[peerId]) {
+            remoteGainNodes[peerId].gain.value = isDeafened ? 0 : (percent / 100);
+        }
+        saveDemoVolumes();
+    });
+
+    // Клик по слайдеру/попапу не должен закрывать его и не должен запускать
+    // фулскрин (клик по видео-обёртке используется под другие действия).
+    popup.addEventListener('click', (e) => e.stopPropagation());
+
+    // Закрываем попап при клике вне его.
+    document.addEventListener('click', (e) => {
+        if (!popup.contains(e.target) && e.target !== btn && !btn.contains(e.target)) {
+            popup.classList.remove('show');
+            btn.classList.remove('popup-open');
+        }
     });
 }
 
@@ -1169,9 +1287,20 @@ function renderRemoteVideoState(peerId) {
         wrap.innerHTML = `
             <span class="video-username" style="color:${getUserColor(userInfo.username)}">${userInfo.username}</span>
             <button class="fullscreen-btn" onclick="toggleFullscreen(this)">На весь экран</button>
+            <button class="demo-volume-btn" id="demo-vol-btn-${peerId}" title="Громкость демонстрации">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+                    <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+                </svg>
+            </button>
+            <div class="demo-volume-popup" id="demo-vol-popup-${peerId}">
+                <span>Громкость демки: <span id="demo-vol-value-${peerId}">${demoVolumes[peerId] ?? 100}%</span></span>
+                <input type="range" id="demo-vol-slider-${peerId}" min="0" max="150" step="5" value="${demoVolumes[peerId] ?? 100}">
+            </div>
             <video autoplay playsinline></video>
         `;
         remoteVideos.appendChild(wrap);
+        setupDemoVolumeControl(peerId);
     } else {
         const nameSpan = wrap.querySelector('.video-username');
         if (nameSpan) {
@@ -1654,6 +1783,16 @@ if (noiseProfileSelect) {
     noiseProfileSelect.addEventListener('change', (e) => {
         noiseProfile = e.target.value;
         saveAudioSettings({ noiseProfile });
+        initMediaStream(micSelect.value);
+    });
+}
+
+// Подавление кликов — отдельная ступень в цепочке обработки (createClickSuppressorNode),
+// поэтому тоже требует пересборки графа, как и смена профиля шумоподавления.
+if (clickSuppressionCheck) {
+    clickSuppressionCheck.addEventListener('change', () => {
+        clickSuppressionEnabled = clickSuppressionCheck.checked;
+        saveAudioSettings({ clickSuppression: clickSuppressionEnabled });
         initMediaStream(micSelect.value);
     });
 }

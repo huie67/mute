@@ -533,6 +533,59 @@
             opacity: 1;
         }
 
+        .demo-volume-btn {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.7);
+            border: none;
+            color: #fff;
+            width: 30px;
+            height: 30px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 6px;
+            cursor: pointer;
+            z-index: 3;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+        .video-wrapper:hover .demo-volume-btn,
+        .demo-volume-btn.popup-open {
+            opacity: 1;
+        }
+
+        .demo-volume-popup {
+            position: absolute;
+            top: 46px;
+            left: 10px;
+            background: rgba(15, 17, 23, 0.92);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 10px 12px;
+            z-index: 4;
+            display: none;
+            flex-direction: column;
+            gap: 6px;
+            width: 150px;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.35);
+        }
+        .demo-volume-popup.show {
+            display: flex;
+        }
+        .demo-volume-popup span {
+            position: static;
+            background: none;
+            padding: 0;
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+        .demo-volume-popup input[type="range"] {
+            width: 100%;
+            accent-color: var(--accent);
+        }
+
         #screen-btn:disabled {
             opacity: 0.45;
             cursor: not-allowed;
@@ -1070,6 +1123,12 @@
                     <option value="telephone">Телефонное (максимум подавления)</option>
                 </select>
                 <span class="profile-hint">Стандартное — мягкий срез гула для обычной комнаты. Сильное — плюс вырез сетевой наводки и жёсткая компрессия, для вентилятора/стройки/кондиционера. Телефонное — узкая полоса, режет почти всё лишнее, но голос звучит суше</span>
+            </div>
+            <div class="control-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="click-suppression-check" checked> Подавление кликов клавиатуры/мыши
+                </label>
+                <span class="profile-hint">Отдельно от общего шумоподавления: отслеживает резкие короткие всплески громкости (клик, щелчок, стук по столу) и на лету приглушает именно их, не трогая обычную речь</span>
             </div>
             <div class="control-group">
                 <label class="checkbox-label">
