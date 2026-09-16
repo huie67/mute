@@ -360,7 +360,14 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('join room', ({ room, peerId }) => {
+    // Кто-то заходит в голосовой канал. Мьют/дефен передаём сразу тем же событием
+    // (а не отдельным 'mute state' сразу следом) — раньше это было гонкой: сервер
+    // сначала создавал запись с micMuted/deafened=false и рассылал её всем, и только
+    // через мгновение прилетало отдельное 'mute state' с реальным значением. Из-за
+    // этого при повторном заходе в канал (особенно если 'mute state' почему-то не
+    // доходил или обрабатывался с задержкой) у остальных участников значок мьюта
+    // мог не появиться вовсе. Теперь состояние приходит атомарно, одним событием.
+    socket.on('join room', ({ room, peerId, micMuted, deafened }) => {
         currentUserRoom = room;
         socket.join(room);
 
@@ -373,8 +380,8 @@ io.on('connection', (socket) => {
             avatar: socket.data?.avatar || '',
             peerId: peerId,
             sharing: false,
-            micMuted: false,
-            deafened: false
+            micMuted: !!micMuted,
+            deafened: !!deafened
         };
 
         currentUserData = rooms[room][socket.id];

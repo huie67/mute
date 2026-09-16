@@ -1115,6 +1115,12 @@
                 <span class="profile-hint">Сколько микрофон остаётся включённым после того, как вы замолчали, прежде чем гейт закроется снова. Больше — меньше режет окончания слов, меньше — быстрее отсекает тишину</span>
             </div>
             <div class="control-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="rnnoise-check" checked> Нейросетевое шумоподавление RNNoise
+                </label>
+                <span class="profile-hint">Реальная ML-модель (не просто фильтр частот) — заметно лучше давит клавиатуру, вентилятор и прочий фон, при этом почти не трогает голос. Требует немного больше ресурсов процессора. Если браузер не поддерживает AudioWorklet, включится обычная обработка ниже</span>
+            </div>
+            <div class="control-group">
                 <label>Тип шумоподавления</label>
                 <select id="noise-profile-select">
                     <option value="off">Выключено</option>
@@ -1158,6 +1164,14 @@
 
     <script src="/socket.io/socket.io.js"></script>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <script type="module">
+        // Мост между ES-модулем RNNoise (нейросетевое шумоподавление) и обычным
+        // (не-модульным) script.js — выносим нужные функции/классы в window,
+        // чтобы script.js мог использовать их как обычные глобальные переменные.
+        import { RnnoiseWorkletNode, loadRnnoise } from '/vendor/rnnoise/index.js';
+        window.RnnoiseWorkletNode = RnnoiseWorkletNode;
+        window.loadRnnoise = loadRnnoise;
+    </script>
     <script src="script.js"></script>
 </body>
 </html>

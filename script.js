@@ -36,6 +36,7 @@ const echoCheck = document.getElementById('echo-cancellation-check');
 const agcCheck = document.getElementById('agc-check');
 const noiseProfileSelect = document.getElementById('noise-profile-select');
 const clickSuppressionCheck = document.getElementById('click-suppression-check');
+const rnnoiseCheck = document.getElementById('rnnoise-check');
 const micVolumeSlider = document.getElementById('mic-volume-slider');
 const micVolumeValueDisplay = document.getElementById('mic-volume-value');
 
@@ -113,6 +114,7 @@ let processedTrack = null;
 let noiseProfile = 'standard'; // 'off' | 'standard' | 'aggressive' | 'telephone'
 let micVolume = 1; // 0..2 (0%..200%), усиление своего микрофона перед отправкой
 let clickSuppressionEnabled = true; // подавление коротких резких щелчков (клавиатура, мышь, стук)
+let rnnoiseEnabled = true; // нейросетевое шумоподавление RNNoise (поверх/вместо простых фильтров)
 
 // ---------- Voice Gate: реально отключает передачу микрофона при тишине/фоновом шуме ----------
 // Лёгкая реализация на AnalyserNode (без тяжёлых ML-моделей шумоподавления):
@@ -179,6 +181,8 @@ function saveRemoteVolume(username, percent) {
     if (typeof saved.agc === 'boolean' && agcCheck) agcCheck.checked = saved.agc;
     if (typeof saved.clickSuppression === 'boolean') clickSuppressionEnabled = saved.clickSuppression;
     if (clickSuppressionCheck) clickSuppressionCheck.checked = clickSuppressionEnabled;
+    if (typeof saved.rnnoise === 'boolean') rnnoiseEnabled = saved.rnnoise;
+    if (rnnoiseCheck) rnnoiseCheck.checked = rnnoiseEnabled;
 
     if (gateEnabledCheck) gateEnabledCheck.checked = gateEnabled;
     if (gateHangoverSlider) gateHangoverSlider.value = gateHangoverMs;
@@ -598,7 +602,7 @@ async function initMediaStream(deviceId = null) {
         // processedTrack. Сырой сигнал одновременно уходит в analyserNode (индикатор
         // уровня и Voice Gate), поэтому он "живой" независимо от того, включена ли
         // сейчас передача собеседникам.
-        setupAudioAnalyzer(rawAudioStream);
+        await setupAudioAnalyzer(rawAudioStream);
         const newOutputTrack = processedTrack;
 
         if (!localMediaStream) {
@@ -737,12 +741,67 @@ function buildNoiseSuppressionChain(ctx, profile) {
     return nodes;
 }
 
+// ---------- RNNoise: настоящее нейросетевое шумоподавление (не просто фильтры/компрессор) ----------
+// В отличие от highpass/notch/compressor выше (которые лишь режут диапазон частот и
+// одинаково давят и голос, и шум), RNNoise — это маленькая RNN-модель (WASM,
+// https://github.com/xiph/rnnoise), обученная отличать голос от фона/клацанья/гула
+// и подавлять именно "не-голос" покадрово. Она давит и клавиатуру, и вентилятор, и
+// стройку за окном заметно лучше статичных фильтров, почти не трогая саму речь.
+// Загружаем .wasm и регистрируем AudioWorklet-модуль ОДИН раз на AudioContext и
+// кешируем промисы — повторная пересборка графа (смена мика/профиля) не должна
+// заново качать файлы или падать на повторном addModule().
+let rnnoiseWasmBinaryPromise = null;
+let rnnoiseWorkletModulePromise = null;
+let rnnoiseUnavailable = false; // выставляется в true, если браузер/окружение не потянули AudioWorklet или файлы не загрузились — чтобы не пытаться на каждую пересборку графа заново и не спамить ошибками
+
+async function ensureRnnoiseReady(ctx) {
+    if (rnnoiseUnavailable) return null;
+    if (!window.RnnoiseWorkletNode || !window.loadRnnoise || !ctx.audioWorklet) {
+        rnnoiseUnavailable = true;
+        console.warn('[RNNoise] AudioWorklet или модуль RNNoise недоступны в этом браузере — используется обычная обработка звука.');
+        return null;
+    }
+    try {
+        if (!rnnoiseWasmBinaryPromise) {
+            rnnoiseWasmBinaryPromise = window.loadRnnoise({ url: '/vendor/rnnoise/rnnoise.wasm' });
+        }
+        if (!rnnoiseWorkletModulePromise) {
+            rnnoiseWorkletModulePromise = ctx.audioWorklet.addModule('/vendor/rnnoise/workletProcessor.js');
+        }
+        const [wasmBinary] = await Promise.all([rnnoiseWasmBinaryPromise, rnnoiseWorkletModulePromise]);
+        return wasmBinary;
+    } catch (e) {
+        rnnoiseUnavailable = true;
+        console.error('[RNNoise] Не удалось загрузить нейросетевое шумоподавление, используется обычная обработка звука:', e);
+        return null;
+    }
+}
+
+// Создаёт узел RNNoise поверх уже готового (загруженного) wasmBinary. Возвращает
+// null, если что-то пошло не так — тогда цепочка просто работает без него.
+function createRnnoiseNode(ctx, wasmBinary) {
+    if (!wasmBinary || !window.RnnoiseWorkletNode) return null;
+    try {
+        return new window.RnnoiseWorkletNode(ctx, { maxChannels: 1, wasmBinary });
+    } catch (e) {
+        console.error('[RNNoise] Не удалось создать узел обработки:', e);
+        return null;
+    }
+}
+
 // Полностью отключает и обнуляет предыдущий граф обработки перед пересборкой
 // (смена микрофона/профиля шумоподавления) — иначе старые узлы и исходящий
 // трек продолжали бы висеть в памяти и в звонках.
 function teardownAudioGraph() {
     if (sourceNode) { try { sourceNode.disconnect(); } catch (e) { /* ignore */ } }
-    noiseProfileNodes.forEach(node => { try { node.disconnect(); } catch (e) { /* ignore */ } });
+    noiseProfileNodes.forEach(node => {
+        try { node.disconnect(); } catch (e) { /* ignore */ }
+        // Узел RNNoise держит WASM-инстанс (DenoiseState) на стороне AudioWorklet —
+        // просто disconnect() его не освобождает, нужно явно попросить через destroy().
+        // Иначе при каждой смене мика/профиля в памяти будут копиться "осиротевшие"
+        // инстансы модели.
+        if (typeof node.destroy === 'function') { try { node.destroy(); } catch (e) { /* ignore */ } }
+    });
     noiseProfileNodes = [];
     if (micGainNode) { try { micGainNode.disconnect(); } catch (e) { /* ignore */ } }
     micGainNode = null;
@@ -767,49 +826,69 @@ function setupAudioAnalyzer(stream) {
     if (audioContext.state === 'suspended') {
         audioContext.resume().catch((e) => console.warn('[AudioContext] resume() не удался:', e));
     }
-    teardownAudioGraph();
-    try {
-        sourceNode = audioContext.createMediaStreamSource(stream);
 
-        // Анализатор уровня/Voice Gate — сидит прямо на сыром источнике, до всякого
-        // выключения передачи, поэтому индикатор и порог срабатывания продолжают
-        // "видеть" микрофон даже когда сам гейт закрыт.
-        analyserNode = audioContext.createAnalyser();
-        analyserNode.fftSize = 1024;
-        analyserNode.smoothingTimeConstant = 0.2;
-        sourceNode.connect(analyserNode);
+    // Загрузку RNNoise запускаем ДО teardownAudioGraph() — она асинхронная (fetch
+    // .wasm + audioWorklet.addModule), и если запускать её после, старый граф уже
+    // будет разобран, а звук пропадёт на время ожидания. Так старый граф продолжает
+    // работать, пока новый не готов полностью.
+    const rnnoisePromise = rnnoiseEnabled ? ensureRnnoiseReady(audioContext) : Promise.resolve(null);
 
-        // Цепочка шумоподавления -> громкость своего микрофона -> исходящий трек
-        let chainEnd = sourceNode;
-        noiseProfileNodes = buildNoiseSuppressionChain(audioContext, noiseProfile);
-        noiseProfileNodes.forEach(node => {
-            chainEnd.connect(node);
-            chainEnd = node;
-        });
+    return rnnoisePromise.then((wasmBinary) => {
+        teardownAudioGraph();
+        try {
+            sourceNode = audioContext.createMediaStreamSource(stream);
 
-        micGainNode = audioContext.createGain();
-        micGainNode.gain.value = micVolume;
-        chainEnd.connect(micGainNode);
+            // Анализатор уровня/Voice Gate — сидит прямо на сыром источнике, до всякого
+            // выключения передачи, поэтому индикатор и порог срабатывания продолжают
+            // "видеть" микрофон даже когда сам гейт закрыт.
+            analyserNode = audioContext.createAnalyser();
+            analyserNode.fftSize = 1024;
+            analyserNode.smoothingTimeConstant = 0.2;
+            sourceNode.connect(analyserNode);
 
-        destinationNode = audioContext.createMediaStreamDestination();
-        micGainNode.connect(destinationNode);
-        processedTrack = destinationNode.stream.getAudioTracks()[0];
+            // Цепочка шумоподавления -> громкость своего микрофона -> исходящий трек.
+            // RNNoise (если включён и успешно загрузился) стоит первым — он работает
+            // лучше всего на сыром, необработанном сигнале.
+            let chainEnd = sourceNode;
 
-        // Самопрослушивание микрофона ("Слышать себя"): подключаем к уже обработанному
-        // сигналу (после шумоподавления и громкости микрофона) — так слышно именно то,
-        // что реально уходит собеседникам. Узел усиления живёт постоянно, чтобы
-        // включённость самопрослушивания не сбрасывалась при пересборке графа.
-        if (!micMonitorGain) {
-            micMonitorGain = audioContext.createGain();
-            micMonitorGain.gain.value = micMonitorEnabled ? 1 : 0;
-            micMonitorGain.connect(audioContext.destination);
+            const rnnoiseNode = rnnoiseEnabled ? createRnnoiseNode(audioContext, wasmBinary) : null;
+            if (rnnoiseNode) {
+                chainEnd.connect(rnnoiseNode);
+                chainEnd = rnnoiseNode;
+                noiseProfileNodes.push(rnnoiseNode);
+            }
+
+            const restNodes = buildNoiseSuppressionChain(audioContext, noiseProfile);
+            restNodes.forEach(node => {
+                chainEnd.connect(node);
+                chainEnd = node;
+                noiseProfileNodes.push(node);
+            });
+
+            micGainNode = audioContext.createGain();
+            micGainNode.gain.value = micVolume;
+            chainEnd.connect(micGainNode);
+
+            destinationNode = audioContext.createMediaStreamDestination();
+            micGainNode.connect(destinationNode);
+            processedTrack = destinationNode.stream.getAudioTracks()[0];
+
+            // Самопрослушивание микрофона ("Слышать себя"): подключаем к уже обработанному
+            // сигналу (после шумоподавления и громкости микрофона) — так слышно именно то,
+            // что реально уходит собеседникам. Узел усиления живёт постоянно, чтобы
+            // включённость самопрослушивания не сбрасывалась при пересборке графа.
+            if (!micMonitorGain) {
+                micMonitorGain = audioContext.createGain();
+                micMonitorGain.gain.value = micMonitorEnabled ? 1 : 0;
+                micMonitorGain.connect(audioContext.destination);
+            }
+            micGainNode.connect(micMonitorGain);
+
+            processAudioLevel();
+        } catch (e) {
+            console.error('[Ошибка] Аудиоанализатор:', e);
         }
-        micGainNode.connect(micMonitorGain);
-
-        processAudioLevel();
-    } catch (e) {
-        console.error('[Ошибка] Аудиоанализатор:', e);
-    }
+    });
 }
 
 // Включает/выключает реальную передачу микрофона (не UI-индикатор), учитывая
@@ -1094,7 +1173,7 @@ connectRoomBtn.addEventListener('click', () => {
         screenBtn.disabled = false;
         screenBtn.title = '';
 
-        socket.emit('join room', { room: selectedRoom, peerId: myPeerId });
+        socket.emit('join room', { room: selectedRoom, peerId: myPeerId, micMuted: isMuted, deafened: isDeafened });
 
         // На всякий случай "будим" аудиоконтекст: браузер мог перевести его в
         // состояние suspended (например, вкладка долго была в фоне) — без этого
@@ -1793,6 +1872,15 @@ if (clickSuppressionCheck) {
     clickSuppressionCheck.addEventListener('change', () => {
         clickSuppressionEnabled = clickSuppressionCheck.checked;
         saveAudioSettings({ clickSuppression: clickSuppressionEnabled });
+        initMediaStream(micSelect.value);
+    });
+}
+
+// RNNoise — тоже отдельная ступень (createRnnoiseNode), требует пересборки графа.
+if (rnnoiseCheck) {
+    rnnoiseCheck.addEventListener('change', () => {
+        rnnoiseEnabled = rnnoiseCheck.checked;
+        saveAudioSettings({ rnnoise: rnnoiseEnabled });
         initMediaStream(micSelect.value);
     });
 }
