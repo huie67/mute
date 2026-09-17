@@ -32,14 +32,12 @@ async function initDb() {
     await pool.query(`
         CREATE TABLE IF NOT EXISTS messages (
             id SERIAL PRIMARY KEY,
-            room_code TEXT,
             username TEXT NOT NULL,
             avatar TEXT,
             text TEXT,
             image_url TEXT,
             created_at BIGINT NOT NULL
         );
-        ALTER TABLE messages ADD COLUMN IF NOT EXISTS room_code TEXT;
     `);
 
     // Аккаунты: вход по паролю.
@@ -59,33 +57,33 @@ async function initDb() {
         CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower_idx ON users (LOWER(username));
     `);
 
+    // Пользовательские серверы/комнаты. Метаданные хранятся в Neon, поэтому
+    // переживают перезапуск/деплой Render. owner_socket_id намеренно не хранится:
+    // socket.id меняется после каждого подключения.
     await pool.query(`
-        CREATE TABLE IF NOT EXISTS rooms (
-            id SERIAL PRIMARY KEY,
-            code VARCHAR(12) UNIQUE NOT NULL,
-            name VARCHAR(50) NOT NULL,
+        CREATE TABLE IF NOT EXISTS custom_rooms (
+            code VARCHAR(6) PRIMARY KEY,
+            name VARCHAR(40) NOT NULL,
             password_hash TEXT,
-            image_url TEXT,
-            owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             created_at BIGINT NOT NULL
         );
     `);
 }
 
-async function insertMessage({ roomCode, username, avatar, text, imageUrl, createdAt }) {
+async function insertMessage({ username, avatar, text, imageUrl, createdAt }) {
     const result = await pool.query(
-        `INSERT INTO messages (room_code, username, avatar, text, image_url, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO messages (username, avatar, text, image_url, created_at)
+         VALUES ($1, $2, $3, $4, $5)
          RETURNING id`,
-        [roomCode, username, avatar, text, imageUrl, createdAt]
+        [username, avatar, text, imageUrl, createdAt]
     );
     return result.rows[0].id;
 }
 
-async function getRecentMessages(roomCode, limit = 100) {
+async function getRecentMessages(limit = 100) {
     const result = await pool.query(
-        `SELECT * FROM messages WHERE room_code = $1 ORDER BY id DESC LIMIT $2`,
-        [roomCode, limit]
+        `SELECT * FROM messages ORDER BY id DESC LIMIT $1`,
+        [limit]
     );
     return result.rows.reverse();
 }
@@ -106,7 +104,7 @@ const ALLOWED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp
 
 const upload = multer({
     storage: multer.memoryStorage(), // файл не пишем на диск — сразу в буфер и в Cloudinary
-    limits: { fileSize: 5 * 1024 * 1024 }, // 5 МБ
+    limits: { fileSize: 8 * 1024 * 1024 }, // 8 МБ
     fileFilter: (req, file, cb) => {
         if (!ALLOWED_IMAGE_TYPES.includes(file.mimetype)) {
             return cb(new Error('Недопустимый формат файла'));
@@ -295,118 +293,40 @@ app.put('/auth/profile', async (req, res) => {
     }
 });
 
-// ---------- Комнаты ----------
-const ROOM_NAME_MAX = 50;
-const ROOM_PASSWORD_MAX = 72;
-const CHAT_TEXT_MAX = 200;
-const ROOM_CODE_LENGTH = 8;
+const rooms = {}; // Голосовые комнаты: { internalRoomId: { socketId: {...} } }
+// Пользовательские серверы/комнаты кэшируются в памяти для быстрых проверок,
+// но источник истины — Neon Postgres. Поэтому они переживают рестарты Render.
+const customRooms = {}; // { code: { code, name, passwordHash, createdAt } }
 
-function getAuthUser(req) {
-    const authHeader = req.headers.authorization || '';
-    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-    const decoded = token && verifyToken(token);
-    return decoded || null;
+function generateRoomCode() {
+    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let code = '';
+    for (let i = 0; i < 6; i++) code += alphabet[crypto.randomInt(0, alphabet.length)];
+    return code;
 }
 
-function cleanRoom(room) {
+async function loadCustomRooms() {
+    const result = await pool.query(
+        `SELECT code, name, password_hash, created_at FROM custom_rooms ORDER BY created_at ASC`
+    );
+    for (const row of result.rows) {
+        customRooms[row.code] = {
+            code: row.code,
+            name: row.name,
+            passwordHash: row.password_hash,
+            createdAt: Number(row.created_at)
+        };
+    }
+    console.log(`📦 Загружено пользовательских серверов из Neon: ${result.rows.length}`);
+}
+
+function publicCustomRoom(room) {
     return {
         code: room.code,
         name: room.name,
-        image_url: room.image_url || '',
-        has_password: !!room.password_hash,
-        owner_id: room.owner_id
+        hasPassword: !!room.passwordHash
     };
 }
-
-async function generateRoomCode() {
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    for (;;) {
-        let code = '';
-        for (let i = 0; i < ROOM_CODE_LENGTH; i++) code += chars[crypto.randomInt(chars.length)];
-        const exists = await pool.query('SELECT 1 FROM rooms WHERE code = $1', [code]);
-        if (!exists.rowCount) return code;
-    }
-}
-
-app.get('/rooms', async (req, res) => {
-    try {
-        const result = await pool.query('SELECT code, name, image_url, password_hash, owner_id FROM rooms ORDER BY id ASC');
-        res.json(result.rows.map(cleanRoom));
-    } catch (err) {
-        console.error('❌ Ошибка списка комнат:', err);
-        res.status(500).json({ error: 'Не удалось получить комнаты' });
-    }
-});
-
-app.post('/rooms', async (req, res) => {
-    const auth = getAuthUser(req);
-    if (!auth) return res.status(401).json({ error: 'Для создания комнаты войдите в аккаунт' });
-    const name = String(req.body?.name || '').trim();
-    const password = String(req.body?.password || '');
-    const imageUrl = String(req.body?.imageUrl || '').trim() || null;
-    if (!name) return res.status(400).json({ error: 'Введите название комнаты' });
-    if (name.length > ROOM_NAME_MAX) return res.status(400).json({ error: `Название — максимум ${ROOM_NAME_MAX} символов` });
-    if (password.length > ROOM_PASSWORD_MAX) return res.status(400).json({ error: `Пароль — максимум ${ROOM_PASSWORD_MAX} символов` });
-    try {
-        const code = await generateRoomCode();
-        const hash = password ? await bcrypt.hash(password, 10) : null;
-        const result = await pool.query(
-            `INSERT INTO rooms (code, name, password_hash, image_url, owner_id, created_at) VALUES ($1,$2,$3,$4,$5,$6) RETURNING code,name,image_url,password_hash,owner_id`,
-            [code, name, hash, imageUrl, auth.uid, Date.now()]
-        );
-        res.json(cleanRoom(result.rows[0]));
-    } catch (err) {
-        console.error('❌ Ошибка создания комнаты:', err);
-        res.status(500).json({ error: 'Не удалось создать комнату' });
-    }
-});
-
-app.put('/rooms/:code', async (req, res) => {
-    const auth = getAuthUser(req);
-    if (!auth) return res.status(401).json({ error: 'Не авторизован' });
-    const code = String(req.params.code || '').toUpperCase();
-    const name = String(req.body?.name || '').trim();
-    const password = String(req.body?.password || '');
-    const imageUrl = String(req.body?.imageUrl || '').trim() || null;
-    if (!name) return res.status(400).json({ error: 'Введите название комнаты' });
-    if (name.length > ROOM_NAME_MAX) return res.status(400).json({ error: `Название — максимум ${ROOM_NAME_MAX} символов` });
-    if (password.length > ROOM_PASSWORD_MAX) return res.status(400).json({ error: `Пароль — максимум ${ROOM_PASSWORD_MAX} символов` });
-    try {
-        const found = await pool.query('SELECT * FROM rooms WHERE code = $1', [code]);
-        const room = found.rows[0];
-        if (!room) return res.status(404).json({ error: 'Комната не найдена' });
-        if (room.owner_id !== auth.uid) return res.status(403).json({ error: 'Настраивать комнату может только её создатель' });
-        const hash = password ? await bcrypt.hash(password, 10) : null;
-        const result = await pool.query(
-            `UPDATE rooms SET name=$1, password_hash=$2, image_url=$3 WHERE code=$4 RETURNING code,name,image_url,password_hash,owner_id`,
-            [name, hash, imageUrl, code]
-        );
-        res.json(cleanRoom(result.rows[0]));
-    } catch (err) {
-        console.error('❌ Ошибка изменения комнаты:', err);
-        res.status(500).json({ error: 'Не удалось изменить комнату' });
-    }
-});
-
-app.delete('/rooms/:code', async (req, res) => {
-    const auth = getAuthUser(req);
-    if (!auth) return res.status(401).json({ error: 'Не авторизован' });
-    const code = String(req.params.code || '').toUpperCase();
-    try {
-        const found = await pool.query('SELECT owner_id FROM rooms WHERE code = $1', [code]);
-        if (!found.rowCount) return res.status(404).json({ error: 'Комната не найдена' });
-        if (found.rows[0].owner_id !== auth.uid) return res.status(403).json({ error: 'Удалить комнату может только её создатель' });
-        await pool.query('DELETE FROM messages WHERE room_code = $1', [code]);
-        await pool.query('DELETE FROM rooms WHERE code = $1', [code]);
-        io.to(code).emit('room deleted', { code });
-        res.json({ ok: true });
-    } catch (err) {
-        console.error('❌ Ошибка удаления комнаты:', err);
-        res.status(500).json({ error: 'Не удалось удалить комнату' });
-    }
-});
-
-const rooms = {}; // Онлайн-участники голосовых каналов по уникальному коду комнаты
 
 // Проверка ника из БД (findUserByUsername) ловит только совпадение с ЗАРЕГИСТРИРОВАННЫМ
 // (защищённым паролем) аккаунтом. Она НЕ ловит случай, когда два гостя (без пароля)
@@ -447,8 +367,94 @@ async function resolveFreeGuestUsername(requested, excludeSocketId) {
 io.on('connection', (socket) => {
     let currentUserRoom = null;
     let currentUserData = null;
-    let currentChatRoom = null;
-    const authorizedRooms = new Set();
+
+    // Общий чат не привязан к комнате — сразу шлём историю последних сообщений.
+    getRecentMessages().then(history => {
+        socket.emit('chat history', history);
+    }).catch(err => console.error('❌ Ошибка чтения истории чата:', err));
+
+    // ---------- Пользовательские серверы ----------
+    // Отдаём клиенту только публичные поля — хеш пароля никогда не уходит.
+    pool.query(`SELECT code, name, password_hash, created_at FROM custom_rooms ORDER BY created_at ASC`)
+        .then(result => {
+            socket.emit('custom rooms list', result.rows.map(row => publicCustomRoom({
+                code: row.code,
+                name: row.name,
+                passwordHash: row.password_hash,
+                createdAt: Number(row.created_at)
+            })));
+        })
+        .catch(err => console.error('❌ Ошибка загрузки списка пользовательских серверов:', err));
+
+    socket.on('create custom room', async ({ name, password }) => {
+        const cleanName = String(name || '').trim().slice(0, 40);
+        const cleanPassword = String(password || '');
+        if (cleanName.length < 2) {
+            return socket.emit('custom room error', 'Название сервера должно содержать минимум 2 символа.');
+        }
+        if (cleanPassword.length > 64) {
+            return socket.emit('custom room error', 'Пароль слишком длинный.');
+        }
+
+        try {
+            const passwordHash = cleanPassword ? await bcrypt.hash(cleanPassword, 10) : null;
+            let room = null;
+
+            // Код генерируется заново при конфликте. Уникальность дополнительно
+            // гарантирует PRIMARY KEY в Neon, поэтому два одновременных создания
+            // не смогут записать один и тот же код.
+            for (let attempt = 0; attempt < 10; attempt++) {
+                const code = generateRoomCode();
+                try {
+                    const result = await pool.query(
+                        `INSERT INTO custom_rooms (code, name, password_hash, created_at)
+                         VALUES ($1, $2, $3, $4)
+                         RETURNING code, name, password_hash, created_at`,
+                        [code, cleanName, passwordHash, Date.now()]
+                    );
+                    const row = result.rows[0];
+                    room = {
+                        code: row.code,
+                        name: row.name,
+                        passwordHash: row.password_hash,
+                        createdAt: Number(row.created_at)
+                    };
+                    break;
+                } catch (dbErr) {
+                    if (dbErr.code !== '23505') throw dbErr;
+                }
+            }
+
+            if (!room) throw new Error('Не удалось подобрать уникальный код сервера');
+            customRooms[room.code] = room;
+            socket.emit('custom room created', publicCustomRoom(room));
+        } catch (err) {
+            console.error('❌ Ошибка создания пользовательского сервера:', err);
+            socket.emit('custom room error', 'Не удалось создать сервер.');
+        }
+    });
+
+    socket.on('join custom room', async ({ code, password }) => {
+        const cleanCode = String(code || '').trim().toUpperCase();
+        const cleanPassword = String(password || '');
+        const custom = customRooms[cleanCode];
+        if (!custom) return socket.emit('custom room error', 'Сервер с таким кодом не найден.');
+
+        try {
+            if (custom.passwordHash) {
+                const ok = await bcrypt.compare(cleanPassword, custom.passwordHash);
+                if (!ok) return socket.emit('custom room error', 'Неверный пароль.');
+            }
+            socket.emit('custom room joined', {
+                code: custom.code,
+                name: custom.name,
+                hasPassword: !!custom.passwordHash
+            });
+        } catch (err) {
+            console.error('❌ Ошибка входа в пользовательский сервер:', err);
+            socket.emit('custom room error', 'Не удалось войти на сервер.');
+        }
+    });
 
     // Ник закреплён за зарегистрированным аккаунтом (пароль) только когда
     // валидным JWT-токеном подтверждено, что это действительно его владелец. Без токена
@@ -479,9 +485,7 @@ io.on('connection', (socket) => {
             console.error('❌ Ошибка проверки ника при регистрации сокета:', err);
         }
 
-        socket.data = { username, avatar, peerId: userData && userData.peerId, uid: null };
-        const decodedToken = token ? verifyToken(token) : null;
-        if (decodedToken) socket.data.uid = decodedToken.uid;
+        socket.data = { username, avatar, peerId: userData && userData.peerId };
     });
 
     socket.on('update profile', async ({ username, avatar, token }) => {
@@ -530,31 +534,7 @@ io.on('connection', (socket) => {
     // этого при повторном заходе в канал (особенно если 'mute state' почему-то не
     // доходил или обрабатывался с задержкой) у остальных участников значок мьюта
     // мог не появиться вовсе. Теперь состояние приходит атомарно, одним событием.
-    socket.on('select room', async ({ code, password }) => {
-        const roomCode = String(code || '').toUpperCase();
-        try {
-            const result = await pool.query('SELECT * FROM rooms WHERE code = $1', [roomCode]);
-            const room = result.rows[0];
-            if (!room) return socket.emit('room access result', { ok: false, error: 'Комната не найдена' });
-            if (room.password_hash) {
-                const valid = await bcrypt.compare(String(password || ''), room.password_hash);
-                if (!valid) return socket.emit('room access result', { ok: false, error: 'Неверный пароль' });
-            }
-            if (currentChatRoom && currentChatRoom !== roomCode) socket.leave(currentChatRoom);
-            authorizedRooms.add(roomCode);
-            currentChatRoom = roomCode;
-            socket.join(roomCode);
-            const history = await getRecentMessages(roomCode);
-            socket.emit('room access result', { ok: true, room: cleanRoom(room), history });
-        } catch (err) {
-            console.error('❌ Ошибка входа в комнату:', err);
-            socket.emit('room access result', { ok: false, error: 'Не удалось войти в комнату' });
-        }
-    });
-
     socket.on('join room', ({ room, peerId, micMuted, deafened }) => {
-        room = String(room || '').toUpperCase();
-        if (!authorizedRooms.has(room)) return socket.emit('room access result', { ok: false, error: 'Сначала войдите в комнату' });
         currentUserRoom = room;
         socket.join(room);
 
@@ -623,31 +603,36 @@ io.on('connection', (socket) => {
     });
 
     socket.on('chat message', async (payload) => {
-        if (!currentChatRoom || !authorizedRooms.has(currentChatRoom)) return;
-        const text = typeof payload?.text === 'string' ? payload.text.trim() : '';
-        const imageUrl = typeof payload?.imageUrl === 'string' ? payload.imageUrl.trim() : '';
-        if (!text && !imageUrl) return;
-        if (text.length > CHAT_TEXT_MAX) {
-            return socket.emit('chat error', { error: `Сообщение — максимум ${CHAT_TEXT_MAX} символов` });
-        }
-        if (imageUrl && imageUrl.length > 2000) return;
+        if (!socket.data) return;
+
+        const text = typeof payload === 'string' ? payload : (payload && payload.text) || '';
+        const imageUrl = (payload && payload.imageUrl) || null;
+
+        if (!text.trim() && !imageUrl) return;
+
+        const username = socket.data.username || 'Участник';
+        const avatar = socket.data.avatar || '';
+        const createdAt = Date.now();
+
         try {
-            const username = socket.data?.username || 'Участник';
-            const avatar = socket.data?.avatar || '';
-            const createdAt = Date.now();
-            const id = await insertMessage({ roomCode: currentChatRoom, username, avatar, text, imageUrl, createdAt });
-            io.to(currentChatRoom).emit('chat message', {
-                id, room_code: currentChatRoom, username, avatar, text, image_url: imageUrl, created_at: createdAt
+            const id = await insertMessage({ username, avatar, text: text.trim(), imageUrl, createdAt });
+
+            // Общий чат — рассылаем всем подключённым, а не только в рамках комнаты.
+            io.emit('chat message', {
+                id,
+                username,
+                avatar,
+                text: text.trim(),
+                image_url: imageUrl,
+                created_at: createdAt
             });
         } catch (err) {
             console.error('❌ Ошибка сохранения сообщения:', err);
-            socket.emit('chat error', { error: 'Не удалось отправить сообщение' });
         }
     });
 
     function leaveCurrentRoom(sock) {
         if (currentUserRoom && rooms[currentUserRoom]) {
-            const leftRoom = currentUserRoom;
             delete rooms[currentUserRoom][sock.id];
             sock.leave(currentUserRoom);
 
@@ -661,7 +646,6 @@ io.on('connection', (socket) => {
                 io.to(currentUserRoom).emit('room users', getRoomUsers(currentUserRoom));
             }
             currentUserRoom = null;
-            if (currentChatRoom === leftRoom) socket.join(leftRoom);
         }
     }
 });
@@ -687,7 +671,8 @@ function getRoomUsers(room) {
 const PORT = process.env.PORT || 3000;
 
 initDb()
-    .then(() => {
+    .then(async () => {
+        await loadCustomRooms();
         server.listen(PORT, () => {
             console.log(`Сервер запущен на порту ${PORT}`);
         });

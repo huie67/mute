@@ -12,6 +12,21 @@ const authError = document.getElementById('auth-error');
 
 const roomButtons = document.querySelectorAll('.room-btn');
 const connectRoomBtn = document.getElementById('connect-room-btn');
+const addServerBtn = document.getElementById('add-server-btn');
+const customServersList = document.getElementById('custom-servers-list');
+const serverChoiceModal = document.getElementById('server-choice-modal');
+const createServerModal = document.getElementById('create-server-modal');
+const serverCreatedModal = document.getElementById('server-created-modal');
+const joinServerModal = document.getElementById('join-server-modal');
+const createServerName = document.getElementById('create-server-name');
+const createServerPassword = document.getElementById('create-server-password');
+const createServerError = document.getElementById('create-server-error');
+const joinServerCode = document.getElementById('join-server-code');
+const joinServerPassword = document.getElementById('join-server-password');
+const joinServerError = document.getElementById('join-server-error');
+const createdServerName = document.getElementById('created-server-name');
+const createdServerCode = document.getElementById('created-server-code');
+let lastCreatedServer = null;
 
 const muteBtn = document.getElementById('mute-btn');
 const deafenBtn = document.getElementById('deafen-btn');
@@ -541,8 +556,7 @@ socket.on('connect', () => {
         });
     }
     if (currentUser.room) {
-        reconnectVoiceAfterAccess = true;
-        socket.emit('select room', { code: currentUser.room, password: roomAccessPasswords[currentUser.room] || '' });
+        socket.emit('join room', { room: currentUser.room, peerId: myPeerId, micMuted: isMuted, deafened: isDeafened });
     }
 });
 
@@ -1108,60 +1122,184 @@ function processRemoteAudioLevel(peerId) {
     checkRemote();
 }
 
-roomButtons.forEach(btn => {
-    btn.addEventListener('click', () => {
-        const roomName = btn.getAttribute('data-room');
-        roomButtons.forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        selectedRoom = roomName;
-        
-        if (currentUser.room === roomName) {
-            connectRoomBtn.innerText = 'Покинуть ГС';
-            connectRoomBtn.className = 'btn-primary btn-danger';
-            roomTitle.innerText = `Канал: ${roomName}`;
-        } else {
-            connectRoomBtn.innerText = 'Подключиться';
-            connectRoomBtn.className = 'btn-primary';
-            roomTitle.innerText = `Канал: ${roomName} (Просмотр)`;
-        }
-        connectRoomBtn.style.display = 'inline-block';
-        socket.emit('get room users', roomName);
-    });
-});
+function selectRoomButton(btn) {
+    const roomName = btn.getAttribute('data-room');
+    const displayName = btn.getAttribute('data-display-name') || roomName;
+    roomButtons.forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.custom-room-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    selectedRoom = roomName;
 
-connectRoomBtn.addEventListener('click', () => {
+    if (currentUser.room === roomName) {
+        connectRoomBtn.innerText = 'Покинуть ГС';
+        connectRoomBtn.className = 'btn-primary btn-danger';
+        roomTitle.innerText = `Канал: ${displayName}`;
+    } else {
+        connectRoomBtn.innerText = 'Подключиться';
+        connectRoomBtn.className = 'btn-primary';
+        roomTitle.innerText = `Канал: ${displayName} (Просмотр)`;
+    }
+    connectRoomBtn.style.display = 'inline-block';
+    socket.emit('get room users', roomName);
+}
+
+roomButtons.forEach(btn => btn.addEventListener('click', () => selectRoomButton(btn)));
+
+function connectToSelectedRoom() {
     if (!selectedRoom) return;
 
     if (currentUser.room === selectedRoom) {
         leaveVoiceChannel();
-    } else {
-        if (currentUser.room) {
-            leaveVoiceChannel();
-        }
-        currentUser.room = selectedRoom;
-        roomNameDisplay.innerHTML = `${ROOM_IN_ICON_SVG}<span>${escapeHtml(selectedRoom)}</span>`;
-        roomTitle.innerText = `Канал: ${selectedRoom}`;
-        connectRoomBtn.innerText = 'Покинуть ГС';
-        connectRoomBtn.className = 'btn-primary btn-danger';
-        screenBtn.disabled = false;
-        screenBtn.title = '';
-
-        socket.emit('join room', { room: selectedRoom, peerId: myPeerId, micMuted: isMuted, deafened: isDeafened });
-
-        // На всякий случай "будим" аудиоконтекст: браузер мог перевести его в
-        // состояние suspended (например, вкладка долго была в фоне) — без этого
-        // ни исходящий звук, ни входящий от собеседников может не пойти, хотя
-        // внешне всё выглядит подключённым.
-        if (audioContext && audioContext.state === 'suspended') {
-            audioContext.resume().catch(() => {});
-        }
-
-        // Звук собственного входа в комнату
-        playJoinSound();
-
-        // Сразу сообщаем остальным наш текущий статус мьюта/дефена
-        broadcastMuteState();
+        return;
     }
+
+    if (currentUser.room) leaveVoiceChannel();
+    currentUser.room = selectedRoom;
+    const activeBtn = document.querySelector(`[data-room="${CSS.escape(selectedRoom)}"]`);
+    const displayName = activeBtn?.getAttribute('data-display-name') || selectedRoom;
+    roomNameDisplay.innerHTML = `${ROOM_IN_ICON_SVG}<span>${escapeHtml(displayName)}</span>`;
+    roomTitle.innerText = `Канал: ${displayName}`;
+    connectRoomBtn.innerText = 'Покинуть ГС';
+    connectRoomBtn.className = 'btn-primary btn-danger';
+    screenBtn.disabled = false;
+    screenBtn.title = '';
+
+    socket.emit('join room', { room: selectedRoom, peerId: myPeerId, micMuted: isMuted, deafened: isDeafened });
+    if (audioContext && audioContext.state === 'suspended') audioContext.resume().catch(() => {});
+    playJoinSound();
+    broadcastMuteState();
+}
+
+connectRoomBtn.addEventListener('click', connectToSelectedRoom);
+
+function openModal(modal) { if (modal) modal.classList.add('show'); }
+function closeModal(modal) { if (modal) modal.classList.remove('show'); }
+function showServerError(el, text) {
+    if (!el) return;
+    el.innerText = text || '';
+    el.style.display = text ? 'block' : 'none';
+}
+
+addServerBtn?.addEventListener('click', () => {
+    showServerError(createServerError, '');
+    showServerError(joinServerError, '');
+    openModal(serverChoiceModal);
+});
+
+document.getElementById('close-server-choice')?.addEventListener('click', () => closeModal(serverChoiceModal));
+document.getElementById('open-create-server')?.addEventListener('click', () => {
+    closeModal(serverChoiceModal);
+    createServerName.value = '';
+    createServerPassword.value = '';
+    showServerError(createServerError, '');
+    openModal(createServerModal);
+});
+document.getElementById('open-join-server')?.addEventListener('click', () => {
+    closeModal(serverChoiceModal);
+    joinServerCode.value = '';
+    joinServerPassword.value = '';
+    showServerError(joinServerError, '');
+    openModal(joinServerModal);
+});
+document.getElementById('close-create-server')?.addEventListener('click', () => {
+    closeModal(createServerModal);
+    openModal(serverChoiceModal);
+});
+document.getElementById('close-join-server')?.addEventListener('click', () => {
+    closeModal(joinServerModal);
+    openModal(serverChoiceModal);
+});
+document.getElementById('close-created-server')?.addEventListener('click', () => closeModal(serverCreatedModal));
+
+socket.on('custom rooms list', (rooms) => {
+    if (!Array.isArray(rooms)) return;
+    customServersList.innerHTML = '';
+    for (const room of rooms) addCustomServerButton(room);
+});
+
+function addCustomServerButton(data) {
+    if (!customServersList || !data?.code) return;
+    const old = customServersList.querySelector(`[data-room="custom:${data.code}"]`);
+    if (old) old.remove();
+    const btn = document.createElement('div');
+    btn.className = 'server-icon custom-server-icon custom-room-btn';
+    btn.dataset.room = `custom:${data.code}`;
+    btn.dataset.displayName = data.name || data.code;
+    btn.title = `${data.name || 'Сервер'}\nКод: ${data.code}`;
+    btn.innerText = (data.name || data.code).slice(0, 2).toUpperCase();
+    if (data.hasPassword) {
+        const lock = document.createElement('span');
+        lock.className = 'lock-dot';
+        lock.innerText = '🔒';
+        btn.appendChild(lock);
+    }
+    btn.addEventListener('click', () => selectRoomButton(btn));
+    customServersList.appendChild(btn);
+    return btn;
+}
+
+document.getElementById('create-server-submit')?.addEventListener('click', () => {
+    showServerError(createServerError, '');
+    const name = createServerName.value.trim();
+    if (name.length < 2) return showServerError(createServerError, 'Введите название сервера.');
+    socket.emit('create custom room', { name, password: createServerPassword.value });
+});
+
+document.getElementById('join-server-submit')?.addEventListener('click', () => {
+    showServerError(joinServerError, '');
+    const code = joinServerCode.value.trim().toUpperCase();
+    if (code.length !== 6) return showServerError(joinServerError, 'Код должен содержать 6 символов.');
+    socket.emit('join custom room', { code, password: joinServerPassword.value });
+});
+
+joinServerCode?.addEventListener('input', () => {
+    joinServerCode.value = joinServerCode.value.replace(/[^a-z0-9]/gi, '').slice(0, 6).toUpperCase();
+});
+
+createdServerCode?.addEventListener('click', async () => {
+    const code = createdServerCode.innerText.trim();
+    if (!code) return;
+    try {
+        await navigator.clipboard.writeText(code);
+        const old = createdServerCode.innerText;
+        createdServerCode.innerText = 'СКОПИРОВАНО!';
+        setTimeout(() => { createdServerCode.innerText = old; }, 900);
+    } catch (_) {
+        const area = document.createElement('textarea');
+        area.value = code;
+        document.body.appendChild(area);
+        area.select();
+        document.execCommand('copy');
+        area.remove();
+    }
+});
+
+document.getElementById('join-created-server')?.addEventListener('click', () => {
+    if (!lastCreatedServer) return;
+    closeModal(serverCreatedModal);
+    const btn = addCustomServerButton(lastCreatedServer);
+    selectRoomButton(btn);
+    connectToSelectedRoom();
+});
+
+socket.on('custom room created', (data) => {
+    lastCreatedServer = data;
+    closeModal(createServerModal);
+    createdServerName.innerText = data.name;
+    createdServerCode.innerText = data.code;
+    openModal(serverCreatedModal);
+});
+
+socket.on('custom room joined', (data) => {
+    closeModal(joinServerModal);
+    const btn = addCustomServerButton(data);
+    selectRoomButton(btn);
+    connectToSelectedRoom();
+});
+
+socket.on('custom room error', (message) => {
+    const target = joinServerModal.classList.contains('show') ? joinServerError : createServerError;
+    showServerError(target, message);
 });
 
 function leaveVoiceChannel() {
@@ -2009,8 +2147,8 @@ if (attachBtn && attachInput) {
             alert('Можно прикреплять только изображения');
             return;
         }
-        if (file.size > 5 * 1024 * 1024) {
-            alert('Файл слишком большой (максимум 5 МБ)');
+        if (file.size > 8 * 1024 * 1024) {
+            alert('Файл слишком большой (максимум 8 МБ)');
             return;
         }
 
@@ -2110,8 +2248,8 @@ profileAvatarFileInput.addEventListener('change', () => {
         profileAvatarFileInput.value = '';
         return;
     }
-    if (file.size > 5 * 1024 * 1024) {
-        alert('Файл слишком большой (максимум 5 МБ)');
+    if (file.size > 8 * 1024 * 1024) {
+        alert('Файл слишком большой (максимум 8 МБ)');
         profileAvatarFileInput.value = '';
         return;
     }
@@ -2260,344 +2398,4 @@ document.addEventListener('copy', (e) => {
     if (!isAllowed) {
         e.preventDefault();
     }
-});
-
-
-// ---------- Пользовательские комнаты ----------
-const roomsList = document.getElementById('rooms-list');
-const addRoomBtn = document.getElementById('add-room-btn');
-const roomAccessModal = document.getElementById('room-access-modal');
-const roomAccessPassword = document.getElementById('room-access-password');
-const roomAccessError = document.getElementById('room-access-error');
-const roomAccessSubmit = document.getElementById('room-access-submit');
-const roomAccessCancel = document.getElementById('room-access-cancel');
-const roomAccessTitle = document.getElementById('room-access-title');
-const roomAccessSubtitle = document.getElementById('room-access-subtitle');
-const roomEditorModal = document.getElementById('room-editor-modal');
-const roomEditorTitle = document.getElementById('room-editor-title');
-const roomNameInput = document.getElementById('room-name-input');
-const roomPasswordInput = document.getElementById('room-password-input');
-const roomImageUrlInput = document.getElementById('room-image-url-input');
-const roomImageFileInput = document.getElementById('room-image-file-input');
-const roomImagePreview = document.getElementById('room-image-preview');
-const roomEditorError = document.getElementById('room-editor-error');
-const roomEditorSubmit = document.getElementById('room-editor-submit');
-const roomEditorCancel = document.getElementById('room-editor-cancel');
-const roomEditorCodeWrap = document.getElementById('room-editor-code-wrap');
-const roomEditorCode = document.getElementById('room-editor-code');
-const roomCodeInput = document.getElementById('room-code-input');
-const roomCodeSubmit = document.getElementById('room-code-submit');
-const roomMenuModal = document.getElementById('room-menu-modal');
-const roomMenuTitle = document.getElementById('room-menu-title');
-const roomMenuCode = document.getElementById('room-menu-code');
-const roomMenuOwnerNote = document.getElementById('room-menu-owner-note');
-const roomMenuEnter = document.getElementById('room-menu-enter');
-const roomMenuEdit = document.getElementById('room-menu-edit');
-const roomMenuDelete = document.getElementById('room-menu-delete');
-const roomMenuClose = document.getElementById('room-menu-close');
-
-let availableRooms = [];
-let roomByCode = new Map();
-let roomEditorCodeValue = null;
-let roomMenuCodeValue = null;
-let pendingRoomImageFile = null;
-let pendingAccessCode = null;
-let pendingAccessPassword = '';
-const roomAccessPasswords = {};
-let reconnectVoiceAfterAccess = false;
-
-function setRoomError(el, text) {
-    el.textContent = text || '';
-    el.style.display = text ? 'block' : 'none';
-}
-
-function roomInitial(name) {
-    const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
-    return (parts.slice(0, 2).map(x => x[0]).join('') || '?').toUpperCase();
-}
-
-function isRoomOwner(room) {
-    if (!room || !currentUser.token) return false;
-    try {
-        const payload = JSON.parse(atob(currentUser.token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
-        return Number(payload.uid) === Number(room.owner_id);
-    } catch (_) { return false; }
-}
-
-function renderRooms() {
-    if (!roomsList) return;
-    roomsList.innerHTML = '';
-    availableRooms.forEach(room => {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'server-icon room-btn dynamic-room-icon';
-        btn.dataset.roomCode = room.code;
-        btn.title = `${room.name}${room.has_password ? ' 🔒' : ''}`;
-        if (room.image_url) {
-            const img = document.createElement('img');
-            img.src = room.image_url;
-            img.alt = '';
-            img.onerror = () => { img.remove(); btn.insertAdjacentHTML('afterbegin', `<span class="dynamic-room-letter">${escapeHtml(roomInitial(room.name))}</span>`); };
-            btn.appendChild(img);
-        } else {
-            const span = document.createElement('span');
-            span.className = 'dynamic-room-letter';
-            span.textContent = roomInitial(room.name);
-            btn.appendChild(span);
-        }
-        if (room.has_password) {
-            const lock = document.createElement('span');
-            lock.className = 'room-lock-dot';
-            lock.textContent = '🔒';
-            btn.appendChild(lock);
-        }
-        btn.addEventListener('click', () => requestRoomAccess(room));
-        btn.addEventListener('contextmenu', (e) => {
-            e.preventDefault();
-            openRoomMenu(room);
-        });
-        roomsList.appendChild(btn);
-    });
-}
-
-async function loadRooms() {
-    try {
-        const res = await fetch('/rooms');
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Не удалось загрузить комнаты');
-        availableRooms = Array.isArray(data) ? data : [];
-        roomByCode = new Map(availableRooms.map(r => [r.code, r]));
-        renderRooms();
-        if (selectedRoom && !roomByCode.has(selectedRoom)) {
-            selectedRoom = null;
-            currentUser.room = null;
-            roomTitle.innerText = 'Выберите комнату слева';
-            roomNameDisplay.innerHTML = `${ROOM_OUT_ICON_SVG}<span>Вы не в ГС</span>`;
-            messagesDiv.innerHTML = '';
-        }
-    } catch (err) {
-        console.error('[Комнаты]', err);
-    }
-}
-
-function selectRoomVisual(room) {
-    document.querySelectorAll('#rooms-list .room-btn').forEach(b => b.classList.toggle('active', b.dataset.roomCode === room.code));
-    selectedRoom = room.code;
-    roomTitle.innerText = currentUser.room === room.code ? `Канал: ${room.name}` : `Канал: ${room.name} (Просмотр)`;
-    if (currentUser.room === room.code) {
-        connectRoomBtn.innerText = 'Покинуть ГС';
-        connectRoomBtn.className = 'btn-primary btn-danger';
-        connectRoomBtn.style.display = 'inline-block';
-    } else {
-        connectRoomBtn.innerText = 'Подключиться';
-        connectRoomBtn.className = 'btn-primary';
-        connectRoomBtn.style.display = 'inline-block';
-    }
-}
-
-function requestRoomAccess(room) {
-    if (!room) return;
-    selectRoomVisual(room);
-    if (!room.has_password) {
-        socket.emit('select room', { code: room.code, password: '' });
-        return;
-    }
-    pendingAccessCode = room.code;
-    pendingAccessPassword = roomAccessPasswords[room.code] || '';
-    roomAccessTitle.textContent = `Вход: ${room.name}`;
-    roomAccessSubtitle.textContent = 'Эта комната защищена паролем.';
-    roomAccessPassword.value = '';
-    setRoomError(roomAccessError, '');
-    roomAccessModal.style.display = 'flex';
-    setTimeout(() => roomAccessPassword.focus(), 0);
-}
-
-roomAccessSubmit.addEventListener('click', () => {
-    if (!pendingAccessCode) return;
-    pendingAccessPassword = roomAccessPassword.value;
-    roomAccessPasswords[pendingAccessCode] = pendingAccessPassword;
-    socket.emit('select room', { code: pendingAccessCode, password: pendingAccessPassword });
-});
-roomAccessPassword.addEventListener('keypress', e => { if (e.key === 'Enter') roomAccessSubmit.click(); });
-roomAccessCancel.addEventListener('click', () => { roomAccessModal.style.display = 'none'; pendingAccessCode = null; });
-
-socket.on('room access result', ({ ok, error, room, history }) => {
-    if (!ok) {
-        setRoomError(roomAccessError, error || 'Не удалось войти');
-        return;
-    }
-    roomAccessModal.style.display = 'none';
-    pendingAccessCode = null;
-    if (room) {
-        roomByCode.set(room.code, room);
-        availableRooms = availableRooms.map(r => r.code === room.code ? room : r);
-        renderRooms();
-        selectRoomVisual(room);
-    }
-    messagesDiv.innerHTML = '';
-    lastMessageDateKey = null;
-    (history || []).forEach(renderChatMessage);
-    if (reconnectVoiceAfterAccess && currentUser.room === (room && room.code)) {
-        reconnectVoiceAfterAccess = false;
-        socket.emit('join room', { room: currentUser.room, peerId: myPeerId, micMuted: isMuted, deafened: isDeafened });
-    }
-});
-
-socket.on('chat error', ({ error }) => alert(error || 'Ошибка чата'));
-socket.on('room deleted', ({ code }) => {
-    availableRooms = availableRooms.filter(r => r.code !== code);
-    roomByCode.delete(code);
-    if (selectedRoom === code) {
-        if (currentUser.room === code) leaveVoiceChannel();
-        selectedRoom = null;
-        messagesDiv.innerHTML = '';
-        roomTitle.innerText = 'Выберите комнату слева';
-        roomNameDisplay.innerHTML = `${ROOM_OUT_ICON_SVG}<span>Вы не в ГС</span>`;
-    }
-    renderRooms();
-});
-
-function openRoomMenu(room) {
-    roomMenuCodeValue = room.code;
-    roomMenuTitle.textContent = room.name;
-    roomMenuCode.textContent = room.code;
-    const owner = isRoomOwner(room);
-    roomMenuOwnerNote.textContent = owner ? 'Вы создатель этой комнаты. Здесь доступны настройки и удаление.' : 'Код можно скопировать и передать другим участникам.';
-    roomMenuEdit.classList.toggle('visible', owner);
-    roomMenuDelete.classList.toggle('visible', owner);
-    roomMenuModal.style.display = 'flex';
-}
-
-roomMenuEnter.addEventListener('click', () => {
-    const room = roomByCode.get(roomMenuCodeValue);
-    roomMenuModal.style.display = 'none';
-    requestRoomAccess(room);
-});
-roomMenuClose.addEventListener('click', () => roomMenuModal.style.display = 'none');
-roomMenuEdit.addEventListener('click', () => {
-    const room = roomByCode.get(roomMenuCodeValue);
-    roomMenuModal.style.display = 'none';
-    openRoomEditor(room);
-});
-roomMenuDelete.addEventListener('click', async () => {
-    const room = roomByCode.get(roomMenuCodeValue);
-    if (!room || !isRoomOwner(room)) return;
-    if (!confirm(`Удалить комнату «${room.name}»? Её чат тоже будет удалён.`)) return;
-    try {
-        const res = await fetch(`/rooms/${encodeURIComponent(room.code)}`, { method:'DELETE', headers:{ Authorization:`Bearer ${currentUser.token}` } });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Не удалось удалить комнату');
-        roomMenuModal.style.display = 'none';
-        await loadRooms();
-    } catch (err) { alert(err.message); }
-});
-
-function openRoomEditor(room = null) {
-    roomEditorCodeValue = room ? room.code : null;
-    roomCodeInput.value = '';
-    roomEditorTitle.textContent = room ? 'Настройки комнаты' : 'Создать комнату';
-    roomEditorSubmit.textContent = room ? 'Сохранить' : 'Создать';
-    roomNameInput.value = room?.name || '';
-    roomPasswordInput.value = '';
-    roomImageUrlInput.value = room?.image_url || '';
-    pendingRoomImageFile = null;
-    roomImageFileInput.value = '';
-    roomImagePreview.src = room?.image_url || '';
-    roomImagePreview.style.display = room?.image_url ? 'block' : 'none';
-    roomEditorCodeWrap.classList.toggle('visible', !!room);
-    roomEditorCode.textContent = room?.code || '';
-    setRoomError(roomEditorError, '');
-    roomEditorModal.style.display = 'flex';
-    setTimeout(() => roomNameInput.focus(), 0);
-}
-
-addRoomBtn.addEventListener('click', () => {
-    if (!currentUser.token) {
-        alert('Чтобы создавать комнаты, войдите в зарегистрированный аккаунт.');
-        return;
-    }
-    openRoomEditor();
-});
-roomCodeSubmit.addEventListener('click', () => {
-    const code = roomCodeInput.value.trim().toUpperCase();
-    const room = roomByCode.get(code);
-    if (!room) { setRoomError(roomEditorError, 'Комната с таким кодом не найдена'); return; }
-    roomEditorModal.style.display = 'none';
-    requestRoomAccess(room);
-});
-roomCodeInput.addEventListener('keypress', e => { if (e.key === 'Enter') roomCodeSubmit.click(); });
-roomEditorCancel.addEventListener('click', () => roomEditorModal.style.display = 'none');
-roomImageUrlInput.addEventListener('input', () => {
-    pendingRoomImageFile = null;
-    const url = roomImageUrlInput.value.trim();
-    roomImagePreview.src = url;
-    roomImagePreview.style.display = url ? 'block' : 'none';
-});
-roomImageFileInput.addEventListener('change', () => {
-    const file = roomImageFileInput.files[0];
-    if (!file) return;
-    if (!file.type.startsWith('image/')) { alert('Можно загружать только изображения'); roomImageFileInput.value=''; return; }
-    if (file.size > 5 * 1024 * 1024) { alert('Картинка слишком большая (максимум 5 МБ)'); roomImageFileInput.value=''; return; }
-    pendingRoomImageFile = file;
-    roomImageUrlInput.value = '';
-    const reader = new FileReader();
-    reader.onload = () => { roomImagePreview.src = reader.result; roomImagePreview.style.display='block'; };
-    reader.readAsDataURL(file);
-});
-
-async function getRoomImageUrl() {
-    if (!pendingRoomImageFile) return roomImageUrlInput.value.trim();
-    const formData = new FormData();
-    formData.append('image', pendingRoomImageFile);
-    const res = await fetch('/upload', { method:'POST', body:formData });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Не удалось загрузить картинку');
-    return data.url;
-}
-
-roomEditorSubmit.addEventListener('click', async () => {
-    const name = roomNameInput.value.trim();
-    const password = roomPasswordInput.value;
-    if (!name) { setRoomError(roomEditorError, 'Введите название комнаты'); return; }
-    roomEditorSubmit.disabled = true;
-    try {
-        const imageUrl = await getRoomImageUrl();
-        const isEdit = !!roomEditorCodeValue;
-        const url = isEdit ? `/rooms/${encodeURIComponent(roomEditorCodeValue)}` : '/rooms';
-        const res = await fetch(url, {
-            method: isEdit ? 'PUT' : 'POST',
-            headers: { 'Content-Type':'application/json', Authorization:`Bearer ${currentUser.token}` },
-            body: JSON.stringify({ name, password, imageUrl })
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Не удалось сохранить комнату');
-        roomEditorModal.style.display = 'none';
-        await loadRooms();
-        if (!isEdit) requestRoomAccess(data);
-        else if (selectedRoom === data.code) selectRoomVisual(data);
-    } catch (err) {
-        setRoomError(roomEditorError, err.message || 'Ошибка сохранения');
-    } finally { roomEditorSubmit.disabled = false; }
-});
-
-[roomAccessModal, roomEditorModal, roomMenuModal].forEach(modal => modal.addEventListener('click', e => {
-    if (e.target === modal) modal.style.display = 'none';
-}));
-
-document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') {
-        [roomAccessModal, roomEditorModal, roomMenuModal].forEach(m => { if (m.style.display === 'flex') m.style.display = 'none'; });
-    }
-});
-
-// Загружаем комнаты после появления приложения.
-const oldCompleteLoginForRooms = completeLogin;
-// completeLogin уже объявлена выше; вместо изменения её тела просто слушаем первый socket connect.
-socket.on('connect', () => {
-    if (appContainer && appContainer.style.display !== 'none') loadRooms();
-});
-
-// Ограничение сообщения на клиенте: 200 символов.
-messageInput.addEventListener('input', () => {
-    if (messageInput.value.length > 200) messageInput.value = messageInput.value.slice(0, 200);
 });
