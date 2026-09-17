@@ -590,7 +590,22 @@ function initPeer() {
 
     myPeer.on('call', (call) => {
         console.log('[Звонок] Входящий звонок от:', call.peer);
-        call.answer(localMediaStream); 
+        call.answer(localMediaStream);
+        // ВАЖНО: обновлять connectedUsers по call.metadata можно только здесь, на
+        // ПРИНИМАЮЩЕЙ стороне — тут call.metadata реально описывает того, кто звонит
+        // (call.peer). На звонящей стороне (см. myPeer.call(...) ниже) в metadata
+        // кладутся СВОИ СОБСТВЕННЫЕ username/avatar, чтобы представиться собеседнику —
+        // если применить тот же код там, мы припишем звонящему (то есть себе) данные
+        // собеседнику, которому звоним. Раньше это обновление жило внутри общей
+        // handleIncomingCall(), вызываемой с обеих сторон, — поэтому у того из двух
+        // участников, кто оказывался звонящим (кто именно — зависит от сравнения их
+        // PeerJS ID, который выдаётся заново при каждом полном перезаходе), собеседник
+        // отображался под ЕГО СОБСТВЕННЫМ ником и аватаркой.
+        if (call.metadata && call.metadata.username) {
+            const prev = connectedUsers[call.peer] || {};
+            connectedUsers[call.peer] = { ...prev, username: call.metadata.username, avatar: call.metadata.avatar };
+            updateVoiceUsersList();
+        }
         handleIncomingCall(call);
     });
 
@@ -1270,19 +1285,6 @@ socket.on('video state', ({ peerId, sharing }) => {
 function handleIncomingCall(call) {
     if (call.peer === myPeerId) return;
     activeCalls[call.peer] = call;
-
-    // ВАЖНО: раньше здесь запись в connectedUsers ПОЛНОСТЬЮ заменялась на call.metadata
-    // (а там только username/avatar — их передаёт вызывающая сторона в myPeer.call(...,
-    // { metadata: {...} })). Из-за этого ровно в момент установления звонка (то есть
-    // сразу при входе в канал) затирались micMuted/deafened, которые до этого были
-    // корректно получены через 'room users' — отсюда и эффект "до входа статус мьюта
-    // виден, а как только зашёл — пропадает". Теперь дополняем существующую запись,
-    // а не заменяем её целиком.
-    if (call.metadata && call.metadata.username) {
-        const prev = connectedUsers[call.peer] || {};
-        connectedUsers[call.peer] = { ...prev, username: call.metadata.username, avatar: call.metadata.avatar };
-        updateVoiceUsersList();
-    }
 
     call.on('stream', (remoteStream) => {
         if (remoteStream.getAudioTracks().length > 0) {
