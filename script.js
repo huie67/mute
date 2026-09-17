@@ -541,7 +541,8 @@ socket.on('connect', () => {
         });
     }
     if (currentUser.room) {
-        socket.emit('join room', { room: currentUser.room, peerId: myPeerId, micMuted: isMuted, deafened: isDeafened });
+        reconnectVoiceAfterAccess = true;
+        socket.emit('select room', { code: currentUser.room, password: roomAccessPasswords[currentUser.room] || '' });
     }
 });
 
@@ -1911,8 +1912,50 @@ function escapeHtml(str) {
     return div.innerHTML;
 }
 
+// Разделитель даты вставляется перед первым сообщением нового дня. lastMessageDateKey
+// хранит дату последнего отрисованного сообщения — сбрасывается при полной
+// перезагрузке истории (иначе после переоткрытия чата разделители перестанут
+// появляться повторно для тех же дат).
+let lastMessageDateKey = null;
+const MONTHS_RU_GENITIVE = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+
+function formatMessageTime(date) {
+    const hh = String(date.getHours()).padStart(2, '0');
+    const mm = String(date.getMinutes()).padStart(2, '0');
+    return `${hh}:${mm}`;
+}
+
+function formatDateSeparator(date) {
+    const now = new Date();
+    const day = date.getDate();
+    const month = MONTHS_RU_GENITIVE[date.getMonth()];
+    // Год добавляем только если сообщение не из текущего года — чтобы не загромождать
+    // разделитель лишними цифрами для обычной, самой частой ситуации.
+    return date.getFullYear() === now.getFullYear() ? `${day} ${month}` : `${day} ${month} ${date.getFullYear()}`;
+}
+
+function dateKeyOf(date) {
+    return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
+function maybeInsertDateSeparator(date) {
+    const key = dateKeyOf(date);
+    if (key === lastMessageDateKey) return;
+    lastMessageDateKey = key;
+    const sep = document.createElement('div');
+    sep.className = 'chat-date-separator';
+    sep.textContent = formatDateSeparator(date);
+    messagesDiv.appendChild(sep);
+}
+
 function renderChatMessage({ username, user, avatar, text, image_url, created_at }) {
     const name = username || user || 'Участник';
+    // created_at приходит с сервера как Date.now() (мс) — если вдруг отсутствует
+    // (не должно, но на всякий случай), берём текущее время, чтобы не сломать рендер.
+    const date = created_at ? new Date(created_at) : new Date();
+
+    maybeInsertDateSeparator(date);
+
     const msg = document.createElement('div');
     msg.className = 'chat-message fade-in';
 
@@ -1921,6 +1964,7 @@ function renderChatMessage({ username, user, avatar, text, image_url, created_at
     if (image_url) {
         html += `<div class="chat-image-wrap"><img src="${image_url}" class="chat-image" alt="Изображение" onclick="openImageLightbox('${image_url}')"></div>`;
     }
+    html += `<span class="msg-time">${formatMessageTime(date)}</span>`;
     msg.innerHTML = html;
     messagesDiv.appendChild(msg);
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
@@ -1928,6 +1972,7 @@ function renderChatMessage({ username, user, avatar, text, image_url, created_at
 
 socket.on('chat history', (history) => {
     messagesDiv.innerHTML = '';
+    lastMessageDateKey = null; // заново расставляем разделители дат для свежезагруженной истории
     history.forEach(renderChatMessage);
 });
 
@@ -1964,8 +2009,8 @@ if (attachBtn && attachInput) {
             alert('Можно прикреплять только изображения');
             return;
         }
-        if (file.size > 8 * 1024 * 1024) {
-            alert('Файл слишком большой (максимум 8 МБ)');
+        if (file.size > 5 * 1024 * 1024) {
+            alert('Файл слишком большой (максимум 5 МБ)');
             return;
         }
 
@@ -2065,8 +2110,8 @@ profileAvatarFileInput.addEventListener('change', () => {
         profileAvatarFileInput.value = '';
         return;
     }
-    if (file.size > 8 * 1024 * 1024) {
-        alert('Файл слишком большой (максимум 8 МБ)');
+    if (file.size > 5 * 1024 * 1024) {
+        alert('Файл слишком большой (максимум 5 МБ)');
         profileAvatarFileInput.value = '';
         return;
     }
@@ -2215,4 +2260,344 @@ document.addEventListener('copy', (e) => {
     if (!isAllowed) {
         e.preventDefault();
     }
+});
+
+
+// ---------- Пользовательские комнаты ----------
+const roomsList = document.getElementById('rooms-list');
+const addRoomBtn = document.getElementById('add-room-btn');
+const roomAccessModal = document.getElementById('room-access-modal');
+const roomAccessPassword = document.getElementById('room-access-password');
+const roomAccessError = document.getElementById('room-access-error');
+const roomAccessSubmit = document.getElementById('room-access-submit');
+const roomAccessCancel = document.getElementById('room-access-cancel');
+const roomAccessTitle = document.getElementById('room-access-title');
+const roomAccessSubtitle = document.getElementById('room-access-subtitle');
+const roomEditorModal = document.getElementById('room-editor-modal');
+const roomEditorTitle = document.getElementById('room-editor-title');
+const roomNameInput = document.getElementById('room-name-input');
+const roomPasswordInput = document.getElementById('room-password-input');
+const roomImageUrlInput = document.getElementById('room-image-url-input');
+const roomImageFileInput = document.getElementById('room-image-file-input');
+const roomImagePreview = document.getElementById('room-image-preview');
+const roomEditorError = document.getElementById('room-editor-error');
+const roomEditorSubmit = document.getElementById('room-editor-submit');
+const roomEditorCancel = document.getElementById('room-editor-cancel');
+const roomEditorCodeWrap = document.getElementById('room-editor-code-wrap');
+const roomEditorCode = document.getElementById('room-editor-code');
+const roomCodeInput = document.getElementById('room-code-input');
+const roomCodeSubmit = document.getElementById('room-code-submit');
+const roomMenuModal = document.getElementById('room-menu-modal');
+const roomMenuTitle = document.getElementById('room-menu-title');
+const roomMenuCode = document.getElementById('room-menu-code');
+const roomMenuOwnerNote = document.getElementById('room-menu-owner-note');
+const roomMenuEnter = document.getElementById('room-menu-enter');
+const roomMenuEdit = document.getElementById('room-menu-edit');
+const roomMenuDelete = document.getElementById('room-menu-delete');
+const roomMenuClose = document.getElementById('room-menu-close');
+
+let availableRooms = [];
+let roomByCode = new Map();
+let roomEditorCodeValue = null;
+let roomMenuCodeValue = null;
+let pendingRoomImageFile = null;
+let pendingAccessCode = null;
+let pendingAccessPassword = '';
+const roomAccessPasswords = {};
+let reconnectVoiceAfterAccess = false;
+
+function setRoomError(el, text) {
+    el.textContent = text || '';
+    el.style.display = text ? 'block' : 'none';
+}
+
+function roomInitial(name) {
+    const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+    return (parts.slice(0, 2).map(x => x[0]).join('') || '?').toUpperCase();
+}
+
+function isRoomOwner(room) {
+    if (!room || !currentUser.token) return false;
+    try {
+        const payload = JSON.parse(atob(currentUser.token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+        return Number(payload.uid) === Number(room.owner_id);
+    } catch (_) { return false; }
+}
+
+function renderRooms() {
+    if (!roomsList) return;
+    roomsList.innerHTML = '';
+    availableRooms.forEach(room => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'server-icon room-btn dynamic-room-icon';
+        btn.dataset.roomCode = room.code;
+        btn.title = `${room.name}${room.has_password ? ' 🔒' : ''}`;
+        if (room.image_url) {
+            const img = document.createElement('img');
+            img.src = room.image_url;
+            img.alt = '';
+            img.onerror = () => { img.remove(); btn.insertAdjacentHTML('afterbegin', `<span class="dynamic-room-letter">${escapeHtml(roomInitial(room.name))}</span>`); };
+            btn.appendChild(img);
+        } else {
+            const span = document.createElement('span');
+            span.className = 'dynamic-room-letter';
+            span.textContent = roomInitial(room.name);
+            btn.appendChild(span);
+        }
+        if (room.has_password) {
+            const lock = document.createElement('span');
+            lock.className = 'room-lock-dot';
+            lock.textContent = '🔒';
+            btn.appendChild(lock);
+        }
+        btn.addEventListener('click', () => requestRoomAccess(room));
+        btn.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            openRoomMenu(room);
+        });
+        roomsList.appendChild(btn);
+    });
+}
+
+async function loadRooms() {
+    try {
+        const res = await fetch('/rooms');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Не удалось загрузить комнаты');
+        availableRooms = Array.isArray(data) ? data : [];
+        roomByCode = new Map(availableRooms.map(r => [r.code, r]));
+        renderRooms();
+        if (selectedRoom && !roomByCode.has(selectedRoom)) {
+            selectedRoom = null;
+            currentUser.room = null;
+            roomTitle.innerText = 'Выберите комнату слева';
+            roomNameDisplay.innerHTML = `${ROOM_OUT_ICON_SVG}<span>Вы не в ГС</span>`;
+            messagesDiv.innerHTML = '';
+        }
+    } catch (err) {
+        console.error('[Комнаты]', err);
+    }
+}
+
+function selectRoomVisual(room) {
+    document.querySelectorAll('#rooms-list .room-btn').forEach(b => b.classList.toggle('active', b.dataset.roomCode === room.code));
+    selectedRoom = room.code;
+    roomTitle.innerText = currentUser.room === room.code ? `Канал: ${room.name}` : `Канал: ${room.name} (Просмотр)`;
+    if (currentUser.room === room.code) {
+        connectRoomBtn.innerText = 'Покинуть ГС';
+        connectRoomBtn.className = 'btn-primary btn-danger';
+        connectRoomBtn.style.display = 'inline-block';
+    } else {
+        connectRoomBtn.innerText = 'Подключиться';
+        connectRoomBtn.className = 'btn-primary';
+        connectRoomBtn.style.display = 'inline-block';
+    }
+}
+
+function requestRoomAccess(room) {
+    if (!room) return;
+    selectRoomVisual(room);
+    if (!room.has_password) {
+        socket.emit('select room', { code: room.code, password: '' });
+        return;
+    }
+    pendingAccessCode = room.code;
+    pendingAccessPassword = roomAccessPasswords[room.code] || '';
+    roomAccessTitle.textContent = `Вход: ${room.name}`;
+    roomAccessSubtitle.textContent = 'Эта комната защищена паролем.';
+    roomAccessPassword.value = '';
+    setRoomError(roomAccessError, '');
+    roomAccessModal.style.display = 'flex';
+    setTimeout(() => roomAccessPassword.focus(), 0);
+}
+
+roomAccessSubmit.addEventListener('click', () => {
+    if (!pendingAccessCode) return;
+    pendingAccessPassword = roomAccessPassword.value;
+    roomAccessPasswords[pendingAccessCode] = pendingAccessPassword;
+    socket.emit('select room', { code: pendingAccessCode, password: pendingAccessPassword });
+});
+roomAccessPassword.addEventListener('keypress', e => { if (e.key === 'Enter') roomAccessSubmit.click(); });
+roomAccessCancel.addEventListener('click', () => { roomAccessModal.style.display = 'none'; pendingAccessCode = null; });
+
+socket.on('room access result', ({ ok, error, room, history }) => {
+    if (!ok) {
+        setRoomError(roomAccessError, error || 'Не удалось войти');
+        return;
+    }
+    roomAccessModal.style.display = 'none';
+    pendingAccessCode = null;
+    if (room) {
+        roomByCode.set(room.code, room);
+        availableRooms = availableRooms.map(r => r.code === room.code ? room : r);
+        renderRooms();
+        selectRoomVisual(room);
+    }
+    messagesDiv.innerHTML = '';
+    lastMessageDateKey = null;
+    (history || []).forEach(renderChatMessage);
+    if (reconnectVoiceAfterAccess && currentUser.room === (room && room.code)) {
+        reconnectVoiceAfterAccess = false;
+        socket.emit('join room', { room: currentUser.room, peerId: myPeerId, micMuted: isMuted, deafened: isDeafened });
+    }
+});
+
+socket.on('chat error', ({ error }) => alert(error || 'Ошибка чата'));
+socket.on('room deleted', ({ code }) => {
+    availableRooms = availableRooms.filter(r => r.code !== code);
+    roomByCode.delete(code);
+    if (selectedRoom === code) {
+        if (currentUser.room === code) leaveVoiceChannel();
+        selectedRoom = null;
+        messagesDiv.innerHTML = '';
+        roomTitle.innerText = 'Выберите комнату слева';
+        roomNameDisplay.innerHTML = `${ROOM_OUT_ICON_SVG}<span>Вы не в ГС</span>`;
+    }
+    renderRooms();
+});
+
+function openRoomMenu(room) {
+    roomMenuCodeValue = room.code;
+    roomMenuTitle.textContent = room.name;
+    roomMenuCode.textContent = room.code;
+    const owner = isRoomOwner(room);
+    roomMenuOwnerNote.textContent = owner ? 'Вы создатель этой комнаты. Здесь доступны настройки и удаление.' : 'Код можно скопировать и передать другим участникам.';
+    roomMenuEdit.classList.toggle('visible', owner);
+    roomMenuDelete.classList.toggle('visible', owner);
+    roomMenuModal.style.display = 'flex';
+}
+
+roomMenuEnter.addEventListener('click', () => {
+    const room = roomByCode.get(roomMenuCodeValue);
+    roomMenuModal.style.display = 'none';
+    requestRoomAccess(room);
+});
+roomMenuClose.addEventListener('click', () => roomMenuModal.style.display = 'none');
+roomMenuEdit.addEventListener('click', () => {
+    const room = roomByCode.get(roomMenuCodeValue);
+    roomMenuModal.style.display = 'none';
+    openRoomEditor(room);
+});
+roomMenuDelete.addEventListener('click', async () => {
+    const room = roomByCode.get(roomMenuCodeValue);
+    if (!room || !isRoomOwner(room)) return;
+    if (!confirm(`Удалить комнату «${room.name}»? Её чат тоже будет удалён.`)) return;
+    try {
+        const res = await fetch(`/rooms/${encodeURIComponent(room.code)}`, { method:'DELETE', headers:{ Authorization:`Bearer ${currentUser.token}` } });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Не удалось удалить комнату');
+        roomMenuModal.style.display = 'none';
+        await loadRooms();
+    } catch (err) { alert(err.message); }
+});
+
+function openRoomEditor(room = null) {
+    roomEditorCodeValue = room ? room.code : null;
+    roomCodeInput.value = '';
+    roomEditorTitle.textContent = room ? 'Настройки комнаты' : 'Создать комнату';
+    roomEditorSubmit.textContent = room ? 'Сохранить' : 'Создать';
+    roomNameInput.value = room?.name || '';
+    roomPasswordInput.value = '';
+    roomImageUrlInput.value = room?.image_url || '';
+    pendingRoomImageFile = null;
+    roomImageFileInput.value = '';
+    roomImagePreview.src = room?.image_url || '';
+    roomImagePreview.style.display = room?.image_url ? 'block' : 'none';
+    roomEditorCodeWrap.classList.toggle('visible', !!room);
+    roomEditorCode.textContent = room?.code || '';
+    setRoomError(roomEditorError, '');
+    roomEditorModal.style.display = 'flex';
+    setTimeout(() => roomNameInput.focus(), 0);
+}
+
+addRoomBtn.addEventListener('click', () => {
+    if (!currentUser.token) {
+        alert('Чтобы создавать комнаты, войдите в зарегистрированный аккаунт.');
+        return;
+    }
+    openRoomEditor();
+});
+roomCodeSubmit.addEventListener('click', () => {
+    const code = roomCodeInput.value.trim().toUpperCase();
+    const room = roomByCode.get(code);
+    if (!room) { setRoomError(roomEditorError, 'Комната с таким кодом не найдена'); return; }
+    roomEditorModal.style.display = 'none';
+    requestRoomAccess(room);
+});
+roomCodeInput.addEventListener('keypress', e => { if (e.key === 'Enter') roomCodeSubmit.click(); });
+roomEditorCancel.addEventListener('click', () => roomEditorModal.style.display = 'none');
+roomImageUrlInput.addEventListener('input', () => {
+    pendingRoomImageFile = null;
+    const url = roomImageUrlInput.value.trim();
+    roomImagePreview.src = url;
+    roomImagePreview.style.display = url ? 'block' : 'none';
+});
+roomImageFileInput.addEventListener('change', () => {
+    const file = roomImageFileInput.files[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { alert('Можно загружать только изображения'); roomImageFileInput.value=''; return; }
+    if (file.size > 5 * 1024 * 1024) { alert('Картинка слишком большая (максимум 5 МБ)'); roomImageFileInput.value=''; return; }
+    pendingRoomImageFile = file;
+    roomImageUrlInput.value = '';
+    const reader = new FileReader();
+    reader.onload = () => { roomImagePreview.src = reader.result; roomImagePreview.style.display='block'; };
+    reader.readAsDataURL(file);
+});
+
+async function getRoomImageUrl() {
+    if (!pendingRoomImageFile) return roomImageUrlInput.value.trim();
+    const formData = new FormData();
+    formData.append('image', pendingRoomImageFile);
+    const res = await fetch('/upload', { method:'POST', body:formData });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Не удалось загрузить картинку');
+    return data.url;
+}
+
+roomEditorSubmit.addEventListener('click', async () => {
+    const name = roomNameInput.value.trim();
+    const password = roomPasswordInput.value;
+    if (!name) { setRoomError(roomEditorError, 'Введите название комнаты'); return; }
+    roomEditorSubmit.disabled = true;
+    try {
+        const imageUrl = await getRoomImageUrl();
+        const isEdit = !!roomEditorCodeValue;
+        const url = isEdit ? `/rooms/${encodeURIComponent(roomEditorCodeValue)}` : '/rooms';
+        const res = await fetch(url, {
+            method: isEdit ? 'PUT' : 'POST',
+            headers: { 'Content-Type':'application/json', Authorization:`Bearer ${currentUser.token}` },
+            body: JSON.stringify({ name, password, imageUrl })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Не удалось сохранить комнату');
+        roomEditorModal.style.display = 'none';
+        await loadRooms();
+        if (!isEdit) requestRoomAccess(data);
+        else if (selectedRoom === data.code) selectRoomVisual(data);
+    } catch (err) {
+        setRoomError(roomEditorError, err.message || 'Ошибка сохранения');
+    } finally { roomEditorSubmit.disabled = false; }
+});
+
+[roomAccessModal, roomEditorModal, roomMenuModal].forEach(modal => modal.addEventListener('click', e => {
+    if (e.target === modal) modal.style.display = 'none';
+}));
+
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+        [roomAccessModal, roomEditorModal, roomMenuModal].forEach(m => { if (m.style.display === 'flex') m.style.display = 'none'; });
+    }
+});
+
+// Загружаем комнаты после появления приложения.
+const oldCompleteLoginForRooms = completeLogin;
+// completeLogin уже объявлена выше; вместо изменения её тела просто слушаем первый socket connect.
+socket.on('connect', () => {
+    if (appContainer && appContainer.style.display !== 'none') loadRooms();
+});
+
+// Ограничение сообщения на клиенте: 200 символов.
+messageInput.addEventListener('input', () => {
+    if (messageInput.value.length > 200) messageInput.value = messageInput.value.slice(0, 200);
 });
