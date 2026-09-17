@@ -495,7 +495,8 @@ registerBtn.addEventListener('click', async () => {
     }
 });
 
-// Сервер сообщает, что выбранный ник занят зарегистрированным аккаунтом и подставил другой.
+// Сервер сообщает, что выбранный ник уже занят — либо зарегистрированным аккаунтом,
+// либо другим человеком, который прямо сейчас подключён под этим же именем — и подставил другой.
 socket.on('username protected', ({ requested, assignedUsername }) => {
     currentUser.username = assignedUsername;
     saveProfileToStorage();
@@ -509,7 +510,39 @@ socket.on('username protected', ({ requested, assignedUsername }) => {
         localWrapName.style.color = getUserColor(assignedUsername);
     }
 
-    alert(`Ник «${requested}» принадлежит зарегистрированному аккаунту. Вам временно присвоен ник «${assignedUsername}». Если это ваш аккаунт — войдите через вкладку «Вход».`);
+    alert(`Ник «${requested}» уже занят (аккаунтом или другим участником, который сейчас онлайн). Вам временно присвоен ник «${assignedUsername}». Если это ваш аккаунт — войдите через вкладку «Вход».`);
+});
+
+// ---------- Восстановление после разрыва соединения ----------
+// socket.io-client сам переподключается при обрыве (сон ноутбука, разрыв Wi-Fi,
+// сворачивание/фоновый режим приложения), но при новом подключении сервер выдаёт
+// НОВЫЙ socket.id — это фактически новое соединение с нуля, без socket.data (ника)
+// и без членства в комнате (rooms[room][id] сервер уже удалил при разрыве прежнего
+// сокета). Раньше клиент после такого разрыва не переотправлял ни 'register user',
+// ни 'join room' — сам он продолжал считать себя "в комнате" (currentUser.room не
+// сбрасывался), но для сервера и всех остальных участников фактически исчезал:
+// переставал приходить в 'room users', никто не получал от него 'mute state',
+// а сам он переставал получать обновления о других — в том числе не видел, кто из
+// уже присутствующих в муте/дефене. Теперь при восстановлении соединения заново
+// регистрируемся и, если были в голосовом канале, заново в него заходим.
+let hasConnectedBefore = false;
+socket.on('connect', () => {
+    if (!hasConnectedBefore) {
+        hasConnectedBefore = true;
+        return; // первое подключение — обычная инициализация и так идёт по остальному коду
+    }
+    console.log('[Соединение] Восстановлено после разрыва — заново регистрируемся на сервере.');
+    if (myPeerId) {
+        socket.emit('register user', {
+            username: currentUser.username,
+            avatar: currentUser.avatar,
+            peerId: myPeerId,
+            token: currentUser.token || null
+        });
+    }
+    if (currentUser.room) {
+        socket.emit('join room', { room: currentUser.room, peerId: myPeerId, micMuted: isMuted, deafened: isDeafened });
+    }
 });
 
 // Сам вход в приложение — вынесено отдельно, чтобы можно было вызвать
@@ -563,6 +596,19 @@ function initPeer() {
 
     myPeer.on('error', (err) => {
         console.error('[Ошибка] PeerJS:', err);
+    });
+
+    // PeerJS общается со своим сигнальным сервером через отдельное WebSocket-соединение
+    // (независимо от socket.io) — оно тоже может отвалиться (сон ноутбука, сворачивание
+    // окна, разрыв сети) и тогда исходящие/входящие звонки перестают устанавливаться,
+    // хотя text-чат и socket.io продолжают работать как ни в чём не бывало. 'disconnected'
+    // не разрушает сам Peer-объект (id остаётся прежним) — reconnect() просто поднимает
+    // сигнальное соединение заново.
+    myPeer.on('disconnected', () => {
+        console.warn('[Peer] Сигнальное соединение потеряно, пробуем восстановить…');
+        if (!myPeer.destroyed) {
+            myPeer.reconnect();
+        }
     });
 }
 
@@ -1225,8 +1271,16 @@ function handleIncomingCall(call) {
     if (call.peer === myPeerId) return;
     activeCalls[call.peer] = call;
 
+    // ВАЖНО: раньше здесь запись в connectedUsers ПОЛНОСТЬЮ заменялась на call.metadata
+    // (а там только username/avatar — их передаёт вызывающая сторона в myPeer.call(...,
+    // { metadata: {...} })). Из-за этого ровно в момент установления звонка (то есть
+    // сразу при входе в канал) затирались micMuted/deafened, которые до этого были
+    // корректно получены через 'room users' — отсюда и эффект "до входа статус мьюта
+    // виден, а как только зашёл — пропадает". Теперь дополняем существующую запись,
+    // а не заменяем её целиком.
     if (call.metadata && call.metadata.username) {
-        connectedUsers[call.peer] = call.metadata;
+        const prev = connectedUsers[call.peer] || {};
+        connectedUsers[call.peer] = { ...prev, username: call.metadata.username, avatar: call.metadata.avatar };
         updateVoiceUsersList();
     }
 

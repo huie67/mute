@@ -283,6 +283,42 @@ app.put('/auth/profile', async (req, res) => {
 
 const rooms = {}; // Структура: { roomName: { socketId: { username, avatar, peerId } } }
 
+// Проверка ника из БД (findUserByUsername) ловит только совпадение с ЗАРЕГИСТРИРОВАННЫМ
+// (защищённым паролем) аккаунтом. Она НЕ ловит случай, когда два гостя (без пароля)
+// подключаются одновременно с одинаковым/дефолтным ником ("Гость" и т.п.) — тогда оба
+// реально получают socket.data.username = 'Гость' без каких-либо изменений, и в списке
+// комнаты они выглядят абсолютно одинаково — со стороны кажется, будто кто-то "забрал"
+// чужой ник, хотя на самом деле сервер просто никогда не сверял ники между уже
+// подключёнными сокетами. Эта функция проверяет живую занятость ника среди ВСЕХ сейчас
+// подключённых сокетов (не только в одной комнате — чат общий на все комнаты).
+function isUsernameActiveElsewhere(username, excludeSocketId) {
+    const lower = username.toLowerCase();
+    for (const [id, s] of io.sockets.sockets) {
+        if (id === excludeSocketId) continue;
+        if (s.data && typeof s.data.username === 'string' && s.data.username.toLowerCase() === lower) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Подбирает свободный (не занятый ни в БД зарегистрированным аккаунтом, ни живым
+// сокетом прямо сейчас) вариант ника на основе requested, добавляя случайный суффикс.
+async function resolveFreeGuestUsername(requested, excludeSocketId) {
+    let candidate = requested;
+    for (let attempt = 0; attempt < 5; attempt++) {
+        const owner = await findUserByUsername(candidate);
+        const takenByAccount = !!(owner && owner.password_hash);
+        const takenLive = isUsernameActiveElsewhere(candidate, excludeSocketId);
+        if (!takenByAccount && !takenLive) {
+            return { username: candidate, changed: candidate !== requested };
+        }
+        const suffix = String(Math.floor(1000 + Math.random() * 9000));
+        candidate = `${requested}_${suffix}`.slice(0, USERNAME_MAX);
+    }
+    return { username: candidate, changed: true };
+}
+
 io.on('connection', (socket) => {
     let currentUserRoom = null;
     let currentUserData = null;
@@ -295,6 +331,9 @@ io.on('connection', (socket) => {
     // Ник закреплён за зарегистрированным аккаунтом (пароль) только когда
     // валидным JWT-токеном подтверждено, что это действительно его владелец. Без токена
     // взять чужой занятый ник нельзя — сервер сам подставит свободный вариант с суффиксом.
+    // Помимо занятых аккаунтов, также проверяем, не сидит ли прямо сейчас под этим же
+    // ником другой гость (см. isUsernameActiveElsewhere) — иначе два человека без
+    // аккаунта могут одновременно оказаться под одинаковым именем.
     socket.on('register user', async (userData) => {
         const requested = ((userData && userData.username) || '').trim() || 'Гость';
         let username = requested;
@@ -308,10 +347,9 @@ io.on('connection', (socket) => {
                     username = decoded.username; // сервер — источник истины по нику владельца аккаунта
                 }
             } else {
-                const owner = await findUserByUsername(requested);
-                if (owner && owner.password_hash) {
-                    const suffix = String(Math.floor(1000 + Math.random() * 9000));
-                    username = `${requested}_${suffix}`.slice(0, USERNAME_MAX);
+                const resolved = await resolveFreeGuestUsername(requested, socket.id);
+                username = resolved.username;
+                if (resolved.changed) {
                     socket.emit('username protected', { requested, assignedUsername: username });
                 }
             }
@@ -341,7 +379,8 @@ io.on('connection', (socket) => {
                     }
                 } else if (requested.toLowerCase() !== socket.data.username.toLowerCase()) {
                     const owner = await findUserByUsername(requested);
-                    if (owner && owner.password_hash) {
+                    const takenLive = isUsernameActiveElsewhere(requested, socket.id);
+                    if ((owner && owner.password_hash) || takenLive) {
                         socket.emit('username protected', { requested, assignedUsername: socket.data.username });
                         finalUsername = socket.data.username; // оставляем прежний ник, чужой не отдаём
                     }
