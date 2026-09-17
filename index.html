@@ -1121,22 +1121,6 @@
                 <span class="profile-hint">Реальная ML-модель (не просто фильтр частот) — заметно лучше давит клавиатуру, вентилятор и прочий фон, при этом почти не трогает голос. Требует немного больше ресурсов процессора. Если браузер не поддерживает AudioWorklet, включится обычная обработка ниже</span>
             </div>
             <div class="control-group">
-                <label>Тип шумоподавления</label>
-                <select id="noise-profile-select">
-                    <option value="off">Выключено</option>
-                    <option value="standard" selected>Стандартное</option>
-                    <option value="aggressive">Сильное (шумное помещение)</option>
-                    <option value="telephone">Телефонное (максимум подавления)</option>
-                </select>
-                <span class="profile-hint">Стандартное — мягкий срез гула для обычной комнаты. Сильное — плюс вырез сетевой наводки и жёсткая компрессия, для вентилятора/стройки/кондиционера. Телефонное — узкая полоса, режет почти всё лишнее, но голос звучит суше</span>
-            </div>
-            <div class="control-group">
-                <label class="checkbox-label">
-                    <input type="checkbox" id="click-suppression-check" checked> Подавление кликов клавиатуры/мыши
-                </label>
-                <span class="profile-hint">Отдельно от общего шумоподавления: отслеживает резкие короткие всплески громкости (клик, щелчок, стук по столу) и на лету приглушает именно их, не трогая обычную речь</span>
-            </div>
-            <div class="control-group">
                 <label class="checkbox-label">
                     <input type="checkbox" id="noise-suppression-check" checked> Базовое шумоподавление (браузер)
                 </label>

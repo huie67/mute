@@ -34,8 +34,6 @@ const gateHangoverValueDisplay = document.getElementById('gate-hangover-value');
 const noiseCheck = document.getElementById('noise-suppression-check');
 const echoCheck = document.getElementById('echo-cancellation-check');
 const agcCheck = document.getElementById('agc-check');
-const noiseProfileSelect = document.getElementById('noise-profile-select');
-const clickSuppressionCheck = document.getElementById('click-suppression-check');
 const rnnoiseCheck = document.getElementById('rnnoise-check');
 const micVolumeSlider = document.getElementById('mic-volume-slider');
 const micVolumeValueDisplay = document.getElementById('mic-volume-value');
@@ -102,19 +100,17 @@ let micMonitorEnabled = false;
 // раньше анализатор слушал тот же трек, который выключался гейтом, из-за чего после
 // падения громкости в тишину уровень намертво зависал на нуле и гейт больше никогда
 // не открывался сам собой.
-// Дальше сырой сигнал идёт через цепочку шумоподавления (noiseProfileNodes) и свой
+// Дальше сырой сигнал идёт через RNNoise (rnnoiseGraphNodes, если включён) и свой
 // gain-узел громкости микрофона (micGainNode) в MediaStreamDestination — и уже этот,
 // обработанный, трек (processedTrack) реально уходит собеседникам и включается/
 // выключается Voice Gate'ом и кнопкой "Микрофон".
 let sourceNode = null;
-let noiseProfileNodes = [];
+let rnnoiseGraphNodes = [];
 let micGainNode = null;
 let destinationNode = null;
 let processedTrack = null;
-let noiseProfile = 'standard'; // 'off' | 'standard' | 'aggressive' | 'telephone'
 let micVolume = 1; // 0..2 (0%..200%), усиление своего микрофона перед отправкой
-let clickSuppressionEnabled = true; // подавление коротких резких щелчков (клавиатура, мышь, стук)
-let rnnoiseEnabled = true; // нейросетевое шумоподавление RNNoise (поверх/вместо простых фильтров)
+let rnnoiseEnabled = true; // нейросетевое шумоподавление RNNoise
 
 // ---------- Voice Gate: реально отключает передачу микрофона при тишине/фоновом шуме ----------
 // Лёгкая реализация на AnalyserNode (без тяжёлых ML-моделей шумоподавления):
@@ -174,13 +170,10 @@ function saveRemoteVolume(username, percent) {
     if (typeof saved.gateThreshold === 'number') gateThreshold = saved.gateThreshold;
     if (typeof saved.gateEnabled === 'boolean') gateEnabled = saved.gateEnabled;
     if (typeof saved.gateHangoverMs === 'number') gateHangoverMs = saved.gateHangoverMs;
-    if (typeof saved.noiseProfile === 'string') noiseProfile = saved.noiseProfile;
     if (typeof saved.micVolume === 'number') micVolume = saved.micVolume;
     if (typeof saved.noiseSuppression === 'boolean' && noiseCheck) noiseCheck.checked = saved.noiseSuppression;
     if (typeof saved.echoCancellation === 'boolean' && echoCheck) echoCheck.checked = saved.echoCancellation;
     if (typeof saved.agc === 'boolean' && agcCheck) agcCheck.checked = saved.agc;
-    if (typeof saved.clickSuppression === 'boolean') clickSuppressionEnabled = saved.clickSuppression;
-    if (clickSuppressionCheck) clickSuppressionCheck.checked = clickSuppressionEnabled;
     if (typeof saved.rnnoise === 'boolean') rnnoiseEnabled = saved.rnnoise;
     if (rnnoiseCheck) rnnoiseCheck.checked = rnnoiseEnabled;
 
@@ -190,7 +183,6 @@ function saveRemoteVolume(username, percent) {
     if (thresholdSlider) thresholdSlider.value = gateThreshold;
     if (thresholdValueDisplay) thresholdValueDisplay.innerText = `${gateThreshold} дБ`;
     if (thresholdIndicator) thresholdIndicator.style.left = `${((gateThreshold + 70) / 60) * 100}%`;
-    if (noiseProfileSelect) noiseProfileSelect.value = noiseProfile;
     if (micVolumeSlider) micVolumeSlider.value = Math.round(micVolume * 100);
     if (micVolumeValueDisplay) micVolumeValueDisplay.innerText = `${Math.round(micVolume * 100)}%`;
 })();
@@ -636,111 +628,6 @@ async function initMediaStream(deviceId = null) {
     }
 }
 
-// Строит цепочку узлов шумоподавления под выбранный профиль. Работает ПОВЕРХ
-// браузерного шумоподавления (чекбокс "Базовое шумоподавление") как дополнительная
-// обработка сигнала через Web Audio — поэтому профили реально звучат по-разному,
-// а не просто переключают один и тот же флажок:
-// - off:        без дополнительной обработки;
-// - standard:   мягкий срез гула снизу + лёгкая компрессия — для обычной комнаты;
-// - aggressive: более жёсткий срез снизу + узкий вырез сетевой наводки (50 Гц,
-//               гул проводки/блоков питания) + сильная компрессия — для шумного
-//               помещения (вентилятор, кондиционер, стройка за окном);
-// - telephone:  узкая "телефонная" полоса 300–3400 Гц — максимально режет и бас,
-//               и шипение, ценой лёгкой потери насыщенности голоса.
-// Отдельный узел подавления коротких резких щелчков (клавиатура, клик мыши, стук
-// по столу) — в отличие от статичных фильтров/компрессора выше, которые режут
-// диапазон частот целиком и одинаково давят и голос, и шум, этот узел следит за
-// СООТНОШЕНИЕМ быстрой (~ мс) и медленной (~ сотни мс) огибающей громкости сигнала:
-// - речь нарастает и держится десятки-сотни миллисекунд — быстрая и медленная
-//   огибающие успевают "сойтись", соотношение остаётся низким — сигнал не трогаем;
-// - клик клавиатуры/щелчок — это резкий всплеск на несколько миллисекунд, который
-//   быстрая огибающая ловит мгновенно, а медленная почти не успевает измениться —
-//   соотношение резко подскакивает, и на это время сигнал приглушается.
-// Реализовано на ScriptProcessorNode (не AudioWorklet) специально для простоты
-// подключения без отдельного файла-модуля и без асинхронной загрузки.
-function createClickSuppressorNode(ctx) {
-    const bufferSize = 512;
-    const node = ctx.createScriptProcessor(bufferSize, 1, 1);
-
-    let fastEnv = 0;   // огибающая с быстрым откликом — ловит сами щелчки
-    let slowEnv = 0;   // огибающая с медленным откликом — "обычный" уровень сигнала
-    let attenuation = 1; // текущий коэффициент приглушения (сглаживается, чтобы не давать свои щелчки)
-
-    const fastAttack = 0.6;   // как быстро fastEnv реагирует на нарастание
-    const fastRelease = 0.55; // и на спад
-    const slowAttack = 0.02;
-    const slowRelease = 0.01;
-    const RATIO_THRESHOLD = 2.6;   // во сколько раз fast должен превысить slow, чтобы посчитать это щелчком
-    const FLOOR = 0.006;           // не реагируем на совсем тихий шум/тишину
-    const MIN_ATTENUATION = 0.12;  // насколько давим сигнал на пике щелчка (не в ноль — чтобы не звучало как выпадение)
-    const SMOOTH_UP = 0.35;    // скорость приглушения (быстро — чтобы успеть погасить щелчок)
-    const SMOOTH_DOWN = 0.06;  // скорость возврата к нормальной громкости (медленнее — без резких скачков)
-
-    node.onaudioprocess = (e) => {
-        const input = e.inputBuffer.getChannelData(0);
-        const output = e.outputBuffer.getChannelData(0);
-
-        if (!clickSuppressionEnabled) {
-            output.set(input);
-            return;
-        }
-
-        for (let i = 0; i < input.length; i++) {
-            const sample = input[i];
-            const abs = Math.abs(sample);
-
-            fastEnv += (abs > fastEnv ? fastAttack : fastRelease) * (abs - fastEnv);
-            slowEnv += (abs > slowEnv ? slowAttack : slowRelease) * (abs - slowEnv);
-
-            const isClick = fastEnv > FLOOR && slowEnv > 0 && (fastEnv / (slowEnv + 1e-6)) > RATIO_THRESHOLD;
-            const targetAttenuation = isClick ? MIN_ATTENUATION : 1;
-
-            attenuation += (targetAttenuation < attenuation ? SMOOTH_UP : SMOOTH_DOWN) * (targetAttenuation - attenuation);
-
-            output[i] = sample * attenuation;
-        }
-    };
-
-    return node;
-}
-
-function buildNoiseSuppressionChain(ctx, profile) {
-    const nodes = [];
-    if (clickSuppressionEnabled) {
-        nodes.push(createClickSuppressorNode(ctx));
-    }
-    if (profile === 'off') return nodes;
-
-    const highpass = ctx.createBiquadFilter();
-    highpass.type = 'highpass';
-    highpass.frequency.value = profile === 'telephone' ? 300 : (profile === 'aggressive' ? 160 : 90);
-    highpass.Q.value = 0.7;
-    nodes.push(highpass);
-
-    if (profile === 'aggressive') {
-        const notch = ctx.createBiquadFilter();
-        notch.type = 'notch';
-        notch.frequency.value = 50;
-        notch.Q.value = 8;
-        nodes.push(notch);
-    }
-
-    const compressor = ctx.createDynamicsCompressor();
-    compressor.threshold.value = profile === 'aggressive' ? -36 : -28;
-    compressor.knee.value = 20;
-    compressor.ratio.value = profile === 'aggressive' ? 8 : (profile === 'telephone' ? 5 : 3);
-    compressor.attack.value = 0.003;
-    compressor.release.value = 0.25;
-    nodes.push(compressor);
-
-    const lowpass = ctx.createBiquadFilter();
-    lowpass.type = 'lowpass';
-    lowpass.frequency.value = profile === 'telephone' ? 3400 : (profile === 'aggressive' ? 7000 : 9000);
-    nodes.push(lowpass);
-
-    return nodes;
-}
-
 // ---------- RNNoise: настоящее нейросетевое шумоподавление (не просто фильтры/компрессор) ----------
 // В отличие от highpass/notch/compressor выше (которые лишь режут диапазон частот и
 // одинаково давят и голос, и шум), RNNoise — это маленькая RNN-модель (WASM,
@@ -794,7 +681,7 @@ function createRnnoiseNode(ctx, wasmBinary) {
 // трек продолжали бы висеть в памяти и в звонках.
 function teardownAudioGraph() {
     if (sourceNode) { try { sourceNode.disconnect(); } catch (e) { /* ignore */ } }
-    noiseProfileNodes.forEach(node => {
+    rnnoiseGraphNodes.forEach(node => {
         try { node.disconnect(); } catch (e) { /* ignore */ }
         // Узел RNNoise держит WASM-инстанс (DenoiseState) на стороне AudioWorklet —
         // просто disconnect() его не освобождает, нужно явно попросить через destroy().
@@ -802,7 +689,7 @@ function teardownAudioGraph() {
         // инстансы модели.
         if (typeof node.destroy === 'function') { try { node.destroy(); } catch (e) { /* ignore */ } }
     });
-    noiseProfileNodes = [];
+    rnnoiseGraphNodes = [];
     if (micGainNode) { try { micGainNode.disconnect(); } catch (e) { /* ignore */ } }
     micGainNode = null;
     if (destinationNode) { try { destinationNode.disconnect(); } catch (e) { /* ignore */ } }
@@ -846,24 +733,17 @@ function setupAudioAnalyzer(stream) {
             analyserNode.smoothingTimeConstant = 0.2;
             sourceNode.connect(analyserNode);
 
-            // Цепочка шумоподавления -> громкость своего микрофона -> исходящий трек.
-            // RNNoise (если включён и успешно загрузился) стоит первым — он работает
-            // лучше всего на сыром, необработанном сигнале.
+            // RNNoise -> громкость своего микрофона -> исходящий трек. RNNoise (если
+            // включён и успешно загрузился) стоит первым — он работает лучше всего
+            // на сыром, необработанном сигнале.
             let chainEnd = sourceNode;
 
             const rnnoiseNode = rnnoiseEnabled ? createRnnoiseNode(audioContext, wasmBinary) : null;
             if (rnnoiseNode) {
                 chainEnd.connect(rnnoiseNode);
                 chainEnd = rnnoiseNode;
-                noiseProfileNodes.push(rnnoiseNode);
+                rnnoiseGraphNodes.push(rnnoiseNode);
             }
-
-            const restNodes = buildNoiseSuppressionChain(audioContext, noiseProfile);
-            restNodes.forEach(node => {
-                chainEnd.connect(node);
-                chainEnd = node;
-                noiseProfileNodes.push(node);
-            });
 
             micGainNode = audioContext.createGain();
             micGainNode.gain.value = micVolume;
@@ -928,8 +808,34 @@ function processAudioLevel() {
     const localAnalyser = analyserNode;
     const dataArray = new Float32Array(localAnalyser.fftSize);
 
+    // ВАЖНО: раньше цикл гейта гонялся через requestAnimationFrame. rAF — это
+    // колбэк отрисовки кадра, и браузеры (Chrome/Firefox/Edge) почти полностью
+    // ЗАМОРАЖИВАЮТ его, когда вкладка свёрнута/не в фокусе/на другом рабочем
+    // столе — именно поэтому "автоактивация" микрофона периодически переставала
+    // реагировать на голос и не открывала канал, пока пользователь не
+    // возвращался в само приложение. У setInterval такого полного стопора нет:
+    // браузер лишь ограничивает частоту (обычно не чаще раза в секунду в фоне),
+    // но колбэк продолжает выполняться, поэтому гейт открывается/закрывается и
+    // applyGateToMicTrack() реально включает/выключает передачу, даже когда
+    // вкладка/окно не активны.
+    const intervalId = setInterval(check, 30);
+
     function check() {
-        if (analyserNode !== localAnalyser) return; // граф пересобран (смена мика/профиля) — останавливаем старый цикл
+        if (analyserNode !== localAnalyser) {
+            // граф пересобран (смена мика/профиля) — останавливаем старый цикл
+            clearInterval(intervalId);
+            return;
+        }
+        // Вторая причина, по которой автоактивация "засыпала" в фоне: сам
+        // AudioContext иногда переходит в 'suspended' (браузер экономит ресурсы
+        // у неактивной вкладки/окна), и тогда analyserNode вообще не получает
+        // новых данных — уровень громкости замирает, гейт больше не открывается,
+        // и в результате обработанный трек беззвучен, даже если сам гейт "открыт".
+        // Поэтому на каждом тике дополнительно проверяем состояние контекста и
+        // сразу же будим его, а не только один раз при создании графа.
+        if (audioContext && audioContext.state === 'suspended') {
+            audioContext.resume().catch(() => { /* попробуем снова на следующем тике */ });
+        }
         let volumeDb = getRmsDb(localAnalyser, dataArray);
 
         let meterPercent = Math.max(0, Math.min(100, ((volumeDb + 70) / 60) * 100));
@@ -966,7 +872,6 @@ function processAudioLevel() {
             const isSpeaking = !isMuted && !isDeafened && (!gateEnabled || gateOpen);
             myAvatarElem.classList.toggle('speaking', isSpeaking);
         }
-        requestAnimationFrame(check);
     }
     check();
 }
@@ -1118,8 +1023,15 @@ function processRemoteAudioLevel(peerId) {
     if (!analyser) return;
     const dataArray = new Float32Array(analyser.fftSize);
 
+    // Тот же фикс, что и в processAudioLevel(): setInterval вместо requestAnimationFrame,
+    // чтобы индикатор "говорит" у собеседника не замирал, когда вкладка/окно свёрнуты.
+    const intervalId = setInterval(checkRemote, 30);
+
     function checkRemote() {
-        if (remoteAnalysers[peerId] !== analyser) return;
+        if (remoteAnalysers[peerId] !== analyser) {
+            clearInterval(intervalId);
+            return;
+        }
         let volumeDb = getRmsDb(analyser, dataArray);
 
         const avatarElem = document.getElementById(`avatar-${peerId}`);
@@ -1130,7 +1042,6 @@ function processRemoteAudioLevel(peerId) {
                 avatarElem.classList.remove('speaking');
             }
         }
-        requestAnimationFrame(checkRemote);
     }
     checkRemote();
 }
@@ -1767,6 +1678,16 @@ document.addEventListener('click', () => {
     }
 });
 
+// Пока вкладка/окно свёрнуты, гейт (см. check() в processAudioLevel) сам
+// периодически пытается разбудить AudioContext через setInterval. Но как
+// только пользователь возвращается в приложение — будим контекст сразу же,
+// не дожидаясь ближайшего тика, чтобы микрофон включался без задержки.
+document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && audioContext && audioContext.state === 'suspended') {
+        audioContext.resume().catch(() => {});
+    }
+});
+
 document.addEventListener('fullscreenchange', () => {
     refreshDemoAudioGains();
 });
@@ -1855,26 +1776,6 @@ agcCheck.addEventListener('change', () => {
     saveAudioSettings({ agc: agcCheck.checked });
     initMediaStream(micSelect.value);
 });
-
-// Тип шумоподавления — отдельная DSP-цепочка (см. buildNoiseSuppressionChain), а не
-// просто ещё один флажок, поэтому требует пересборки графа обработки звука.
-if (noiseProfileSelect) {
-    noiseProfileSelect.addEventListener('change', (e) => {
-        noiseProfile = e.target.value;
-        saveAudioSettings({ noiseProfile });
-        initMediaStream(micSelect.value);
-    });
-}
-
-// Подавление кликов — отдельная ступень в цепочке обработки (createClickSuppressorNode),
-// поэтому тоже требует пересборки графа, как и смена профиля шумоподавления.
-if (clickSuppressionCheck) {
-    clickSuppressionCheck.addEventListener('change', () => {
-        clickSuppressionEnabled = clickSuppressionCheck.checked;
-        saveAudioSettings({ clickSuppression: clickSuppressionEnabled });
-        initMediaStream(micSelect.value);
-    });
-}
 
 // RNNoise — тоже отдельная ступень (createRnnoiseNode), требует пересборки графа.
 if (rnnoiseCheck) {
