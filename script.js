@@ -193,6 +193,15 @@ const messagesDiv = document.getElementById('messages');
 const messageInput = document.getElementById('message-input');
 const remoteVideos = document.getElementById('remote-videos');
 
+// Чат теперь отдельный для каждой комнаты — пока комната не выбрана, писать некуда.
+function setChatEnabled(enabled) {
+    messageInput.disabled = !enabled;
+    messageInput.placeholder = enabled ? 'Написать в чат...' : 'Выберите сервер слева, чтобы открыть чат';
+    const attachBtnEl = document.getElementById('attach-image-btn');
+    if (attachBtnEl) attachBtnEl.disabled = !enabled;
+}
+setChatEnabled(false);
+
 let myPeer = null;
 let myPeerId = null;
 let currentUser = { username: '', avatar: '', room: null, token: null };
@@ -1162,6 +1171,7 @@ function selectRoomButton(btn) {
     roomButtons.forEach(b => b.classList.remove('active'));
     document.querySelectorAll('.custom-room-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
+    const roomChanged = selectedRoom !== roomName;
     selectedRoom = roomName;
 
     if (currentUser.room === roomName) {
@@ -1175,6 +1185,13 @@ function selectRoomButton(btn) {
     }
     connectRoomBtn.style.display = 'inline-block';
     socket.emit('get room users', roomName);
+
+    // Чат — свой для каждого сервера. Переключаем его только если реально сменили комнату,
+    // чтобы повторный клик (открывающий настройки сервера) не дёргал историю чата заново.
+    if (roomChanged) {
+        setChatEnabled(true);
+        socket.emit('select chat room', { room: roomName });
+    }
 }
 
 roomButtons.forEach(btn => btn.addEventListener('click', () => selectRoomButton(btn)));
@@ -2322,13 +2339,21 @@ function renderChatMessage({ username, user, avatar, text, image_url, created_at
     trimRenderedMessages();
 }
 
-socket.on('chat history', (history) => {
+socket.on('chat history', (data) => {
+    // Пришла история чата другой комнаты, чем та, что сейчас открыта (например,
+    // ответ на уже неактуальный запрос) — игнорируем, чтобы не подмешать чужой чат.
+    const room = data && data.room;
+    const history = (data && data.messages) || [];
+    if (room && room !== selectedRoom) return;
+
     messagesDiv.innerHTML = '';
     lastMessageDateKey = null; // заново расставляем разделители дат для свежезагруженной истории
     history.forEach(renderChatMessage);
 });
 
 socket.on('chat message', (payload) => {
+    // Показываем только сообщения текущей открытой комнаты.
+    if (payload.room && payload.room !== selectedRoom) return;
     renderChatMessage(payload);
 
     // Звук — только для чужих сообщений, свои же мы и так видим, что отправили
@@ -2340,7 +2365,7 @@ socket.on('chat message', (payload) => {
 
 messageInput.addEventListener('keypress', (e) => {
     e.stopPropagation();
-    if (e.key === 'Enter' && messageInput.value.trim()) {
+    if (e.key === 'Enter' && messageInput.value.trim() && !messageInput.disabled) {
         socket.emit('chat message', { text: messageInput.value.trim() });
         messageInput.value = '';
     }

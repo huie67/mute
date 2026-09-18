@@ -39,6 +39,10 @@ async function initDb() {
             created_at BIGINT NOT NULL
         );
     `);
+    // Чат стал отдельным для каждой комнаты/сервера — старые общие сообщения (room = NULL)
+    // просто перестают попадать в выборку конкретной комнаты, ничего удалять не нужно.
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS room TEXT;`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS messages_room_idx ON messages (room, id);`);
 
     // Аккаунты: вход по паролю.
     await pool.query(`
@@ -74,20 +78,20 @@ async function initDb() {
     await pool.query(`ALTER TABLE custom_rooms ADD COLUMN IF NOT EXISTS owner_username TEXT;`);
 }
 
-async function insertMessage({ username, avatar, text, imageUrl, createdAt }) {
+async function insertMessage({ username, avatar, text, imageUrl, room, createdAt }) {
     const result = await pool.query(
-        `INSERT INTO messages (username, avatar, text, image_url, created_at)
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO messages (username, avatar, text, image_url, room, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING id`,
-        [username, avatar, text, imageUrl, createdAt]
+        [username, avatar, text, imageUrl, room, createdAt]
     );
     return result.rows[0].id;
 }
 
-async function getRecentMessages(limit = 100) {
+async function getRecentMessages(room, limit = 100) {
     const result = await pool.query(
-        `SELECT * FROM messages ORDER BY id DESC LIMIT $1`,
-        [limit]
+        `SELECT * FROM messages WHERE room = $1 ORDER BY id DESC LIMIT $2`,
+        [room, limit]
     );
     return result.rows.reverse();
 }
@@ -385,11 +389,25 @@ async function resolveFreeGuestUsername(requested, excludeSocketId) {
 io.on('connection', (socket) => {
     let currentUserRoom = null;
     let currentUserData = null;
+    let currentChatRoom = null; // какой сервер сейчас открыт в чате у этого сокета
 
-    // Общий чат не привязан к комнате — сразу шлём историю последних сообщений.
-    getRecentMessages().then(history => {
-        socket.emit('chat history', history);
-    }).catch(err => console.error('❌ Ошибка чтения истории чата:', err));
+    // Чат теперь свой для каждого сервера — история грузится только когда клиент
+    // говорит, какую комнату он открыл (см. 'select chat room' ниже).
+    socket.on('select chat room', async ({ room } = {}) => {
+        const cleanRoom = String(room || '').trim().slice(0, 80);
+        if (!cleanRoom) return;
+
+        if (currentChatRoom) socket.leave(`chat:${currentChatRoom}`);
+        currentChatRoom = cleanRoom;
+        socket.join(`chat:${cleanRoom}`);
+
+        try {
+            const history = await getRecentMessages(cleanRoom);
+            socket.emit('chat history', { room: cleanRoom, messages: history });
+        } catch (err) {
+            console.error('❌ Ошибка чтения истории чата:', err);
+        }
+    });
 
     // ---------- Пользовательские серверы ----------
     // В общий список сервера больше не отдаются — только по конкретным кодам,
@@ -720,6 +738,7 @@ io.on('connection', (socket) => {
 
     socket.on('chat message', async (payload) => {
         if (!socket.data) return;
+        if (!currentChatRoom) return; // не в чате ни одной комнаты — отправлять некуда
 
         const text = typeof payload === 'string' ? payload : (payload && payload.text) || '';
         const imageUrl = (payload && payload.imageUrl) || null;
@@ -729,17 +748,19 @@ io.on('connection', (socket) => {
         const username = socket.data.username || 'Участник';
         const avatar = socket.data.avatar || '';
         const createdAt = Date.now();
+        const room = currentChatRoom;
 
         try {
-            const id = await insertMessage({ username, avatar, text: text.trim(), imageUrl, createdAt });
+            const id = await insertMessage({ username, avatar, text: text.trim(), imageUrl, room, createdAt });
 
-            // Общий чат — рассылаем всем подключённым, а не только в рамках комнаты.
-            io.emit('chat message', {
+            // Рассылаем только тем, у кого сейчас открыт этот же сервер в чате.
+            io.to(`chat:${room}`).emit('chat message', {
                 id,
                 username,
                 avatar,
                 text: text.trim(),
                 image_url: imageUrl,
+                room,
                 created_at: createdAt
             });
         } catch (err) {
