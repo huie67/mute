@@ -14,6 +14,35 @@ const roomButtons = document.querySelectorAll('.room-btn');
 const connectRoomBtn = document.getElementById('connect-room-btn');
 const addServerBtn = document.getElementById('add-server-btn');
 const customServersList = document.getElementById('custom-servers-list');
+
+// ---------- Локальный список "моих" серверов (создал/вошёл по коду) ----------
+// Сервера больше не рассылаются всем подряд — сервер отдаёт данные только по
+// конкретным кодам. Какие именно коды нужно запрашивать, хранится в этом браузере.
+const MY_CUSTOM_SERVERS_KEY = 'myCustomServerCodes';
+function loadMyServerCodes() {
+    try {
+        const raw = JSON.parse(localStorage.getItem(MY_CUSTOM_SERVERS_KEY) || '[]');
+        return Array.isArray(raw) ? raw.filter(c => typeof c === 'string') : [];
+    } catch (e) { return []; }
+}
+function saveMyServerCodes(codes) {
+    try { localStorage.setItem(MY_CUSTOM_SERVERS_KEY, JSON.stringify(codes)); } catch (e) { /* ignore */ }
+}
+function addMyServerCode(code) {
+    if (!code) return;
+    const codes = loadMyServerCodes();
+    if (!codes.includes(code)) {
+        codes.push(code);
+        saveMyServerCodes(codes);
+    }
+}
+function removeMyServerCode(code) {
+    saveMyServerCodes(loadMyServerCodes().filter(c => c !== code));
+}
+
+// Запрашиваем данные только по серверам, которые мы уже создавали/к которым уже
+// подключались — остальные для нас просто не существуют в списке.
+socket.emit('get my custom rooms', { codes: loadMyServerCodes() });
 const serverChoiceModal = document.getElementById('server-choice-modal');
 const createServerModal = document.getElementById('create-server-modal');
 const serverCreatedModal = document.getElementById('server-created-modal');
@@ -1250,8 +1279,13 @@ function addCustomServerButton(data) {
         btn.appendChild(lock);
     }
     btn.addEventListener('click', () => {
-        selectRoomButton(btn);
-        openServerInfo(data.code);
+        // Первый клик — просто заходим на сервер (выбираем канал), как в обычные комнаты.
+        // Настройки/код открываются только вторым кликом — когда сервер уже выбран.
+        if (selectedRoom === btn.getAttribute('data-room')) {
+            openServerInfo(data.code);
+        } else {
+            selectRoomButton(btn);
+        }
     });
     customServersList.appendChild(btn);
     return btn;
@@ -1301,6 +1335,21 @@ serverInfoRemovePasswordBtn?.addEventListener('click', () => {
     serverInfoRemovePasswordBtn.style.display = 'none';
 });
 
+document.getElementById('server-info-delete')?.addEventListener('click', () => {
+    if (!currentServerInfo) return;
+    const sure = confirm(`Удалить сервер «${currentServerInfo.name || currentServerInfo.code}» навсегда? Это действие необратимо, все участники потеряют к нему доступ.`);
+    if (!sure) return;
+    socket.emit('delete custom room', { code: currentServerInfo.code });
+});
+
+document.getElementById('server-info-leave')?.addEventListener('click', () => {
+    if (!currentServerInfo) return;
+    const btn = customServersList.querySelector(`[data-room="custom:${currentServerInfo.code}"]`);
+    if (btn) btn.remove();
+    removeMyServerCode(currentServerInfo.code);
+    closeModal(serverInfoModal);
+});
+
 serverInfoSaveBtn?.addEventListener('click', async () => {
     if (!currentServerInfo) return;
     showServerError(serverInfoError, '');
@@ -1327,10 +1376,24 @@ serverInfoSaveBtn?.addEventListener('click', async () => {
 
 socket.on('custom room updated', (data) => {
     if (!data || !data.code) return;
-    addCustomServerButton(data); // обновит иконку (имя/аватар/замок) в списке у всех
+    // Обновляем иконку, только если этот сервер уже есть у нас в списке — иначе
+    // чужое редактирование сервера, которым мы не пользуемся, не должно "подсовывать"
+    // его нам в сайдбар.
+    const existing = customServersList.querySelector(`[data-room="custom:${data.code}"]`);
+    if (existing) addCustomServerButton(data);
     if (currentServerInfo && currentServerInfo.code === data.code) {
         serverInfoSaveBtn.disabled = false;
         serverInfoSaveBtn.innerText = 'Сохранить изменения';
+        closeModal(serverInfoModal);
+    }
+});
+
+socket.on('custom room deleted', ({ code } = {}) => {
+    if (!code) return;
+    const btn = customServersList.querySelector(`[data-room="custom:${code}"]`);
+    if (btn) btn.remove();
+    removeMyServerCode(code);
+    if (currentServerInfo && currentServerInfo.code === code) {
         closeModal(serverInfoModal);
     }
 });
@@ -1413,6 +1476,8 @@ document.getElementById('join-created-server')?.addEventListener('click', () => 
 
 socket.on('custom room created', (data) => {
     lastCreatedServer = data;
+    addMyServerCode(data.code);
+    addCustomServerButton(data);
     closeModal(createServerModal);
     createdServerName.innerText = data.name;
     createdServerCode.innerText = data.code;
@@ -1420,6 +1485,7 @@ socket.on('custom room created', (data) => {
 });
 
 socket.on('custom room joined', (data) => {
+    addMyServerCode(data.code);
     closeModal(joinServerModal);
     const btn = addCustomServerButton(data);
     selectRoomButton(btn);

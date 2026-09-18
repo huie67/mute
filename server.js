@@ -392,20 +392,20 @@ io.on('connection', (socket) => {
     }).catch(err => console.error('❌ Ошибка чтения истории чата:', err));
 
     // ---------- Пользовательские серверы ----------
-    // Отдаём клиенту только публичные поля — хеш пароля и владелец никогда не уходят
-    // в общий список.
-    pool.query(`SELECT code, name, password_hash, avatar, owner_username, created_at FROM custom_rooms ORDER BY created_at ASC`)
-        .then(result => {
-            socket.emit('custom rooms list', result.rows.map(row => publicCustomRoom({
-                code: row.code,
-                name: row.name,
-                passwordHash: row.password_hash,
-                avatar: row.avatar,
-                ownerUsername: row.owner_username,
-                createdAt: Number(row.created_at)
-            })));
-        })
-        .catch(err => console.error('❌ Ошибка загрузки списка пользовательских серверов:', err));
+    // В общий список сервера больше не отдаются — только по конкретным кодам,
+    // которые клиент уже знает (создал сам или когда-то вошёл по коду).
+    socket.on('get my custom rooms', ({ codes } = {}) => {
+        const cleanCodes = Array.isArray(codes)
+            ? [...new Set(codes.map(c => String(c || '').trim().toUpperCase()).filter(Boolean))].slice(0, 200)
+            : [];
+        if (cleanCodes.length === 0) return socket.emit('custom rooms list', []);
+
+        const found = cleanCodes
+            .map(code => customRooms[code])
+            .filter(Boolean)
+            .map(room => publicCustomRoom(room));
+        socket.emit('custom rooms list', found);
+    });
 
     socket.on('create custom room', async ({ name, password, avatar }) => {
         const cleanName = String(name || '').trim().slice(0, 40);
@@ -455,8 +455,8 @@ io.on('connection', (socket) => {
 
             if (!room) throw new Error('Не удалось подобрать уникальный код сервера');
             customRooms[room.code] = room;
-            // Рассылаем всем подключённым, чтобы новая иконка сервера появилась у всех сразу.
-            io.emit('custom room updated', publicCustomRoom(room));
+            // Только создателю — остальные о новом сервере ничего не узнают, пока
+            // сами не войдут по коду.
             socket.emit('custom room created', customRoomInfoFor(room, socket));
         } catch (err) {
             console.error('❌ Ошибка создания пользовательского сервера:', err);
@@ -546,6 +546,29 @@ io.on('connection', (socket) => {
         } catch (err) {
             console.error('❌ Ошибка обновления пользовательского сервера:', err);
             socket.emit('custom room error', 'Не удалось сохранить изменения.');
+        }
+    });
+
+    // Удаление сервера — доступно только владельцу. Удаляем из Neon и из памяти,
+    // затем оповещаем всех — у кого сервер был в списке, тот его у себя уберёт
+    // (см. клиентский обработчик 'custom room deleted').
+    socket.on('delete custom room', async ({ code }) => {
+        const cleanCode = String(code || '').trim().toUpperCase();
+        const custom = customRooms[cleanCode];
+        if (!custom) return socket.emit('custom room error', 'Сервер с таким кодом не найден.');
+
+        const viewerUsername = socket.data && socket.data.username;
+        const isOwner = !!(custom.ownerUsername && viewerUsername &&
+            custom.ownerUsername.toLowerCase() === viewerUsername.toLowerCase());
+        if (!isOwner) return socket.emit('custom room error', 'Удалить сервер может только его создатель.');
+
+        try {
+            await pool.query(`DELETE FROM custom_rooms WHERE code = $1`, [cleanCode]);
+            delete customRooms[cleanCode];
+            io.emit('custom room deleted', { code: cleanCode });
+        } catch (err) {
+            console.error('❌ Ошибка удаления пользовательского сервера:', err);
+            socket.emit('custom room error', 'Не удалось удалить сервер.');
         }
     });
 
