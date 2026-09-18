@@ -68,6 +68,10 @@ async function initDb() {
             created_at BIGINT NOT NULL
         );
     `);
+    // avatar/owner_username добавлены позже — ADD COLUMN IF NOT EXISTS безопасен и на уже
+    // существующей таблице (переживает деплои без ручных миграций).
+    await pool.query(`ALTER TABLE custom_rooms ADD COLUMN IF NOT EXISTS avatar TEXT;`);
+    await pool.query(`ALTER TABLE custom_rooms ADD COLUMN IF NOT EXISTS owner_username TEXT;`);
 }
 
 async function insertMessage({ username, avatar, text, imageUrl, createdAt }) {
@@ -307,25 +311,39 @@ function generateRoomCode() {
 
 async function loadCustomRooms() {
     const result = await pool.query(
-        `SELECT code, name, password_hash, created_at FROM custom_rooms ORDER BY created_at ASC`
+        `SELECT code, name, password_hash, avatar, owner_username, created_at FROM custom_rooms ORDER BY created_at ASC`
     );
     for (const row of result.rows) {
         customRooms[row.code] = {
             code: row.code,
             name: row.name,
             passwordHash: row.password_hash,
+            avatar: row.avatar || '',
+            ownerUsername: row.owner_username || null,
             createdAt: Number(row.created_at)
         };
     }
     console.log(`📦 Загружено пользовательских серверов из Neon: ${result.rows.length}`);
 }
 
+// Публичные поля сервера для списка иконок — хеш пароля и владелец (username)
+// в общую рассылку никогда не уходят.
 function publicCustomRoom(room) {
     return {
         code: room.code,
         name: room.name,
+        avatar: room.avatar || '',
         hasPassword: !!room.passwordHash
     };
+}
+
+// То же самое, но персонально под конкретный сокет — с флагом "это ваш сервер",
+// который решает, что показывать в окне сервера (редактирование или просмотр кода).
+function customRoomInfoFor(room, socket) {
+    const viewerUsername = socket && socket.data && socket.data.username;
+    const isOwner = !!(room.ownerUsername && viewerUsername &&
+        room.ownerUsername.toLowerCase() === viewerUsername.toLowerCase());
+    return { ...publicCustomRoom(room), isOwner };
 }
 
 // Проверка ника из БД (findUserByUsername) ловит только совпадение с ЗАРЕГИСТРИРОВАННЫМ
@@ -374,27 +392,35 @@ io.on('connection', (socket) => {
     }).catch(err => console.error('❌ Ошибка чтения истории чата:', err));
 
     // ---------- Пользовательские серверы ----------
-    // Отдаём клиенту только публичные поля — хеш пароля никогда не уходит.
-    pool.query(`SELECT code, name, password_hash, created_at FROM custom_rooms ORDER BY created_at ASC`)
+    // Отдаём клиенту только публичные поля — хеш пароля и владелец никогда не уходят
+    // в общий список.
+    pool.query(`SELECT code, name, password_hash, avatar, owner_username, created_at FROM custom_rooms ORDER BY created_at ASC`)
         .then(result => {
             socket.emit('custom rooms list', result.rows.map(row => publicCustomRoom({
                 code: row.code,
                 name: row.name,
                 passwordHash: row.password_hash,
+                avatar: row.avatar,
+                ownerUsername: row.owner_username,
                 createdAt: Number(row.created_at)
             })));
         })
         .catch(err => console.error('❌ Ошибка загрузки списка пользовательских серверов:', err));
 
-    socket.on('create custom room', async ({ name, password }) => {
+    socket.on('create custom room', async ({ name, password, avatar }) => {
         const cleanName = String(name || '').trim().slice(0, 40);
         const cleanPassword = String(password || '');
+        const cleanAvatar = String(avatar || '').trim().slice(0, 2000) || null;
         if (cleanName.length < 2) {
             return socket.emit('custom room error', 'Название сервера должно содержать минимум 2 символа.');
         }
         if (cleanPassword.length > 64) {
             return socket.emit('custom room error', 'Пароль слишком длинный.');
         }
+
+        // Создателя запоминаем по нику из проверенной сессии (register user), чтобы потом
+        // отличать владельца от остальных — именно от этого зависит, что покажет окно сервера.
+        const ownerUsername = (socket.data && socket.data.username) || null;
 
         try {
             const passwordHash = cleanPassword ? await bcrypt.hash(cleanPassword, 10) : null;
@@ -407,16 +433,18 @@ io.on('connection', (socket) => {
                 const code = generateRoomCode();
                 try {
                     const result = await pool.query(
-                        `INSERT INTO custom_rooms (code, name, password_hash, created_at)
-                         VALUES ($1, $2, $3, $4)
-                         RETURNING code, name, password_hash, created_at`,
-                        [code, cleanName, passwordHash, Date.now()]
+                        `INSERT INTO custom_rooms (code, name, password_hash, avatar, owner_username, created_at)
+                         VALUES ($1, $2, $3, $4, $5, $6)
+                         RETURNING code, name, password_hash, avatar, owner_username, created_at`,
+                        [code, cleanName, passwordHash, cleanAvatar, ownerUsername, Date.now()]
                     );
                     const row = result.rows[0];
                     room = {
                         code: row.code,
                         name: row.name,
                         passwordHash: row.password_hash,
+                        avatar: row.avatar || '',
+                        ownerUsername: row.owner_username || null,
                         createdAt: Number(row.created_at)
                     };
                     break;
@@ -427,7 +455,9 @@ io.on('connection', (socket) => {
 
             if (!room) throw new Error('Не удалось подобрать уникальный код сервера');
             customRooms[room.code] = room;
-            socket.emit('custom room created', publicCustomRoom(room));
+            // Рассылаем всем подключённым, чтобы новая иконка сервера появилась у всех сразу.
+            io.emit('custom room updated', publicCustomRoom(room));
+            socket.emit('custom room created', customRoomInfoFor(room, socket));
         } catch (err) {
             console.error('❌ Ошибка создания пользовательского сервера:', err);
             socket.emit('custom room error', 'Не удалось создать сервер.');
@@ -441,18 +471,81 @@ io.on('connection', (socket) => {
         if (!custom) return socket.emit('custom room error', 'Сервер с таким кодом не найден.');
 
         try {
-            if (custom.passwordHash) {
+            const isOwner = !!(custom.ownerUsername && socket.data && socket.data.username &&
+                custom.ownerUsername.toLowerCase() === socket.data.username.toLowerCase());
+            // Владельцу пароль на вход в свой же сервер спрашивать незачем.
+            if (custom.passwordHash && !isOwner) {
                 const ok = await bcrypt.compare(cleanPassword, custom.passwordHash);
                 if (!ok) return socket.emit('custom room error', 'Неверный пароль.');
             }
-            socket.emit('custom room joined', {
-                code: custom.code,
-                name: custom.name,
-                hasPassword: !!custom.passwordHash
-            });
+            socket.emit('custom room joined', customRoomInfoFor(custom, socket));
         } catch (err) {
             console.error('❌ Ошибка входа в пользовательский сервер:', err);
             socket.emit('custom room error', 'Не удалось войти на сервер.');
+        }
+    });
+
+    // Окно сервера: отдаём владельцу редактируемые поля, остальным — только код/имя/аватар.
+    socket.on('get custom room info', ({ code }) => {
+        const cleanCode = String(code || '').trim().toUpperCase();
+        const custom = customRooms[cleanCode];
+        if (!custom) return socket.emit('custom room error', 'Сервер с таким кодом не найден.');
+        socket.emit('custom room info', customRoomInfoFor(custom, socket));
+    });
+
+    // Изменение сервера доступно только владельцу — сверяем это по нику из проверенной сессии.
+    socket.on('update custom room', async ({ code, name, password, avatar, removePassword }) => {
+        const cleanCode = String(code || '').trim().toUpperCase();
+        const custom = customRooms[cleanCode];
+        if (!custom) return socket.emit('custom room error', 'Сервер с таким кодом не найден.');
+
+        const viewerUsername = socket.data && socket.data.username;
+        const isOwner = !!(custom.ownerUsername && viewerUsername &&
+            custom.ownerUsername.toLowerCase() === viewerUsername.toLowerCase());
+        if (!isOwner) return socket.emit('custom room error', 'Изменять может только создатель сервера.');
+
+        const cleanName = String(name || '').trim().slice(0, 40);
+        const cleanPassword = String(password || '');
+        const cleanAvatar = String(avatar || '').trim().slice(0, 2000) || null;
+        if (cleanName.length < 2) {
+            return socket.emit('custom room error', 'Название сервера должно содержать минимум 2 символа.');
+        }
+        if (cleanPassword.length > 64) {
+            return socket.emit('custom room error', 'Пароль слишком длинный.');
+        }
+
+        try {
+            let newPasswordHash = custom.passwordHash;
+            if (removePassword) {
+                newPasswordHash = null;
+            } else if (cleanPassword) {
+                newPasswordHash = await bcrypt.hash(cleanPassword, 10);
+            }
+
+            const result = await pool.query(
+                `UPDATE custom_rooms SET name = $1, avatar = $2, password_hash = $3
+                 WHERE code = $4
+                 RETURNING code, name, password_hash, avatar, owner_username, created_at`,
+                [cleanName, cleanAvatar, newPasswordHash, cleanCode]
+            );
+            const row = result.rows[0];
+            if (!row) return socket.emit('custom room error', 'Сервер с таким кодом не найден.');
+
+            const updated = {
+                code: row.code,
+                name: row.name,
+                passwordHash: row.password_hash,
+                avatar: row.avatar || '',
+                ownerUsername: row.owner_username || null,
+                createdAt: Number(row.created_at)
+            };
+            customRooms[updated.code] = updated;
+
+            io.emit('custom room updated', publicCustomRoom(updated));
+            socket.emit('custom room info', customRoomInfoFor(updated, socket));
+        } catch (err) {
+            console.error('❌ Ошибка обновления пользовательского сервера:', err);
+            socket.emit('custom room error', 'Не удалось сохранить изменения.');
         }
     });
 

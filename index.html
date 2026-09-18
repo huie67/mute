@@ -1099,11 +1099,61 @@
     <div id="create-server-modal" class="modal-overlay">
         <div class="modal-card fade-in" style="width: 380px;">
             <h3>Создать сервер</h3>
+            <div class="profile-row">
+                <img id="create-server-avatar-preview" class="profile-avatar-preview" src="" alt="Аватар сервера">
+                <div class="profile-avatar-controls">
+                    <div class="avatar-source-row">
+                        <input type="text" id="create-server-avatar-url" placeholder="Ссылка на фото сервера">
+                        <label class="btn-file-label" for="create-server-avatar-file">Файл…</label>
+                        <input type="file" id="create-server-avatar-file" accept="image/*" style="display:none">
+                    </div>
+                    <span class="profile-hint">Необязательно. Можно вставить ссылку или загрузить файл — сработает то, что укажете последним</span>
+                </div>
+            </div>
             <div class="input-group"><label>Название</label><input id="create-server-name" maxlength="40" placeholder="Например: Мы с друзьями"></div>
             <div class="input-group"><label>Пароль <span style="color:var(--text-faint)">(необязательно)</span></label><input id="create-server-password" type="password" maxlength="64" placeholder="Пароль"></div>
             <p class="auth-error" id="create-server-error" style="display:none"></p>
             <button class="btn-primary" id="create-server-submit">Создать</button>
             <button class="action-btn" id="close-create-server" style="background:#262a35; padding:10px;">Назад</button>
+        </div>
+    </div>
+
+    <!-- Окно сервера: для владельца — редактирование, для остальных — просмотр кода входа -->
+    <div id="server-info-modal" class="modal-overlay">
+        <div class="modal-card fade-in" style="width: 380px;">
+            <h3 id="server-info-title">Сервер</h3>
+
+            <div id="server-info-owner-view">
+                <div class="profile-row">
+                    <img id="server-info-avatar-preview" class="profile-avatar-preview" src="" alt="Аватар сервера">
+                    <div class="profile-avatar-controls">
+                        <div class="avatar-source-row">
+                            <input type="text" id="server-info-avatar-url" placeholder="Ссылка на фото сервера">
+                            <label class="btn-file-label" for="server-info-avatar-file">Файл…</label>
+                            <input type="file" id="server-info-avatar-file" accept="image/*" style="display:none">
+                        </div>
+                        <span class="profile-hint">Можно вставить ссылку или загрузить файл — сработает то, что укажете последним</span>
+                    </div>
+                </div>
+                <div class="input-group"><label>Название</label><input id="server-info-name" maxlength="40"></div>
+                <div class="input-group"><label>Новый пароль <span style="color:var(--text-faint)">(оставьте пустым, чтобы не менять)</span></label><input id="server-info-password" type="password" maxlength="64" placeholder="Пароль"></div>
+                <button class="action-btn" id="server-info-remove-password" style="background:#262a35; padding:8px; font-size:12px;">Убрать пароль с сервера</button>
+            </div>
+
+            <div id="server-info-guest-view" style="display:flex; flex-direction:column; align-items:center; gap:12px;">
+                <img id="server-info-avatar-preview-guest" class="profile-avatar-preview" src="" alt="Аватар сервера" style="width:72px;height:72px;">
+                <div id="server-info-name-guest" style="font-weight:700;"></div>
+            </div>
+
+            <div>
+                <div class="room-code-hint">Код входа на сервер</div>
+                <div id="server-info-code" class="room-code-box" title="Нажмите, чтобы скопировать"></div>
+                <div class="room-code-hint">Нажмите на код — он автоматически скопируется</div>
+            </div>
+
+            <p class="auth-error" id="server-info-error" style="display:none"></p>
+            <button class="btn-primary" id="server-info-save" style="display:none">Сохранить изменения</button>
+            <button class="action-btn" id="close-server-info" style="background:#262a35; padding:10px;">Закрыть</button>
         </div>
     </div>
 

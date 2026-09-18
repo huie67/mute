@@ -28,6 +28,94 @@ const createdServerName = document.getElementById('created-server-name');
 const createdServerCode = document.getElementById('created-server-code');
 let lastCreatedServer = null;
 
+// ---------- Аватарка создаваемого сервера (ссылка или файл) ----------
+const createServerAvatarPreview = document.getElementById('create-server-avatar-preview');
+const createServerAvatarUrl = document.getElementById('create-server-avatar-url');
+const createServerAvatarFile = document.getElementById('create-server-avatar-file');
+let pendingCreateServerAvatarFile = null;
+
+createServerAvatarUrl?.addEventListener('input', () => {
+    pendingCreateServerAvatarFile = null; // ссылку ввели последней — она и победит
+    const url = createServerAvatarUrl.value.trim();
+    createServerAvatarPreview.src = url;
+});
+
+createServerAvatarFile?.addEventListener('change', () => {
+    const file = createServerAvatarFile.files[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+        alert('Можно загружать только изображения');
+        createServerAvatarFile.value = '';
+        return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+        alert('Файл слишком большой (максимум 8 МБ)');
+        createServerAvatarFile.value = '';
+        return;
+    }
+    pendingCreateServerAvatarFile = file; // файл выбрали последним — он и победит
+    const reader = new FileReader();
+    reader.onload = () => { createServerAvatarPreview.src = reader.result; };
+    reader.readAsDataURL(file);
+});
+
+async function resolveServerAvatarUpload(pendingFile, urlInputValue) {
+    if (pendingFile) {
+        const formData = new FormData();
+        formData.append('image', pendingFile);
+        const res = await fetch('/upload', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Ошибка загрузки файла');
+        return data.url;
+    }
+    return urlInputValue.trim();
+}
+
+// ---------- Окно сервера: просмотр (гость) / редактирование (владелец) ----------
+const serverInfoModal = document.getElementById('server-info-modal');
+const serverInfoTitle = document.getElementById('server-info-title');
+const serverInfoOwnerView = document.getElementById('server-info-owner-view');
+const serverInfoGuestView = document.getElementById('server-info-guest-view');
+const serverInfoAvatarPreview = document.getElementById('server-info-avatar-preview');
+const serverInfoAvatarUrl = document.getElementById('server-info-avatar-url');
+const serverInfoAvatarFile = document.getElementById('server-info-avatar-file');
+const serverInfoAvatarPreviewGuest = document.getElementById('server-info-avatar-preview-guest');
+const serverInfoNameGuest = document.getElementById('server-info-name-guest');
+const serverInfoName = document.getElementById('server-info-name');
+const serverInfoPassword = document.getElementById('server-info-password');
+const serverInfoRemovePasswordBtn = document.getElementById('server-info-remove-password');
+const serverInfoCode = document.getElementById('server-info-code');
+const serverInfoError = document.getElementById('server-info-error');
+const serverInfoSaveBtn = document.getElementById('server-info-save');
+let pendingServerInfoAvatarFile = null;
+let currentServerInfo = null; // { code, name, avatar, isOwner }
+let currentServerInfoRemovePassword = false;
+
+serverInfoAvatarUrl?.addEventListener('input', () => {
+    pendingServerInfoAvatarFile = null;
+    const url = serverInfoAvatarUrl.value.trim();
+    serverInfoAvatarPreview.src = url;
+});
+
+serverInfoAvatarFile?.addEventListener('change', () => {
+    const file = serverInfoAvatarFile.files[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+        alert('Можно загружать только изображения');
+        serverInfoAvatarFile.value = '';
+        return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+        alert('Файл слишком большой (максимум 8 МБ)');
+        serverInfoAvatarFile.value = '';
+        return;
+    }
+    pendingServerInfoAvatarFile = file;
+    const reader = new FileReader();
+    reader.onload = () => { serverInfoAvatarPreview.src = reader.result; };
+    reader.readAsDataURL(file);
+});
+
 const muteBtn = document.getElementById('mute-btn');
 const deafenBtn = document.getElementById('deafen-btn');
 const settingsBtn = document.getElementById('settings-btn');
@@ -1108,6 +1196,10 @@ document.getElementById('open-create-server')?.addEventListener('click', () => {
     closeModal(serverChoiceModal);
     createServerName.value = '';
     createServerPassword.value = '';
+    createServerAvatarUrl.value = '';
+    createServerAvatarFile.value = '';
+    pendingCreateServerAvatarFile = null;
+    createServerAvatarPreview.src = '';
     showServerError(createServerError, '');
     openModal(createServerModal);
 });
@@ -1142,24 +1234,144 @@ function addCustomServerButton(data) {
     btn.className = 'server-icon custom-server-icon custom-room-btn';
     btn.dataset.room = `custom:${data.code}`;
     btn.dataset.displayName = data.name || data.code;
+    btn.dataset.avatar = data.avatar || '';
     btn.title = `${data.name || 'Сервер'}\nКод: ${data.code}`;
-    btn.innerText = (data.name || data.code).slice(0, 2).toUpperCase();
+    if (data.avatar) {
+        btn.style.backgroundImage = `url('${data.avatar}')`;
+        btn.style.backgroundSize = 'cover';
+        btn.style.backgroundPosition = 'center';
+    } else {
+        btn.innerText = (data.name || data.code).slice(0, 2).toUpperCase();
+    }
     if (data.hasPassword) {
         const lock = document.createElement('span');
         lock.className = 'lock-dot';
         lock.innerText = '🔒';
         btn.appendChild(lock);
     }
-    btn.addEventListener('click', () => selectRoomButton(btn));
+    btn.addEventListener('click', () => {
+        selectRoomButton(btn);
+        openServerInfo(data.code);
+    });
     customServersList.appendChild(btn);
     return btn;
 }
 
-document.getElementById('create-server-submit')?.addEventListener('click', () => {
+// ---------- Логика окна сервера (просмотр/редактирование) ----------
+function openServerInfo(code) {
+    showServerError(serverInfoError, '');
+    socket.emit('get custom room info', { code });
+}
+
+socket.on('custom room info', (data) => {
+    if (!data || !data.code) return;
+    currentServerInfo = data;
+    currentServerInfoRemovePassword = false;
+    pendingServerInfoAvatarFile = null;
+    serverInfoAvatarFile.value = '';
+    showServerError(serverInfoError, '');
+
+    serverInfoTitle.innerText = data.isOwner ? 'Управление сервером' : 'Сервер';
+    serverInfoCode.innerText = data.code;
+
+    if (data.isOwner) {
+        serverInfoOwnerView.style.display = 'block';
+        serverInfoGuestView.style.display = 'none';
+        serverInfoSaveBtn.style.display = 'block';
+        serverInfoName.value = data.name || '';
+        serverInfoAvatarUrl.value = data.avatar || '';
+        serverInfoAvatarPreview.src = data.avatar || '';
+        serverInfoPassword.value = '';
+        serverInfoRemovePasswordBtn.style.display = data.hasPassword ? 'block' : 'none';
+    } else {
+        serverInfoOwnerView.style.display = 'none';
+        serverInfoGuestView.style.display = 'flex';
+        serverInfoSaveBtn.style.display = 'none';
+        serverInfoNameGuest.innerText = data.name || data.code;
+        serverInfoAvatarPreviewGuest.src = data.avatar || '';
+    }
+
+    openModal(serverInfoModal);
+});
+
+serverInfoRemovePasswordBtn?.addEventListener('click', () => {
+    currentServerInfoRemovePassword = true;
+    serverInfoPassword.value = '';
+    serverInfoPassword.placeholder = 'Пароль будет удалён';
+    serverInfoRemovePasswordBtn.style.display = 'none';
+});
+
+serverInfoSaveBtn?.addEventListener('click', async () => {
+    if (!currentServerInfo) return;
+    showServerError(serverInfoError, '');
+    const name = serverInfoName.value.trim();
+    if (name.length < 2) return showServerError(serverInfoError, 'Введите название сервера.');
+
+    serverInfoSaveBtn.disabled = true;
+    serverInfoSaveBtn.innerText = 'Сохранение...';
+    try {
+        const avatar = await resolveServerAvatarUpload(pendingServerInfoAvatarFile, serverInfoAvatarUrl.value);
+        socket.emit('update custom room', {
+            code: currentServerInfo.code,
+            name,
+            avatar,
+            password: serverInfoPassword.value,
+            removePassword: currentServerInfoRemovePassword
+        });
+    } catch (err) {
+        showServerError(serverInfoError, err.message || 'Не удалось загрузить фото сервера.');
+        serverInfoSaveBtn.disabled = false;
+        serverInfoSaveBtn.innerText = 'Сохранить изменения';
+    }
+});
+
+socket.on('custom room updated', (data) => {
+    if (!data || !data.code) return;
+    addCustomServerButton(data); // обновит иконку (имя/аватар/замок) в списке у всех
+    if (currentServerInfo && currentServerInfo.code === data.code) {
+        serverInfoSaveBtn.disabled = false;
+        serverInfoSaveBtn.innerText = 'Сохранить изменения';
+        closeModal(serverInfoModal);
+    }
+});
+
+document.getElementById('close-server-info')?.addEventListener('click', () => closeModal(serverInfoModal));
+
+serverInfoCode?.addEventListener('click', async () => {
+    const code = serverInfoCode.innerText.trim();
+    if (!code) return;
+    try {
+        await navigator.clipboard.writeText(code);
+        const old = serverInfoCode.innerText;
+        serverInfoCode.innerText = 'СКОПИРОВАНО!';
+        setTimeout(() => { serverInfoCode.innerText = old; }, 900);
+    } catch (_) {
+        const area = document.createElement('textarea');
+        area.value = code;
+        document.body.appendChild(area);
+        area.select();
+        document.execCommand('copy');
+        area.remove();
+    }
+});
+
+document.getElementById('create-server-submit')?.addEventListener('click', async () => {
     showServerError(createServerError, '');
     const name = createServerName.value.trim();
     if (name.length < 2) return showServerError(createServerError, 'Введите название сервера.');
-    socket.emit('create custom room', { name, password: createServerPassword.value });
+
+    const submitBtn = document.getElementById('create-server-submit');
+    submitBtn.disabled = true;
+    submitBtn.innerText = 'Создание...';
+    try {
+        const avatar = await resolveServerAvatarUpload(pendingCreateServerAvatarFile, createServerAvatarUrl.value);
+        socket.emit('create custom room', { name, password: createServerPassword.value, avatar });
+    } catch (err) {
+        showServerError(createServerError, err.message || 'Не удалось загрузить фото сервера.');
+    } finally {
+        submitBtn.disabled = false;
+        submitBtn.innerText = 'Создать';
+    }
 });
 
 document.getElementById('join-server-submit')?.addEventListener('click', () => {
@@ -1215,7 +1427,14 @@ socket.on('custom room joined', (data) => {
 });
 
 socket.on('custom room error', (message) => {
-    const target = joinServerModal.classList.contains('show') ? joinServerError : createServerError;
+    let target = createServerError;
+    if (serverInfoModal.style.display === 'flex') {
+        target = serverInfoError;
+        serverInfoSaveBtn.disabled = false;
+        serverInfoSaveBtn.innerText = 'Сохранить изменения';
+    } else if (joinServerModal.style.display === 'flex') {
+        target = joinServerError;
+    }
     showServerError(target, message);
 });
 
