@@ -225,8 +225,13 @@ try {
     const savedDemoVolumes = JSON.parse(localStorage.getItem('demoVolumes') || '{}');
     if (savedDemoVolumes && typeof savedDemoVolumes === 'object') demoVolumes = savedDemoVolumes;
 } catch (e) { /* ignore */ }
+let demoVolumesSaveTimer = null;
 function saveDemoVolumes() {
-    try { localStorage.setItem('demoVolumes', JSON.stringify(demoVolumes)); } catch (e) { /* ignore */ }
+    if (demoVolumesSaveTimer) clearTimeout(demoVolumesSaveTimer);
+    demoVolumesSaveTimer = setTimeout(() => {
+        demoVolumesSaveTimer = null;
+        try { localStorage.setItem('demoVolumes', JSON.stringify(demoVolumes)); } catch (e) { /* ignore */ }
+    }, 250);
 }
 
 let audioContext = null;
@@ -416,6 +421,8 @@ if (cameraQualitySelect) {
 // а ник стабилен, поэтому громкость, выставленная один раз, не сбрасывается.
 const REMOTE_VOLUME_STORAGE_KEY = 'mute:remoteVolumes';
 let remoteVoiceGainNodes = {};
+let remoteAudioSources = {};
+let remoteDemoAudioSources = {};
 function loadRemoteVolumes() {
     try {
         const raw = localStorage.getItem(REMOTE_VOLUME_STORAGE_KEY);
@@ -427,11 +434,16 @@ function getRemoteVolumePercent(username) {
     const key = username || '';
     return (key in all) ? all[key] : 100;
 }
+let remoteVolumeSaveTimer = null;
 function saveRemoteVolume(username, percent) {
     try {
         const all = loadRemoteVolumes();
         all[username || ''] = percent;
-        localStorage.setItem(REMOTE_VOLUME_STORAGE_KEY, JSON.stringify(all));
+        if (remoteVolumeSaveTimer) clearTimeout(remoteVolumeSaveTimer);
+        remoteVolumeSaveTimer = setTimeout(() => {
+            remoteVolumeSaveTimer = null;
+            try { localStorage.setItem(REMOTE_VOLUME_STORAGE_KEY, JSON.stringify(all)); } catch (e) {}
+        }, 250);
     } catch (e) { /* ignore */ }
 }
 
@@ -641,7 +653,7 @@ const sharingPeers = new Set();
 
 // Последний полученный MediaStream от каждого собеседника — нужен, чтобы можно было
 // показать/скрыть видео-плитку в любой момент, не дожидаясь нового события 'stream'.
-const remoteStreamsByPeer = {};
+let remoteStreamsByPeer = {};
 
 function createPlaceholderVideoTrack() {
     const canvas = document.createElement('canvas');
@@ -1075,25 +1087,10 @@ function processAudioLevel(node) {
     let messageCount = 0;
     let lastIsSpeaking = null;
 
-    // Сам воркл присылает данные, только пока аудио реально обрабатывается — если
-    // AudioContext уснёт целиком (браузер экономит ресурсы у неактивной вкладки),
-    // сообщения перестанут приходить вообще, и это надо ловить отдельно, не завязываясь
-    // на частоту сообщений от узла. Раз в секунду — совсем недорогая проверка.
-    const resumeCheckId = setInterval(() => {
-        if (analyserNode !== localNode) {
-            clearInterval(resumeCheckId);
-            return;
-        }
-        if (audioContext && audioContext.state === 'suspended') {
-            audioContext.resume().catch(() => { /* попробуем снова через секунду */ });
-        }
-    }, 1000);
-
     localNode.port.onmessage = (event) => {
         if (analyserNode !== localNode) {
             // граф пересобран (смена мика/профиля) — старый узел больше не актуален
             localNode.port.onmessage = null;
-            clearInterval(resumeCheckId);
             return;
         }
         const volumeDb = event.data;
@@ -1209,20 +1206,8 @@ async function setupRemoteAudioAnalyzer(stream, peerId) {
         if (!micTrack) return;
         const micStream = new MediaStream([micTrack]);
 
-        let audioEl = document.getElementById(`audio-elem-${peerId}`);
-        if (!audioEl) {
-            audioEl = document.createElement('audio');
-            audioEl.id = `audio-elem-${peerId}`;
-            audioEl.autoplay = true;
-            document.body.appendChild(audioEl);
-        }
-        audioEl.srcObject = micStream;
-        // Звук идёт не напрямую из <audio>, а через gain-узел ниже — тогда громкость
-        // конкретного собеседника можно менять только у себя, не трогая ни его реальный
-        // уровень записи, ни то, что слышат остальные.
-        audioEl.muted = true;
-
         const source = audioContext.createMediaStreamSource(micStream);
+        remoteAudioSources[peerId] = source;
 
         const remoteAnalyser = await createLevelMeterNode(audioContext);
         source.connect(remoteAnalyser);
@@ -1259,17 +1244,8 @@ function setupRemoteDemoAudio(stream, peerId) {
     try {
         const demoStream = new MediaStream([demoTrack]);
 
-        let audioEl = document.getElementById(`demo-audio-elem-${peerId}`);
-        if (!audioEl) {
-            audioEl = document.createElement('audio');
-            audioEl.id = `demo-audio-elem-${peerId}`;
-            audioEl.autoplay = true;
-            document.body.appendChild(audioEl);
-        }
-        audioEl.srcObject = demoStream;
-        audioEl.muted = true; // звук идёт только через gain-узел ниже
-
         const source = audioContext.createMediaStreamSource(demoStream);
+        remoteDemoAudioSources[peerId] = source;
         const gainNode = audioContext.createGain();
         const initialVolume = demoVolumes[peerId] ?? 100;
         gainNode.gain.value = isDeafened ? 0 : (initialVolume / 100);
@@ -1773,16 +1749,12 @@ function leaveVoiceChannel() {
 }
 
 function cleanupCalls() {
-    for (let peerId in activeCalls) {
-        activeCalls[peerId].close();
-        let audioEl = document.getElementById(`audio-elem-${peerId}`);
-        if (audioEl) audioEl.remove();
+    for (const peerId in activeCalls) {
+        try { activeCalls[peerId].close(); } catch (e) {}
+        cleanupRemoteAudio(peerId);
     }
     activeCalls = {};
-    remoteAnalysers = {};
-    remoteGainNodes = {};
-    remoteVoiceGainNodes = {};
-    for (let peerId in remoteStreamsByPeer) delete remoteStreamsByPeer[peerId];
+    remoteStreamsByPeer = {};
     sharingPeers.clear();
     remoteVideos.innerHTML = '';
 }
@@ -1870,6 +1842,31 @@ socket.on('video state', ({ peerId, sharing }) => {
     playScreenShareToggleTone(sharing);
 });
 
+function cleanupRemoteAudio(peerId) {
+    const source = remoteAudioSources[peerId];
+    if (source) { try { source.disconnect(); } catch (e) {} }
+    delete remoteAudioSources[peerId];
+
+    const demoSource = remoteDemoAudioSources[peerId];
+    if (demoSource) { try { demoSource.disconnect(); } catch (e) {} }
+    delete remoteDemoAudioSources[peerId];
+
+    const analyser = remoteAnalysers[peerId];
+    if (analyser) {
+        if (analyser.port) { try { analyser.port.onmessage = null; } catch (e) {} }
+        try { analyser.disconnect(); } catch (e) {}
+    }
+    delete remoteAnalysers[peerId];
+
+    const gain = remoteGainNodes[peerId];
+    if (gain) { try { gain.disconnect(); } catch (e) {} }
+    delete remoteGainNodes[peerId];
+
+    const voiceGain = remoteVoiceGainNodes[peerId];
+    if (voiceGain) { try { voiceGain.disconnect(); } catch (e) {} }
+    delete remoteVoiceGainNodes[peerId];
+}
+
 function handleIncomingCall(call) {
     if (call.peer === myPeerId) return;
     activeCalls[call.peer] = call;
@@ -1887,22 +1884,8 @@ function handleIncomingCall(call) {
     call.on('close', () => {
         const wrap = document.getElementById(`video-${call.peer}`);
         if (wrap) wrap.remove();
-        let audioElem = document.getElementById(`audio-elem-${call.peer}`);
-        if (audioElem) audioElem.remove();
-        let demoAudioElem = document.getElementById(`demo-audio-elem-${call.peer}`);
-        if (demoAudioElem) demoAudioElem.remove();
         delete activeCalls[call.peer];
-        // Отключаем и отвязываем сообщения у узла-метра, а не просто забываем ссылку —
-        // иначе AudioWorkletNode/AnalyserNode продолжит висеть в графе и (для воркла)
-        // слать сообщения в уже ничем не используемый обработчик.
-        if (remoteAnalysers[call.peer]) {
-            const staleNode = remoteAnalysers[call.peer];
-            if (staleNode.port) { try { staleNode.port.onmessage = null; } catch (e) { /* ignore */ } }
-            try { staleNode.disconnect(); } catch (e) { /* ignore */ }
-        }
-        delete remoteAnalysers[call.peer];
-        delete remoteGainNodes[call.peer];
-        delete remoteVoiceGainNodes[call.peer];
+        cleanupRemoteAudio(call.peer);
         delete remoteStreamsByPeer[call.peer];
         sharingPeers.delete(call.peer);
     });
@@ -1979,14 +1962,7 @@ socket.on('user connected', ({ username, avatar, peerId }) => {
 socket.on('user disconnected', (peerId) => {
     const wasPresent = !!connectedUsers[peerId];
     delete connectedUsers[peerId];
-    if (remoteAnalysers[peerId]) {
-        const staleNode = remoteAnalysers[peerId];
-        if (staleNode.port) { try { staleNode.port.onmessage = null; } catch (e) { /* ignore */ } }
-        try { staleNode.disconnect(); } catch (e) { /* ignore */ }
-    }
-    delete remoteAnalysers[peerId];
-    delete remoteGainNodes[peerId];
-    delete remoteVoiceGainNodes[peerId];
+    cleanupRemoteAudio(peerId);
     delete remoteStreamsByPeer[peerId];
     sharingPeers.delete(peerId);
     updateVoiceUsersList();
@@ -2002,10 +1978,6 @@ socket.on('user disconnected', (peerId) => {
     }
     const el = document.getElementById(`video-${peerId}`);
     if (el) el.remove();
-    let audioEl = document.getElementById(`audio-elem-${peerId}`);
-    if (audioEl) audioEl.remove();
-    let demoAudioEl = document.getElementById(`demo-audio-elem-${peerId}`);
-    if (demoAudioEl) demoAudioEl.remove();
 });
 
 // Иконки для значков статуса — те же, что и на самих кнопках mute/deafen
