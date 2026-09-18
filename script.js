@@ -166,6 +166,8 @@ const gateHangoverValueDisplay = document.getElementById('gate-hangover-value');
 const noiseCheck = document.getElementById('noise-suppression-check');
 const echoCheck = document.getElementById('echo-cancellation-check');
 const agcCheck = document.getElementById('agc-check');
+const screenQualitySelect = document.getElementById('screen-quality-select');
+const cameraQualitySelect = document.getElementById('camera-quality-select');
 const micVolumeSlider = document.getElementById('mic-volume-slider');
 const micVolumeValueDisplay = document.getElementById('mic-volume-value');
 
@@ -277,6 +279,54 @@ function saveAudioSettings(patch) {
         const merged = Object.assign(loadAudioSettings(), patch);
         localStorage.setItem(AUDIO_SETTINGS_KEY, JSON.stringify(merged));
     } catch (e) { /* ignore */ }
+}
+
+// ---------- Настройки видео: качество демонстрации экрана и камеры ----------
+// По умолчанию 720p/30fps — компромисс между качеством картинки и нагрузкой на CPU при
+// кодировании видео. Более высокие пресеты (вплоть до 1080p/60fps) доступны в настройках,
+// но выбираются осознанно, а не включены по умолчанию, чтобы не грузить процессор всем
+// без разбора.
+const VIDEO_QUALITY_PRESETS = {
+    '720p30': { width: 1280, height: 720, frameRate: 30 },
+    '720p60': { width: 1280, height: 720, frameRate: 60 },
+    '1080p30': { width: 1920, height: 1080, frameRate: 30 },
+    '1080p60': { width: 1920, height: 1080, frameRate: 60 }
+};
+const VIDEO_SETTINGS_KEY = 'mute:videoSettings';
+function loadVideoSettings() {
+    try {
+        const raw = localStorage.getItem(VIDEO_SETTINGS_KEY);
+        return raw ? JSON.parse(raw) : {};
+    } catch (e) { return {}; }
+}
+function saveVideoSettings(patch) {
+    try {
+        const merged = Object.assign(loadVideoSettings(), patch);
+        localStorage.setItem(VIDEO_SETTINGS_KEY, JSON.stringify(merged));
+    } catch (e) { /* ignore */ }
+}
+function getScreenQualityPreset() {
+    const saved = loadVideoSettings().screenQuality;
+    return VIDEO_QUALITY_PRESETS[saved] || VIDEO_QUALITY_PRESETS['720p30'];
+}
+function getCameraQualityPreset() {
+    const saved = loadVideoSettings().cameraQuality;
+    return VIDEO_QUALITY_PRESETS[saved] || VIDEO_QUALITY_PRESETS['720p30'];
+}
+(function applySavedVideoSettings() {
+    const saved = loadVideoSettings();
+    if (screenQualitySelect) screenQualitySelect.value = saved.screenQuality || '720p30';
+    if (cameraQualitySelect) cameraQualitySelect.value = saved.cameraQuality || '720p30';
+})();
+if (screenQualitySelect) {
+    screenQualitySelect.addEventListener('change', () => {
+        saveVideoSettings({ screenQuality: screenQualitySelect.value });
+    });
+}
+if (cameraQualitySelect) {
+    cameraQualitySelect.addEventListener('change', () => {
+        saveVideoSettings({ cameraQuality: cameraQualitySelect.value });
+    });
 }
 
 // ---------- Локальная громкость каждого собеседника (только у себя) ----------
@@ -861,7 +911,10 @@ function setupAudioAnalyzer(stream) {
         // выключения передачи, поэтому индикатор и порог срабатывания продолжают
         // "видеть" микрофон даже когда сам гейт закрыт.
         analyserNode = audioContext.createAnalyser();
-        analyserNode.fftSize = 1024;
+        // 256 вместо 1024 — для RMS-гейта частотное разрешение не нужно, а точности по
+        // времени с запасом хватает даже на 30-миллисекундном шаге; буфер и вычисления
+        // при этом в 4 раза легче.
+        analyserNode.fftSize = 256;
         analyserNode.smoothingTimeConstant = 0.2;
         sourceNode.connect(analyserNode);
 
@@ -937,7 +990,21 @@ function processAudioLevel() {
     // но колбэк продолжает выполняться, поэтому гейт открывается/закрывается и
     // applyGateToMicTrack() реально включает/выключает передачу, даже когда
     // вкладка/окно не активны.
-    const intervalId = setInterval(check, 30);
+    // Элементы UI не пересоздаются на каждый тик — ищем их в DOM один раз при старте
+    // цикла, а не по 33 раза в секунду через getElementById.
+    const gateDebugStatus = document.getElementById('gate-debug-status');
+    let myAvatarElem = document.getElementById(`avatar-${myPeerId}`);
+
+    // Раньше цикл гонялся каждые 30мс — для отклика Voice Gate с запасом хватает и 50мс,
+    // а тиков в секунду становится в 1.6 раза меньше.
+    const intervalId = setInterval(check, 50);
+
+    // Сам замер громкости и решение гейта (открыт/закрыт) должны оставаться быстрыми —
+    // это не трогаем. А вот перерисовку полоски уровня и дебаг-текста троттлим отдельно:
+    // обновляем их не на каждом тике, а через один — глазом разницы не видно, а лишних
+    // стилевых пересчётов вдвое меньше.
+    let tickCount = 0;
+    let lastIsSpeaking = null;
 
     function check() {
         if (analyserNode !== localAnalyser) {
@@ -956,17 +1023,22 @@ function processAudioLevel() {
             audioContext.resume().catch(() => { /* попробуем снова на следующем тике */ });
         }
         let volumeDb = getRmsDb(localAnalyser, dataArray);
+        tickCount++;
+        const shouldRedraw = (tickCount % 2 === 0);
 
-        let meterPercent = Math.max(0, Math.min(100, ((volumeDb + 70) / 60) * 100));
-        micMeter.style.width = `${meterPercent}%`;
+        if (shouldRedraw) {
+            let meterPercent = Math.max(0, Math.min(100, ((volumeDb + 70) / 60) * 100));
+            micMeter.style.width = `${meterPercent}%`;
 
-        // Наглядный статус прямо в интерфейсе — чтобы проверить работу Voice Gate
-        // не открывая консоль разработчика.
-        const gateDebugStatus = document.getElementById('gate-debug-status');
-        if (gateDebugStatus) {
-            const ctxState = audioContext ? audioContext.state : 'нет контекста';
-            const gateState = !gateEnabled ? 'выключен' : (gateOpen ? 'открыт' : 'закрыт');
-            gateDebugStatus.innerText = `Уровень: ${volumeDb.toFixed(1)} дБ · Гейт: ${gateState} · Аудио-контекст: ${ctxState}`;
+            // Наглядный статус прямо в интерфейсе — чтобы проверить работу Voice Gate
+            // не открывая консоль разработчика. Пишем в DOM, только если панель с этим
+            // текстом реально видна — иначе innerText впустую пересчитывался бы 15+ раз
+            // в секунду на скрытом элементе.
+            if (gateDebugStatus && gateDebugStatus.offsetParent !== null) {
+                const ctxState = audioContext ? audioContext.state : 'нет контекста';
+                const gateState = !gateEnabled ? 'выключен' : (gateOpen ? 'открыт' : 'закрыт');
+                gateDebugStatus.innerText = `Уровень: ${volumeDb.toFixed(1)} дБ · Гейт: ${gateState} · Аудио-контекст: ${ctxState}`;
+            }
         }
 
         // Гистерезис + hangover: открываем канал сразу при превышении порога,
@@ -984,12 +1056,21 @@ function processAudioLevel() {
                 applyGateToMicTrack();
             }, gateHangoverMs);
         }
-        applyGateToMicTrack();
 
-        const myAvatarElem = document.getElementById(`avatar-${myPeerId}`);
-        if (myAvatarElem) {
-            const isSpeaking = !isMuted && !isDeafened && (!gateEnabled || gateOpen);
-            myAvatarElem.classList.toggle('speaking', isSpeaking);
+        const isSpeaking = !isMuted && !isDeafened && (!gateEnabled || gateOpen);
+        // applyGateToMicTrack() трогает track.enabled и gain-узел самопрослушивания —
+        // раньше вызывался безусловно на каждом тике, хотя реально состояние передачи
+        // меняется гораздо реже. Вызываем его только когда что-то действительно изменилось.
+        if (isSpeaking !== lastIsSpeaking) {
+            lastIsSpeaking = isSpeaking;
+            applyGateToMicTrack();
+            // Список участников (voiceUsersContainer) может быть полностью перерисован
+            // (например, кто-то ещё зашёл/вышел из комнаты) — тогда закешированный
+            // элемент оказывается отсоединён от DOM. isConnected — дешёвая проверка
+            // (просто чтение свойства), в отличие от getElementById, поэтому её не
+            // жалко делать на каждом тике.
+            if (!myAvatarElem || !myAvatarElem.isConnected) myAvatarElem = document.getElementById(`avatar-${myPeerId}`);
+            if (myAvatarElem) myAvatarElem.classList.toggle('speaking', isSpeaking);
         }
     }
     check();
@@ -1020,7 +1101,9 @@ function setupRemoteAudioAnalyzer(stream, peerId) {
         const source = audioContext.createMediaStreamSource(micStream);
 
         const remoteAnalyser = audioContext.createAnalyser();
-        remoteAnalyser.fftSize = 1024;
+        // См. комментарий у локального analyserNode — 256 достаточно для RMS-индикатора
+        // "говорит", а нагрузка на каждого собеседника в звонке в 4 раза меньше.
+        remoteAnalyser.fftSize = 256;
         remoteAnalyser.smoothingTimeConstant = 0.2;
         source.connect(remoteAnalyser);
         remoteAnalysers[peerId] = remoteAnalyser;
@@ -1142,9 +1225,17 @@ function processRemoteAudioLevel(peerId) {
     if (!analyser) return;
     const dataArray = new Float32Array(analyser.fftSize);
 
+    // Элемент аватарки не пересоздаётся на каждый тик — ищем его в DOM один раз, а не
+    // по 33 раза в секунду на каждого собеседника через getElementById.
+    let avatarElem = document.getElementById(`avatar-${peerId}`);
+    let lastIsSpeaking = null;
+
     // Тот же фикс, что и в processAudioLevel(): setInterval вместо requestAnimationFrame,
     // чтобы индикатор "говорит" у собеседника не замирал, когда вкладка/окно свёрнуты.
-    const intervalId = setInterval(checkRemote, 30);
+    // Интервал увеличен с 30 до 50мс — для индикатора речи это всё ещё мгновенно на глаз,
+    // а тиков (и, соответственно, чтений AnalyserNode) на каждого собеседника в звонке
+    // становится заметно меньше.
+    const intervalId = setInterval(checkRemote, 50);
 
     function checkRemote() {
         if (remoteAnalysers[peerId] !== analyser) {
@@ -1152,14 +1243,19 @@ function processRemoteAudioLevel(peerId) {
             return;
         }
         let volumeDb = getRmsDb(analyser, dataArray);
+        const isSpeaking = volumeDb > gateThreshold && !isDeafened;
 
-        const avatarElem = document.getElementById(`avatar-${peerId}`);
-        if (avatarElem) {
-            if (volumeDb > gateThreshold && !isDeafened) {
-                avatarElem.classList.add('speaking');
-            } else {
-                avatarElem.classList.remove('speaking');
-            }
+        // classList.toggle трогаем только при реальной смене состояния — не на каждом
+        // тике, чтобы не гонять лишние стилевые пересчёты у аватарок, которые и так
+        // молчат/говорят стабильно большую часть времени.
+        if (isSpeaking !== lastIsSpeaking) {
+            lastIsSpeaking = isSpeaking;
+            // Та же причина, что и у своего аватара в processAudioLevel(): список
+            // участников может быть перерисован целиком, и закешированный узел
+            // становится "мёртвым". isConnected — лёгкая проверка, безопасно делать
+            // её каждый раз, когда индикатор реально меняет состояние.
+            if (!avatarElem || !avatarElem.isConnected) avatarElem = document.getElementById(`avatar-${peerId}`);
+            if (avatarElem) avatarElem.classList.toggle('speaking', isSpeaking);
         }
     }
     checkRemote();
@@ -1888,7 +1984,13 @@ closeStreamModal.addEventListener('click', () => {
 shareScreenChoice.addEventListener('click', async () => {
     streamSelectModal.style.display = 'none';
     try {
-        const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+        // Разрешение/FPS берутся из настроек (по умолчанию 720p/30 — компромисс с
+        // нагрузкой на CPU; можно поднять вплоть до 1080p/60 в настройках видео).
+        const preset = getScreenQualityPreset();
+        const stream = await navigator.mediaDevices.getDisplayMedia({
+            video: { width: { ideal: preset.width }, height: { ideal: preset.height }, frameRate: { ideal: preset.frameRate } },
+            audio: true
+        });
         startVideoStream(stream);
     } catch (e) { console.error(e); }
 });
@@ -1896,7 +1998,13 @@ shareScreenChoice.addEventListener('click', async () => {
 shareCamChoice.addEventListener('click', async () => {
     streamSelectModal.style.display = 'none';
     try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        // То же самое: пресет из настроек видео (по умолчанию 720p/30, можно поднять до
+        // 1080p/60).
+        const preset = getCameraQualityPreset();
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: preset.width }, height: { ideal: preset.height }, frameRate: { ideal: preset.frameRate } },
+            audio: false
+        });
         startVideoStream(stream);
     } catch (e) { console.error(e); }
 });

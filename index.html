@@ -1271,6 +1271,30 @@
                     <input type="checkbox" id="agc-check" checked> Автоматическая регулировка усиления (AGC)
                 </label>
             </div>
+            <hr class="modal-section-divider">
+
+            <h3>Настройки видео</h3>
+            <div class="control-group">
+                <label>Качество демонстрации экрана</label>
+                <select id="screen-quality-select">
+                    <option value="720p30">720p, 30 FPS (меньше нагрузка на CPU)</option>
+                    <option value="720p60">720p, 60 FPS</option>
+                    <option value="1080p30">1080p (Full HD), 30 FPS</option>
+                    <option value="1080p60">1080p (Full HD), 60 FPS (максимум)</option>
+                </select>
+                <span class="profile-hint">Чем выше разрешение и FPS, тем плавнее картинка у собеседников, но тем сильнее нагрузка на процессор при кодировании видео. Применяется при следующем запуске демонстрации экрана</span>
+            </div>
+            <div class="control-group">
+                <label>Качество камеры</label>
+                <select id="camera-quality-select">
+                    <option value="720p30">720p, 30 FPS (меньше нагрузка на CPU)</option>
+                    <option value="720p60">720p, 60 FPS</option>
+                    <option value="1080p30">1080p (Full HD), 30 FPS</option>
+                    <option value="1080p60">1080p (Full HD), 60 FPS (максимум)</option>
+                </select>
+                <span class="profile-hint">Применяется при следующем включении камеры</span>
+            </div>
+
             <button class="btn-primary" id="close-settings" style="margin-top: 10px;">Закрыть</button>
         </div>
     </div>
