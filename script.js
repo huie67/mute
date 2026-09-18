@@ -252,6 +252,88 @@ let destinationNode = null;
 let processedTrack = null;
 let micVolume = 1; // 0..2 (0%..200%), усиление своего микрофона перед отправкой
 
+// ---------- Пункт оптимизации №5: RMS-метр громкости через AudioWorklet ----------
+// Раньше уровень/RMS считался опросом AnalyserNode из setInterval в ГЛАВНОМ потоке —
+// это обычный JS-код, который конкурирует за время с рендерингом интерфейса и вообще
+// со всем остальным JS в вкладке. AudioWorkletProcessor считает RMS прямо в отдельном,
+// приоритетном аудио-потоке (вне главного потока), и просто шлёт уже готовое число (дБ)
+// через MessagePort примерно раз в 50мс — на главном потоке остаётся только обработать
+// готовое значение, а не крутить сам цикл опроса и не трогать WebAudio API из JS-тика.
+// Если AudioWorklet почему-то недоступен (старый браузер, небезопасный контекст без
+// HTTPS и т.п.) — откатываемся на прежний способ через AnalyserNode + setInterval,
+// чтобы Voice Gate и индикаторы "говорит" не переставали работать вообще.
+const RMS_METER_PROCESSOR_NAME = 'mute-rms-meter';
+const RMS_METER_PROCESSOR_CODE = `
+class MuteRmsMeterProcessor extends AudioWorkletProcessor {
+    constructor() {
+        super();
+        this._sumSquares = 0;
+        this._count = 0;
+        // ~50мс на один отчёт, независимо от sampleRate конкретного устройства.
+        this._samplesPerReport = Math.max(1, Math.round(sampleRate * 0.05));
+    }
+    process(inputs) {
+        const input = inputs[0];
+        if (input && input.length > 0) {
+            const channel = input[0];
+            for (let i = 0; i < channel.length; i++) {
+                const s = channel[i];
+                this._sumSquares += s * s;
+                this._count++;
+            }
+            if (this._count >= this._samplesPerReport) {
+                const rms = Math.sqrt(this._sumSquares / this._count);
+                const db = rms > 0 ? 20 * Math.log10(rms) : -100;
+                this.port.postMessage(db);
+                this._sumSquares = 0;
+                this._count = 0;
+            }
+        }
+        // true — не даём браузеру решить, что процессор больше не нужен, даже если
+        // на входе временная тишина.
+        return true;
+    }
+}
+registerProcessor('${RMS_METER_PROCESSOR_NAME}', MuteRmsMeterProcessor);
+`;
+let rmsWorkletModulePromise = null;
+function ensureRmsWorkletModule(ctx) {
+    if (!rmsWorkletModulePromise) {
+        const blob = new Blob([RMS_METER_PROCESSOR_CODE], { type: 'application/javascript' });
+        const blobUrl = URL.createObjectURL(blob);
+        rmsWorkletModulePromise = ctx.audioWorklet.addModule(blobUrl)
+            .catch(err => {
+                // Не застреваем навсегда с отклонённым промисом — даём шанс попробовать
+                // ещё раз при следующем вызове (например, после смены/пересоздания контекста).
+                rmsWorkletModulePromise = null;
+                throw err;
+            });
+    }
+    return rmsWorkletModulePromise;
+}
+// Создаёт узел-метр громкости: AudioWorkletNode, если доступен, иначе — AnalyserNode
+// как раньше. Помечаем узел флагом __isWorklet, чтобы код выше по стеку знал, как
+// именно с ним работать (событие port.onmessage vs опрос по таймеру).
+async function createLevelMeterNode(ctx) {
+    if (ctx.audioWorklet) {
+        try {
+            await ensureRmsWorkletModule(ctx);
+            const node = new AudioWorkletNode(ctx, RMS_METER_PROCESSOR_NAME);
+            node.__isWorklet = true;
+            return node;
+        } catch (e) {
+            console.warn('[AudioWorklet] Не удалось создать метр громкости, откатываемся на AnalyserNode:', e);
+        }
+    }
+    const node = ctx.createAnalyser();
+    // 256 вместо 1024 — для RMS-гейта частотное разрешение не нужно, а точности по
+    // времени с запасом хватает; буфер и вычисления в 4 раза легче (см. фолбэк-цикл).
+    node.fftSize = 256;
+    node.smoothingTimeConstant = 0.2;
+    node.__isWorklet = false;
+    return node;
+}
+
 // ---------- Voice Gate: реально отключает передачу микрофона при тишине/фоновом шуме ----------
 // Лёгкая реализация на AnalyserNode (без тяжёлых ML-моделей шумоподавления):
 // - openThreshold — громкость, выше которой канал точно открыт;
@@ -885,17 +967,23 @@ function teardownAudioGraph() {
     destinationNode = null;
     if (processedTrack) { try { processedTrack.stop(); } catch (e) { /* ignore */ } }
     processedTrack = null;
-    if (analyserNode) { try { analyserNode.disconnect(); } catch (e) { /* ignore */ } }
+    if (analyserNode) {
+        // У AudioWorkletNode обязательно отвязываем обработчик сообщений — иначе старый
+        // узел, даже отключённый от графа, может успеть прислать ещё пару "хвостовых"
+        // сообщений и лишний раз дёрнуть UI закрытой над ним замыканием.
+        if (analyserNode.port) { try { analyserNode.port.onmessage = null; } catch (e) { /* ignore */ } }
+        try { analyserNode.disconnect(); } catch (e) { /* ignore */ }
+    }
     analyserNode = null;
     sourceNode = null;
 }
 
-function setupAudioAnalyzer(stream) {
+async function setupAudioAnalyzer(stream) {
     if (!audioContext) {
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
     }
     // AudioContext может создаться в состоянии 'suspended' (политики автозапуска
-    // браузера/Electron) — тогда analyserNode не получает свежие данные, и
+    // браузера/Electron) — тогда метр громкости не получает свежие данные, и
     // Voice Gate выглядит "мёртвым": уровень и порог не реагируют вообще ни на
     // что. Раньше resume() вызывался только при включении самопрослушивания —
     // теперь будим контекст сразу же, при каждой попытке его использовать.
@@ -910,12 +998,7 @@ function setupAudioAnalyzer(stream) {
         // Анализатор уровня/Voice Gate — сидит прямо на сыром источнике, до всякого
         // выключения передачи, поэтому индикатор и порог срабатывания продолжают
         // "видеть" микрофон даже когда сам гейт закрыт.
-        analyserNode = audioContext.createAnalyser();
-        // 256 вместо 1024 — для RMS-гейта частотное разрешение не нужно, а точности по
-        // времени с запасом хватает даже на 30-миллисекундном шаге; буфер и вычисления
-        // при этом в 4 раза легче.
-        analyserNode.fftSize = 256;
-        analyserNode.smoothingTimeConstant = 0.2;
+        analyserNode = await createLevelMeterNode(audioContext);
         sourceNode.connect(analyserNode);
 
         micGainNode = audioContext.createGain();
@@ -937,7 +1020,11 @@ function setupAudioAnalyzer(stream) {
         }
         micGainNode.connect(micMonitorGain);
 
-        processAudioLevel();
+        if (analyserNode.__isWorklet) {
+            processAudioLevel(analyserNode);
+        } else {
+            processAudioLevelFallback(analyserNode);
+        }
     } catch (e) {
         console.error('[Ошибка] Аудиоанализатор:', e);
     }
@@ -975,65 +1062,50 @@ function getRmsDb(analyser, floatBuffer) {
     return rms > 0 ? 20 * Math.log10(rms) : -100;
 }
 
-function processAudioLevel() {
-    if (!analyserNode) return;
-    const localAnalyser = analyserNode;
-    const dataArray = new Float32Array(localAnalyser.fftSize);
-
-    // ВАЖНО: раньше цикл гейта гонялся через requestAnimationFrame. rAF — это
-    // колбэк отрисовки кадра, и браузеры (Chrome/Firefox/Edge) почти полностью
-    // ЗАМОРАЖИВАЮТ его, когда вкладка свёрнута/не в фокусе/на другом рабочем
-    // столе — именно поэтому "автоактивация" микрофона периодически переставала
-    // реагировать на голос и не открывала канал, пока пользователь не
-    // возвращался в само приложение. У setInterval такого полного стопора нет:
-    // браузер лишь ограничивает частоту (обычно не чаще раза в секунду в фоне),
-    // но колбэк продолжает выполняться, поэтому гейт открывается/закрывается и
-    // applyGateToMicTrack() реально включает/выключает передачу, даже когда
-    // вкладка/окно не активны.
-    // Элементы UI не пересоздаются на каждый тик — ищем их в DOM один раз при старте
-    // цикла, а не по 33 раза в секунду через getElementById.
+// Основной путь: AudioWorkletNode сам присылает готовое значение в дБ через порт
+// примерно раз в 50мс — здесь просто реагируем на уже посчитанные данные, никакого
+// собственного цикла опроса на главном потоке не крутится вообще.
+function processAudioLevel(node) {
+    const localNode = node;
+    // Элементы UI не пересоздаются на каждое сообщение — ищем их в DOM один раз, а не
+    // при каждом отчёте от воркла.
     const gateDebugStatus = document.getElementById('gate-debug-status');
     let myAvatarElem = document.getElementById(`avatar-${myPeerId}`);
 
-    // Раньше цикл гонялся каждые 30мс — для отклика Voice Gate с запасом хватает и 50мс,
-    // а тиков в секунду становится в 1.6 раза меньше.
-    const intervalId = setInterval(check, 50);
-
-    // Сам замер громкости и решение гейта (открыт/закрыт) должны оставаться быстрыми —
-    // это не трогаем. А вот перерисовку полоски уровня и дебаг-текста троттлим отдельно:
-    // обновляем их не на каждом тике, а через один — глазом разницы не видно, а лишних
-    // стилевых пересчётов вдвое меньше.
-    let tickCount = 0;
+    let messageCount = 0;
     let lastIsSpeaking = null;
 
-    function check() {
-        if (analyserNode !== localAnalyser) {
-            // граф пересобран (смена мика/профиля) — останавливаем старый цикл
-            clearInterval(intervalId);
+    // Сам воркл присылает данные, только пока аудио реально обрабатывается — если
+    // AudioContext уснёт целиком (браузер экономит ресурсы у неактивной вкладки),
+    // сообщения перестанут приходить вообще, и это надо ловить отдельно, не завязываясь
+    // на частоту сообщений от узла. Раз в секунду — совсем недорогая проверка.
+    const resumeCheckId = setInterval(() => {
+        if (analyserNode !== localNode) {
+            clearInterval(resumeCheckId);
             return;
         }
-        // Вторая причина, по которой автоактивация "засыпала" в фоне: сам
-        // AudioContext иногда переходит в 'suspended' (браузер экономит ресурсы
-        // у неактивной вкладки/окна), и тогда analyserNode вообще не получает
-        // новых данных — уровень громкости замирает, гейт больше не открывается,
-        // и в результате обработанный трек беззвучен, даже если сам гейт "открыт".
-        // Поэтому на каждом тике дополнительно проверяем состояние контекста и
-        // сразу же будим его, а не только один раз при создании графа.
         if (audioContext && audioContext.state === 'suspended') {
-            audioContext.resume().catch(() => { /* попробуем снова на следующем тике */ });
+            audioContext.resume().catch(() => { /* попробуем снова через секунду */ });
         }
-        let volumeDb = getRmsDb(localAnalyser, dataArray);
-        tickCount++;
-        const shouldRedraw = (tickCount % 2 === 0);
+    }, 1000);
 
-        if (shouldRedraw) {
+    localNode.port.onmessage = (event) => {
+        if (analyserNode !== localNode) {
+            // граф пересобран (смена мика/профиля) — старый узел больше не актуален
+            localNode.port.onmessage = null;
+            clearInterval(resumeCheckId);
+            return;
+        }
+        const volumeDb = event.data;
+        messageCount++;
+        // Полоску уровня и дебаг-текст обновляем через отчёт (то есть ~раз в 100мс) —
+        // глазом разницы с каждым отчётом (~50мс) не видно, а лишних стилевых
+        // пересчётов вдвое меньше. Саму логику гейта ниже это не касается — она
+        // считается на каждом отчёте, чтобы отклик оставался быстрым.
+        if (messageCount % 2 === 0) {
             let meterPercent = Math.max(0, Math.min(100, ((volumeDb + 70) / 60) * 100));
             micMeter.style.width = `${meterPercent}%`;
 
-            // Наглядный статус прямо в интерфейсе — чтобы проверить работу Voice Gate
-            // не открывая консоль разработчика. Пишем в DOM, только если панель с этим
-            // текстом реально видна — иначе innerText впустую пересчитывался бы 15+ раз
-            // в секунду на скрытом элементе.
             if (gateDebugStatus && gateDebugStatus.offsetParent !== null) {
                 const ctxState = audioContext ? audioContext.state : 'нет контекста';
                 const gateState = !gateEnabled ? 'выключен' : (gateOpen ? 'открыт' : 'закрыт');
@@ -1058,17 +1130,69 @@ function processAudioLevel() {
         }
 
         const isSpeaking = !isMuted && !isDeafened && (!gateEnabled || gateOpen);
-        // applyGateToMicTrack() трогает track.enabled и gain-узел самопрослушивания —
-        // раньше вызывался безусловно на каждом тике, хотя реально состояние передачи
-        // меняется гораздо реже. Вызываем его только когда что-то действительно изменилось.
         if (isSpeaking !== lastIsSpeaking) {
             lastIsSpeaking = isSpeaking;
             applyGateToMicTrack();
-            // Список участников (voiceUsersContainer) может быть полностью перерисован
-            // (например, кто-то ещё зашёл/вышел из комнаты) — тогда закешированный
-            // элемент оказывается отсоединён от DOM. isConnected — дешёвая проверка
-            // (просто чтение свойства), в отличие от getElementById, поэтому её не
-            // жалко делать на каждом тике.
+            if (!myAvatarElem || !myAvatarElem.isConnected) myAvatarElem = document.getElementById(`avatar-${myPeerId}`);
+            if (myAvatarElem) myAvatarElem.classList.toggle('speaking', isSpeaking);
+        }
+    };
+}
+
+// Запасной путь — используется только если AudioWorklet недоступен в этом браузере/
+// контексте. Прежний способ: опрос AnalyserNode из setInterval в главном потоке.
+function processAudioLevelFallback(node) {
+    const localAnalyser = node;
+    const dataArray = new Float32Array(localAnalyser.fftSize);
+
+    const gateDebugStatus = document.getElementById('gate-debug-status');
+    let myAvatarElem = document.getElementById(`avatar-${myPeerId}`);
+
+    const intervalId = setInterval(check, 50);
+    let tickCount = 0;
+    let lastIsSpeaking = null;
+
+    function check() {
+        if (analyserNode !== localAnalyser) {
+            clearInterval(intervalId);
+            return;
+        }
+        if (audioContext && audioContext.state === 'suspended') {
+            audioContext.resume().catch(() => { /* попробуем снова на следующем тике */ });
+        }
+        let volumeDb = getRmsDb(localAnalyser, dataArray);
+        tickCount++;
+        const shouldRedraw = (tickCount % 2 === 0);
+
+        if (shouldRedraw) {
+            let meterPercent = Math.max(0, Math.min(100, ((volumeDb + 70) / 60) * 100));
+            micMeter.style.width = `${meterPercent}%`;
+
+            if (gateDebugStatus && gateDebugStatus.offsetParent !== null) {
+                const ctxState = audioContext ? audioContext.state : 'нет контекста';
+                const gateState = !gateEnabled ? 'выключен' : (gateOpen ? 'открыт' : 'закрыт');
+                gateDebugStatus.innerText = `Уровень: ${volumeDb.toFixed(1)} дБ · Гейт: ${gateState} · Аудио-контекст: ${ctxState}`;
+            }
+        }
+
+        if (volumeDb > gateThreshold) {
+            gateOpen = true;
+            if (gateCloseTimer) {
+                clearTimeout(gateCloseTimer);
+                gateCloseTimer = null;
+            }
+        } else if (volumeDb < gateThreshold - GATE_HYSTERESIS_DB && gateOpen && !gateCloseTimer) {
+            gateCloseTimer = setTimeout(() => {
+                gateOpen = false;
+                gateCloseTimer = null;
+                applyGateToMicTrack();
+            }, gateHangoverMs);
+        }
+
+        const isSpeaking = !isMuted && !isDeafened && (!gateEnabled || gateOpen);
+        if (isSpeaking !== lastIsSpeaking) {
+            lastIsSpeaking = isSpeaking;
+            applyGateToMicTrack();
             if (!myAvatarElem || !myAvatarElem.isConnected) myAvatarElem = document.getElementById(`avatar-${myPeerId}`);
             if (myAvatarElem) myAvatarElem.classList.toggle('speaking', isSpeaking);
         }
@@ -1076,7 +1200,7 @@ function processAudioLevel() {
     check();
 }
 
-function setupRemoteAudioAnalyzer(stream, peerId) {
+async function setupRemoteAudioAnalyzer(stream, peerId) {
     if (!audioContext) {
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
     }
@@ -1100,11 +1224,7 @@ function setupRemoteAudioAnalyzer(stream, peerId) {
 
         const source = audioContext.createMediaStreamSource(micStream);
 
-        const remoteAnalyser = audioContext.createAnalyser();
-        // См. комментарий у локального analyserNode — 256 достаточно для RMS-индикатора
-        // "говорит", а нагрузка на каждого собеседника в звонке в 4 раза меньше.
-        remoteAnalyser.fftSize = 256;
-        remoteAnalyser.smoothingTimeConstant = 0.2;
+        const remoteAnalyser = await createLevelMeterNode(audioContext);
         source.connect(remoteAnalyser);
         remoteAnalysers[peerId] = remoteAnalyser;
 
@@ -1115,7 +1235,11 @@ function setupRemoteAudioAnalyzer(stream, peerId) {
         voiceGain.connect(audioContext.destination);
         remoteVoiceGainNodes[peerId] = voiceGain;
 
-        processRemoteAudioLevel(peerId);
+        if (remoteAnalyser.__isWorklet) {
+            processRemoteAudioLevel(peerId, remoteAnalyser);
+        } else {
+            processRemoteAudioLevelFallback(peerId, remoteAnalyser);
+        }
     } catch (e) {
         console.error('[Ошибка] Удалённый аудиоанализатор:', e);
     }
@@ -1220,21 +1344,38 @@ function setupDemoVolumeControl(peerId) {
     });
 }
 
-function processRemoteAudioLevel(peerId) {
-    const analyser = remoteAnalysers[peerId];
-    if (!analyser) return;
-    const dataArray = new Float32Array(analyser.fftSize);
-
-    // Элемент аватарки не пересоздаётся на каждый тик — ищем его в DOM один раз, а не
-    // по 33 раза в секунду на каждого собеседника через getElementById.
+// Основной путь: узел сам шлёт готовое значение в дБ через порт — никакого собственного
+// опроса на главном потоке.
+function processRemoteAudioLevel(peerId, node) {
+    const localNode = node;
     let avatarElem = document.getElementById(`avatar-${peerId}`);
     let lastIsSpeaking = null;
 
-    // Тот же фикс, что и в processAudioLevel(): setInterval вместо requestAnimationFrame,
-    // чтобы индикатор "говорит" у собеседника не замирал, когда вкладка/окно свёрнуты.
-    // Интервал увеличен с 30 до 50мс — для индикатора речи это всё ещё мгновенно на глаз,
-    // а тиков (и, соответственно, чтений AnalyserNode) на каждого собеседника в звонке
-    // становится заметно меньше.
+    localNode.port.onmessage = (event) => {
+        if (remoteAnalysers[peerId] !== localNode) {
+            localNode.port.onmessage = null;
+            return;
+        }
+        const volumeDb = event.data;
+        const isSpeaking = volumeDb > gateThreshold && !isDeafened;
+
+        if (isSpeaking !== lastIsSpeaking) {
+            lastIsSpeaking = isSpeaking;
+            if (!avatarElem || !avatarElem.isConnected) avatarElem = document.getElementById(`avatar-${peerId}`);
+            if (avatarElem) avatarElem.classList.toggle('speaking', isSpeaking);
+        }
+    };
+}
+
+// Запасной путь — используется только если AudioWorklet недоступен в этом браузере/
+// контексте. Прежний способ: опрос AnalyserNode из setInterval.
+function processRemoteAudioLevelFallback(peerId, node) {
+    const analyser = node;
+    const dataArray = new Float32Array(analyser.fftSize);
+
+    let avatarElem = document.getElementById(`avatar-${peerId}`);
+    let lastIsSpeaking = null;
+
     const intervalId = setInterval(checkRemote, 50);
 
     function checkRemote() {
@@ -1245,15 +1386,8 @@ function processRemoteAudioLevel(peerId) {
         let volumeDb = getRmsDb(analyser, dataArray);
         const isSpeaking = volumeDb > gateThreshold && !isDeafened;
 
-        // classList.toggle трогаем только при реальной смене состояния — не на каждом
-        // тике, чтобы не гонять лишние стилевые пересчёты у аватарок, которые и так
-        // молчат/говорят стабильно большую часть времени.
         if (isSpeaking !== lastIsSpeaking) {
             lastIsSpeaking = isSpeaking;
-            // Та же причина, что и у своего аватара в processAudioLevel(): список
-            // участников может быть перерисован целиком, и закешированный узел
-            // становится "мёртвым". isConnected — лёгкая проверка, безопасно делать
-            // её каждый раз, когда индикатор реально меняет состояние.
             if (!avatarElem || !avatarElem.isConnected) avatarElem = document.getElementById(`avatar-${peerId}`);
             if (avatarElem) avatarElem.classList.toggle('speaking', isSpeaking);
         }
@@ -1758,6 +1892,14 @@ function handleIncomingCall(call) {
         let demoAudioElem = document.getElementById(`demo-audio-elem-${call.peer}`);
         if (demoAudioElem) demoAudioElem.remove();
         delete activeCalls[call.peer];
+        // Отключаем и отвязываем сообщения у узла-метра, а не просто забываем ссылку —
+        // иначе AudioWorkletNode/AnalyserNode продолжит висеть в графе и (для воркла)
+        // слать сообщения в уже ничем не используемый обработчик.
+        if (remoteAnalysers[call.peer]) {
+            const staleNode = remoteAnalysers[call.peer];
+            if (staleNode.port) { try { staleNode.port.onmessage = null; } catch (e) { /* ignore */ } }
+            try { staleNode.disconnect(); } catch (e) { /* ignore */ }
+        }
         delete remoteAnalysers[call.peer];
         delete remoteGainNodes[call.peer];
         delete remoteVoiceGainNodes[call.peer];
@@ -1837,6 +1979,11 @@ socket.on('user connected', ({ username, avatar, peerId }) => {
 socket.on('user disconnected', (peerId) => {
     const wasPresent = !!connectedUsers[peerId];
     delete connectedUsers[peerId];
+    if (remoteAnalysers[peerId]) {
+        const staleNode = remoteAnalysers[peerId];
+        if (staleNode.port) { try { staleNode.port.onmessage = null; } catch (e) { /* ignore */ } }
+        try { staleNode.disconnect(); } catch (e) { /* ignore */ }
+    }
     delete remoteAnalysers[peerId];
     delete remoteGainNodes[peerId];
     delete remoteVoiceGainNodes[peerId];
@@ -2426,9 +2573,12 @@ function maybeInsertDateSeparator(date) {
 
 function renderChatMessage({ username, user, avatar, text, image_url, created_at }) {
     const name = username || user || 'Участник';
-    // created_at приходит с сервера как Date.now() (мс) — если вдруг отсутствует
-    // (не должно, но на всякий случай), берём текущее время, чтобы не сломать рендер.
-    const date = created_at ? new Date(created_at) : new Date();
+    // created_at приходит с сервера как Date.now() (мс) — если вдруг отсутствует или же
+    // после парсинга получилась невалидная дата (например, у старых записей в БД, ещё
+    // до фикса с BIGINT-как-строкой), подстраховываемся текущим временем, чтобы не
+    // сломать рендер и не показать "NaN:NaN".
+    let date = created_at ? new Date(created_at) : new Date();
+    if (isNaN(date.getTime())) date = new Date();
 
     maybeInsertDateSeparator(date);
 

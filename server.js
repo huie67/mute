@@ -93,7 +93,17 @@ async function getRecentMessages(room, limit = 100) {
         `SELECT * FROM messages WHERE room = $1 ORDER BY id DESC LIMIT $2`,
         [room, limit]
     );
-    return result.rows.reverse();
+    // pg возвращает колонки BIGINT (created_at) не числом, а строкой — так драйвер
+    // защищается от потери точности у значений больше Number.MAX_SAFE_INTEGER.
+    // На клиенте `new Date("1758214528000")` (строка) — это Invalid Date, а
+    // `new Date(1758214528000)` (число) — нормальная дата. Из-за этого у сообщений,
+    // подгруженных из истории, дата отправки "слетала", хотя у свежих, только что
+    // отправленных сообщений (created_at приходит как обычное число через socket.io
+    // сразу из памяти, без похода в БД) всё было в порядке.
+    return result.rows.reverse().map(row => ({
+        ...row,
+        created_at: Number(row.created_at)
+    }));
 }
 
 // ---------- Загрузка фото в чат: Cloudinary (не диск сервера — тот эфемерный на бесплатном хостинге) ----------
