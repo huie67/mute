@@ -423,13 +423,30 @@ function getMentionCandidates() {
     return mentionMembersCache[code] || [];
 }
 
+// Состояние автодополнения объявлено здесь (а не ниже, рядом с остальной логикой
+// подсказок) специально: setChatEnabled ниже вызывается сразу при загрузке страницы
+// и обращается к mentionState через closeMentionAutocomplete — если объявить
+// let-переменную позже по файлу, это обращение попадёт во временную мёртвую зону
+// (TDZ) и бросит ReferenceError, из-за которого весь остальной скрипт (вход в
+// аккаунт, голосовой чат и т.д.) просто не выполнится.
+const mentionAutocompleteEl = document.getElementById('mention-autocomplete');
+let mentionState = { active: false, startIndex: -1, query: '', items: [], activeIndex: 0 };
+
+function closeMentionAutocomplete() {
+    mentionState = { active: false, startIndex: -1, query: '', items: [], activeIndex: 0 };
+    if (mentionAutocompleteEl) {
+        mentionAutocompleteEl.style.display = 'none';
+        mentionAutocompleteEl.innerHTML = '';
+    }
+}
+
 // Чат теперь отдельный для каждой комнаты — пока комната не выбрана, писать некуда.
 function setChatEnabled(enabled) {
     messageInput.disabled = !enabled;
     messageInput.placeholder = enabled ? 'Написать в чат...' : 'Выберите сервер слева, чтобы открыть чат';
     const attachBtnEl = document.getElementById('attach-image-btn');
     if (attachBtnEl) attachBtnEl.disabled = !enabled;
-    if (!enabled && typeof closeMentionAutocomplete === 'function') closeMentionAutocomplete();
+    closeMentionAutocomplete();
 }
 setChatEnabled(false);
 
@@ -1798,7 +1815,7 @@ function selectRoomButton(btn) {
     // чтобы повторный клик (открывающий настройки сервера) не дёргал историю чата заново.
     if (roomChanged) {
         setChatEnabled(true);
-        if (typeof closeMentionAutocomplete === 'function') closeMentionAutocomplete();
+        closeMentionAutocomplete();
         socket.emit('select chat room', { room: roomName });
         // Список участников для автодополнения @упоминаний — сервер и так пришлёт его
         // сам через ~250 мс после 'select chat room', но запрашиваем явно, чтобы
@@ -3171,16 +3188,8 @@ socket.on('chat message', (payload) => {
 });
 
 // ---------- Автодополнение @упоминаний в поле ввода чата ----------
-const mentionAutocompleteEl = document.getElementById('mention-autocomplete');
-let mentionState = { active: false, startIndex: -1, query: '', items: [], activeIndex: 0 };
-
-function closeMentionAutocomplete() {
-    mentionState = { active: false, startIndex: -1, query: '', items: [], activeIndex: 0 };
-    if (mentionAutocompleteEl) {
-        mentionAutocompleteEl.style.display = 'none';
-        mentionAutocompleteEl.innerHTML = '';
-    }
-}
+// (mentionAutocompleteEl, mentionState и closeMentionAutocomplete объявлены выше,
+// рядом с setChatEnabled — см. комментарий там про порядок объявления.)
 
 function renderMentionAutocomplete() {
     if (!mentionAutocompleteEl) return;
