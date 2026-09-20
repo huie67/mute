@@ -170,7 +170,6 @@ const screenQualitySelect = document.getElementById('screen-quality-select');
 const cameraQualitySelect = document.getElementById('camera-quality-select');
 const micVolumeSlider = document.getElementById('mic-volume-slider');
 const micVolumeValueDisplay = document.getElementById('mic-volume-value');
-const voiceChangerSelect = document.getElementById('voice-changer-select');
 
 const profileAvatarPreview = document.getElementById('profile-avatar-preview');
 const profileAvatarUrlInput = document.getElementById('profile-avatar-url');
@@ -226,8 +225,13 @@ try {
     const savedDemoVolumes = JSON.parse(localStorage.getItem('demoVolumes') || '{}');
     if (savedDemoVolumes && typeof savedDemoVolumes === 'object') demoVolumes = savedDemoVolumes;
 } catch (e) { /* ignore */ }
+let demoVolumesSaveTimer = null;
 function saveDemoVolumes() {
-    try { localStorage.setItem('demoVolumes', JSON.stringify(demoVolumes)); } catch (e) { /* ignore */ }
+    if (demoVolumesSaveTimer) clearTimeout(demoVolumesSaveTimer);
+    demoVolumesSaveTimer = setTimeout(() => {
+        demoVolumesSaveTimer = null;
+        try { localStorage.setItem('demoVolumes', JSON.stringify(demoVolumes)); } catch (e) { /* ignore */ }
+    }, 250);
 }
 
 let audioContext = null;
@@ -252,9 +256,6 @@ let micGainNode = null;
 let destinationNode = null;
 let processedTrack = null;
 let micVolume = 1; // 0..2 (0%..200%), усиление своего микрофона перед отправкой
-let voiceChanger = 'normal';
-let voiceChangerNodes = [];
-let voiceChangerOscillator = null;
 
 // ---------- Пункт оптимизации №5: RMS-метр громкости через AudioWorklet ----------
 // Раньше уровень/RMS считался опросом AnalyserNode из setInterval в ГЛАВНОМ потоке —
@@ -420,6 +421,8 @@ if (cameraQualitySelect) {
 // а ник стабилен, поэтому громкость, выставленная один раз, не сбрасывается.
 const REMOTE_VOLUME_STORAGE_KEY = 'mute:remoteVolumes';
 let remoteVoiceGainNodes = {};
+let remoteAudioSources = {};
+let remoteDemoAudioSources = {};
 function loadRemoteVolumes() {
     try {
         const raw = localStorage.getItem(REMOTE_VOLUME_STORAGE_KEY);
@@ -431,11 +434,16 @@ function getRemoteVolumePercent(username) {
     const key = username || '';
     return (key in all) ? all[key] : 100;
 }
+let remoteVolumeSaveTimer = null;
 function saveRemoteVolume(username, percent) {
     try {
         const all = loadRemoteVolumes();
         all[username || ''] = percent;
-        localStorage.setItem(REMOTE_VOLUME_STORAGE_KEY, JSON.stringify(all));
+        if (remoteVolumeSaveTimer) clearTimeout(remoteVolumeSaveTimer);
+        remoteVolumeSaveTimer = setTimeout(() => {
+            remoteVolumeSaveTimer = null;
+            try { localStorage.setItem(REMOTE_VOLUME_STORAGE_KEY, JSON.stringify(all)); } catch (e) {}
+        }, 250);
     } catch (e) { /* ignore */ }
 }
 
@@ -445,7 +453,6 @@ function saveRemoteVolume(username, percent) {
     if (typeof saved.gateEnabled === 'boolean') gateEnabled = saved.gateEnabled;
     if (typeof saved.gateHangoverMs === 'number') gateHangoverMs = saved.gateHangoverMs;
     if (typeof saved.micVolume === 'number') micVolume = saved.micVolume;
-    if (typeof saved.voiceChanger === 'string') voiceChanger = saved.voiceChanger;
     if (typeof saved.noiseSuppression === 'boolean' && noiseCheck) noiseCheck.checked = saved.noiseSuppression;
     if (typeof saved.echoCancellation === 'boolean' && echoCheck) echoCheck.checked = saved.echoCancellation;
     if (typeof saved.agc === 'boolean' && agcCheck) agcCheck.checked = saved.agc;
@@ -457,7 +464,6 @@ function saveRemoteVolume(username, percent) {
     if (thresholdIndicator) thresholdIndicator.style.left = `${((gateThreshold + 70) / 60) * 100}%`;
     if (micVolumeSlider) micVolumeSlider.value = Math.round(micVolume * 100);
     if (micVolumeValueDisplay) micVolumeValueDisplay.innerText = `${Math.round(micVolume * 100)}%`;
-    if (voiceChangerSelect) voiceChangerSelect.value = voiceChanger;
 })();
 
 // ---------- Звуковые уведомления (сообщение / вход / выход из комнаты) ----------
@@ -647,7 +653,7 @@ const sharingPeers = new Set();
 
 // Последний полученный MediaStream от каждого собеседника — нужен, чтобы можно было
 // показать/скрыть видео-плитку в любой момент, не дожидаясь нового события 'stream'.
-const remoteStreamsByPeer = {};
+let remoteStreamsByPeer = {};
 
 function createPlaceholderVideoTrack() {
     const canvas = document.createElement('canvas');
@@ -965,100 +971,7 @@ async function initMediaStream(deviceId = null) {
 // Полностью отключает и обнуляет предыдущий граф обработки перед пересборкой
 // (смена микрофона/профиля шумоподавления) — иначе старые узлы и исходящий
 // трек продолжали бы висеть в памяти и в звонках.
-function disconnectVoiceChanger() {
-    for (const node of voiceChangerNodes) {
-        try { node.disconnect(); } catch (e) { /* ignore */ }
-    }
-    voiceChangerNodes = [];
-    if (voiceChangerOscillator) {
-        try { voiceChangerOscillator.stop(); } catch (e) { /* already stopped */ }
-        try { voiceChangerOscillator.disconnect(); } catch (e) { /* ignore */ }
-        voiceChangerOscillator = null;
-    }
-}
-
-// Набор лёгких Web Audio эффектов. Они работают в реальном времени и не требуют
-// внешних файлов/серверов. "Девочка" здесь меняет тембр (верхние частоты + яркость),
-// а не делает полноценный pitch-shift: настоящий pitch-shift требует отдельного
-// гранулярного/phase-vocoder DSP и заметно тяжелее для CPU.
-function buildVoiceChanger(input, ctx) {
-    disconnectVoiceChanger();
-    if (!voiceChanger || voiceChanger === 'normal') return input;
-
-    let first = input;
-    let last = input;
-    const connect = (node) => {
-        last.connect(node);
-        last = node;
-        voiceChangerNodes.push(node);
-    };
-
-    if (voiceChanger === 'girl') {
-        const hp = ctx.createBiquadFilter();
-        hp.type = 'highpass'; hp.frequency.value = 120;
-        connect(hp);
-        const presence = ctx.createBiquadFilter();
-        presence.type = 'peaking'; presence.frequency.value = 2800; presence.Q.value = 0.9; presence.gain.value = 7;
-        connect(presence);
-        const shelf = ctx.createBiquadFilter();
-        shelf.type = 'highshelf'; shelf.frequency.value = 4500; shelf.gain.value = 5;
-        connect(shelf);
-        const comp = ctx.createDynamicsCompressor();
-        comp.threshold.value = -24; comp.knee.value = 18; comp.ratio.value = 3; comp.attack.value = 0.003; comp.release.value = 0.12;
-        connect(comp);
-    } else if (voiceChanger === 'skuf') {
-        const lp = ctx.createBiquadFilter();
-        lp.type = 'lowpass'; lp.frequency.value = 4200; lp.Q.value = 0.7;
-        connect(lp);
-        const low = ctx.createBiquadFilter();
-        low.type = 'lowshelf'; low.frequency.value = 180; low.gain.value = 9;
-        connect(low);
-        const mid = ctx.createBiquadFilter();
-        mid.type = 'peaking'; mid.frequency.value = 900; mid.Q.value = 0.8; mid.gain.value = -3;
-        connect(mid);
-        const comp = ctx.createDynamicsCompressor();
-        comp.threshold.value = -26; comp.knee.value = 20; comp.ratio.value = 4; comp.attack.value = 0.005; comp.release.value = 0.15;
-        connect(comp);
-    } else if (voiceChanger === 'robot') {
-        const osc = ctx.createOscillator();
-        osc.type = 'sine'; osc.frequency.value = 42;
-        const ring = ctx.createGain(); ring.gain.value = 0;
-        last.connect(ring);
-        osc.connect(ring.gain);
-        last = ring;
-        voiceChangerNodes.push(ring);
-        voiceChangerOscillator = osc;
-        osc.start();
-        const comp = ctx.createDynamicsCompressor();
-        comp.threshold.value = -30; comp.ratio.value = 5; comp.attack.value = 0.002; comp.release.value = 0.08;
-        connect(comp);
-    } else if (voiceChanger === 'radio') {
-        const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 420; connect(hp);
-        const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1600; bp.Q.value = 0.8; connect(bp);
-        const shaper = ctx.createWaveShaper();
-        const curve = new Float32Array(256);
-        for (let i = 0; i < curve.length; i++) { const x = i * 2 / (curve.length - 1) - 1; curve[i] = Math.tanh(x * 2.8); }
-        shaper.curve = curve; shaper.oversample = '2x'; connect(shaper);
-    } else if (voiceChanger === 'alien') {
-        const osc = ctx.createOscillator(); osc.type = 'sine'; osc.frequency.value = 95;
-        const ring = ctx.createGain(); ring.gain.value = 0;
-        last.connect(ring); osc.connect(ring.gain); last = ring;
-        voiceChangerNodes.push(ring); voiceChangerOscillator = osc; osc.start();
-        const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1100; bp.Q.value = 1.2; connect(bp);
-        const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -28; comp.ratio.value = 4; comp.attack.value = 0.003; comp.release.value = 0.1; connect(comp);
-    } else if (voiceChanger === 'echo') {
-        const delay = ctx.createDelay(0.8); delay.delayTime.value = 0.18;
-        const feedback = ctx.createGain(); feedback.gain.value = 0.28;
-        const wet = ctx.createGain(); wet.gain.value = 0.32;
-        last.connect(delay); delay.connect(feedback); feedback.connect(delay); delay.connect(wet); wet.connect(ctx.destination);
-        voiceChangerNodes.push(delay, feedback, wet);
-        return last;
-    }
-    return last;
-}
-
 function teardownAudioGraph() {
-    disconnectVoiceChanger();
     if (sourceNode) { try { sourceNode.disconnect(); } catch (e) { /* ignore */ } }
     if (micGainNode) { try { micGainNode.disconnect(); } catch (e) { /* ignore */ } }
     micGainNode = null;
@@ -1105,8 +1018,7 @@ async function setupAudioAnalyzer(stream) {
         sourceNode.connect(micGainNode);
 
         destinationNode = audioContext.createMediaStreamDestination();
-        const voiceProcessedNode = buildVoiceChanger(micGainNode, audioContext);
-        voiceProcessedNode.connect(destinationNode);
+        micGainNode.connect(destinationNode);
         processedTrack = destinationNode.stream.getAudioTracks()[0];
 
         // Самопрослушивание микрофона ("Слышать себя"): подключаем к уже обработанному
@@ -1118,7 +1030,7 @@ async function setupAudioAnalyzer(stream) {
             micMonitorGain.gain.value = micMonitorEnabled ? 1 : 0;
             micMonitorGain.connect(audioContext.destination);
         }
-        voiceProcessedNode.connect(micMonitorGain);
+        micGainNode.connect(micMonitorGain);
 
         if (analyserNode.__isWorklet) {
             processAudioLevel(analyserNode);
@@ -1175,25 +1087,10 @@ function processAudioLevel(node) {
     let messageCount = 0;
     let lastIsSpeaking = null;
 
-    // Сам воркл присылает данные, только пока аудио реально обрабатывается — если
-    // AudioContext уснёт целиком (браузер экономит ресурсы у неактивной вкладки),
-    // сообщения перестанут приходить вообще, и это надо ловить отдельно, не завязываясь
-    // на частоту сообщений от узла. Раз в секунду — совсем недорогая проверка.
-    const resumeCheckId = setInterval(() => {
-        if (analyserNode !== localNode) {
-            clearInterval(resumeCheckId);
-            return;
-        }
-        if (audioContext && audioContext.state === 'suspended') {
-            audioContext.resume().catch(() => { /* попробуем снова через секунду */ });
-        }
-    }, 1000);
-
     localNode.port.onmessage = (event) => {
         if (analyserNode !== localNode) {
             // граф пересобран (смена мика/профиля) — старый узел больше не актуален
             localNode.port.onmessage = null;
-            clearInterval(resumeCheckId);
             return;
         }
         const volumeDb = event.data;
@@ -1309,20 +1206,8 @@ async function setupRemoteAudioAnalyzer(stream, peerId) {
         if (!micTrack) return;
         const micStream = new MediaStream([micTrack]);
 
-        let audioEl = document.getElementById(`audio-elem-${peerId}`);
-        if (!audioEl) {
-            audioEl = document.createElement('audio');
-            audioEl.id = `audio-elem-${peerId}`;
-            audioEl.autoplay = true;
-            document.body.appendChild(audioEl);
-        }
-        audioEl.srcObject = micStream;
-        // Звук идёт не напрямую из <audio>, а через gain-узел ниже — тогда громкость
-        // конкретного собеседника можно менять только у себя, не трогая ни его реальный
-        // уровень записи, ни то, что слышат остальные.
-        audioEl.muted = true;
-
         const source = audioContext.createMediaStreamSource(micStream);
+        remoteAudioSources[peerId] = source;
 
         const remoteAnalyser = await createLevelMeterNode(audioContext);
         source.connect(remoteAnalyser);
@@ -1359,17 +1244,8 @@ function setupRemoteDemoAudio(stream, peerId) {
     try {
         const demoStream = new MediaStream([demoTrack]);
 
-        let audioEl = document.getElementById(`demo-audio-elem-${peerId}`);
-        if (!audioEl) {
-            audioEl = document.createElement('audio');
-            audioEl.id = `demo-audio-elem-${peerId}`;
-            audioEl.autoplay = true;
-            document.body.appendChild(audioEl);
-        }
-        audioEl.srcObject = demoStream;
-        audioEl.muted = true; // звук идёт только через gain-узел ниже
-
         const source = audioContext.createMediaStreamSource(demoStream);
+        remoteDemoAudioSources[peerId] = source;
         const gainNode = audioContext.createGain();
         const initialVolume = demoVolumes[peerId] ?? 100;
         gainNode.gain.value = isDeafened ? 0 : (initialVolume / 100);
@@ -1873,16 +1749,12 @@ function leaveVoiceChannel() {
 }
 
 function cleanupCalls() {
-    for (let peerId in activeCalls) {
-        activeCalls[peerId].close();
-        let audioEl = document.getElementById(`audio-elem-${peerId}`);
-        if (audioEl) audioEl.remove();
+    for (const peerId in activeCalls) {
+        try { activeCalls[peerId].close(); } catch (e) {}
+        cleanupRemoteAudio(peerId);
     }
     activeCalls = {};
-    remoteAnalysers = {};
-    remoteGainNodes = {};
-    remoteVoiceGainNodes = {};
-    for (let peerId in remoteStreamsByPeer) delete remoteStreamsByPeer[peerId];
+    remoteStreamsByPeer = {};
     sharingPeers.clear();
     remoteVideos.innerHTML = '';
 }
@@ -1970,6 +1842,31 @@ socket.on('video state', ({ peerId, sharing }) => {
     playScreenShareToggleTone(sharing);
 });
 
+function cleanupRemoteAudio(peerId) {
+    const source = remoteAudioSources[peerId];
+    if (source) { try { source.disconnect(); } catch (e) {} }
+    delete remoteAudioSources[peerId];
+
+    const demoSource = remoteDemoAudioSources[peerId];
+    if (demoSource) { try { demoSource.disconnect(); } catch (e) {} }
+    delete remoteDemoAudioSources[peerId];
+
+    const analyser = remoteAnalysers[peerId];
+    if (analyser) {
+        if (analyser.port) { try { analyser.port.onmessage = null; } catch (e) {} }
+        try { analyser.disconnect(); } catch (e) {}
+    }
+    delete remoteAnalysers[peerId];
+
+    const gain = remoteGainNodes[peerId];
+    if (gain) { try { gain.disconnect(); } catch (e) {} }
+    delete remoteGainNodes[peerId];
+
+    const voiceGain = remoteVoiceGainNodes[peerId];
+    if (voiceGain) { try { voiceGain.disconnect(); } catch (e) {} }
+    delete remoteVoiceGainNodes[peerId];
+}
+
 function handleIncomingCall(call) {
     if (call.peer === myPeerId) return;
     activeCalls[call.peer] = call;
@@ -1987,22 +1884,8 @@ function handleIncomingCall(call) {
     call.on('close', () => {
         const wrap = document.getElementById(`video-${call.peer}`);
         if (wrap) wrap.remove();
-        let audioElem = document.getElementById(`audio-elem-${call.peer}`);
-        if (audioElem) audioElem.remove();
-        let demoAudioElem = document.getElementById(`demo-audio-elem-${call.peer}`);
-        if (demoAudioElem) demoAudioElem.remove();
         delete activeCalls[call.peer];
-        // Отключаем и отвязываем сообщения у узла-метра, а не просто забываем ссылку —
-        // иначе AudioWorkletNode/AnalyserNode продолжит висеть в графе и (для воркла)
-        // слать сообщения в уже ничем не используемый обработчик.
-        if (remoteAnalysers[call.peer]) {
-            const staleNode = remoteAnalysers[call.peer];
-            if (staleNode.port) { try { staleNode.port.onmessage = null; } catch (e) { /* ignore */ } }
-            try { staleNode.disconnect(); } catch (e) { /* ignore */ }
-        }
-        delete remoteAnalysers[call.peer];
-        delete remoteGainNodes[call.peer];
-        delete remoteVoiceGainNodes[call.peer];
+        cleanupRemoteAudio(call.peer);
         delete remoteStreamsByPeer[call.peer];
         sharingPeers.delete(call.peer);
     });
@@ -2079,14 +1962,7 @@ socket.on('user connected', ({ username, avatar, peerId }) => {
 socket.on('user disconnected', (peerId) => {
     const wasPresent = !!connectedUsers[peerId];
     delete connectedUsers[peerId];
-    if (remoteAnalysers[peerId]) {
-        const staleNode = remoteAnalysers[peerId];
-        if (staleNode.port) { try { staleNode.port.onmessage = null; } catch (e) { /* ignore */ } }
-        try { staleNode.disconnect(); } catch (e) { /* ignore */ }
-    }
-    delete remoteAnalysers[peerId];
-    delete remoteGainNodes[peerId];
-    delete remoteVoiceGainNodes[peerId];
+    cleanupRemoteAudio(peerId);
     delete remoteStreamsByPeer[peerId];
     sharingPeers.delete(peerId);
     updateVoiceUsersList();
@@ -2102,10 +1978,6 @@ socket.on('user disconnected', (peerId) => {
     }
     const el = document.getElementById(`video-${peerId}`);
     if (el) el.remove();
-    let audioEl = document.getElementById(`audio-elem-${peerId}`);
-    if (audioEl) audioEl.remove();
-    let demoAudioEl = document.getElementById(`demo-audio-elem-${peerId}`);
-    if (demoAudioEl) demoAudioEl.remove();
 });
 
 // Иконки для значков статуса — те же, что и на самих кнопках mute/deafen
@@ -2555,15 +2427,6 @@ if (micVolumeSlider) {
         if (micVolumeValueDisplay) micVolumeValueDisplay.innerText = `${percent}%`;
         if (micGainNode) micGainNode.gain.value = micVolume;
         saveAudioSettings({ micVolume });
-    });
-}
-if (voiceChangerSelect) {
-    voiceChangerSelect.addEventListener('change', () => {
-        voiceChanger = voiceChangerSelect.value || 'normal';
-        saveAudioSettings({ voiceChanger });
-        // Пересобираем только аудиограф; WebRTC-соединения сохраняются, а новый
-        // processedTrack автоматически подменяется во всех активных peer-соединениях.
-        initMediaStream(micSelect ? micSelect.value : null);
     });
 }
 
