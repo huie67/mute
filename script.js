@@ -116,9 +116,137 @@ const serverInfoRemovePasswordBtn = document.getElementById('server-info-remove-
 const serverInfoCode = document.getElementById('server-info-code');
 const serverInfoError = document.getElementById('server-info-error');
 const serverInfoSaveBtn = document.getElementById('server-info-save');
+const serverInfoTabs = document.getElementById('server-info-tabs');
+const serverMembersListEl = document.getElementById('server-members-list');
+const serverMembersEmpty = document.getElementById('server-members-empty');
+const serverMembersError = document.getElementById('server-members-error');
 let pendingServerInfoAvatarFile = null;
-let currentServerInfo = null; // { code, name, avatar, isOwner }
+let currentServerInfo = null; // { code, name, avatar, isOwner, isAdmin, canModerate }
 let currentServerInfoRemovePassword = false;
+
+// ---------- Вкладки в окне сервера (Настройки / Участники) ----------
+// Своя, отдельная от общих настроек (switchSettingsTab), область запроса —
+// см. комментарий у settingsTabButtons.
+const serverInfoTabButtons = document.querySelectorAll('#server-info-tabs .settings-tab');
+const serverInfoTabPanels = document.querySelectorAll('#server-info-modal .settings-tab-panel');
+function switchServerInfoTab(tabName) {
+    serverInfoTabButtons.forEach(btn => btn.classList.toggle('active', btn.dataset.serverTab === tabName));
+    serverInfoTabPanels.forEach(panel => panel.classList.toggle('active', panel.dataset.serverTabPanel === tabName));
+}
+serverInfoTabButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+        switchServerInfoTab(btn.dataset.serverTab);
+        if (btn.dataset.serverTab === 'members' && currentServerInfo) {
+            showServerError(serverMembersError, '');
+            socket.emit('get server members', { code: currentServerInfo.code });
+        }
+    });
+});
+
+// ---------- Рендер списка участников сервера (кик/повышение) ----------
+function renderServerMembers(members) {
+    if (!serverMembersListEl) return;
+    serverMembersListEl.innerHTML = '';
+
+    if (!members || members.length === 0) {
+        if (serverMembersEmpty) serverMembersEmpty.style.display = 'block';
+        return;
+    }
+    if (serverMembersEmpty) serverMembersEmpty.style.display = 'none';
+
+    const meLower = ((currentUser && currentUser.username) || '').toLowerCase();
+    const iAmOwner = !!(currentServerInfo && currentServerInfo.isOwner);
+    const iAmModerator = !!(currentServerInfo && (currentServerInfo.isOwner || currentServerInfo.isAdmin));
+
+    members.forEach(m => {
+        const isSelf = m.username.toLowerCase() === meLower;
+
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex; align-items:center; gap:10px; padding:8px; background:var(--bg-input); border-radius:8px;';
+
+        const avatar = document.createElement('img');
+        avatar.src = m.avatar || `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(m.username)}`;
+        avatar.alt = '';
+        avatar.style.cssText = 'width:34px; height:34px; border-radius:50%; object-fit:cover; flex-shrink:0;';
+        row.appendChild(avatar);
+
+        const info = document.createElement('div');
+        info.style.cssText = 'flex:1; min-width:0; display:flex; flex-direction:column;';
+        const nameEl = document.createElement('div');
+        nameEl.style.cssText = 'font-weight:600; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+        nameEl.textContent = m.username + (isSelf ? ' (вы)' : '');
+        info.appendChild(nameEl);
+        if (m.isOwner || m.isAdmin) {
+            const roleEl = document.createElement('div');
+            roleEl.style.cssText = 'font-size:11px; color:var(--text-faint);';
+            roleEl.textContent = m.isOwner ? 'Создатель' : 'Модератор';
+            info.appendChild(roleEl);
+        }
+        row.appendChild(info);
+
+        if (iAmModerator && !m.isOwner && !isSelf) {
+            const actions = document.createElement('div');
+            actions.style.cssText = 'display:flex; gap:6px; flex-shrink:0;';
+
+            if (!m.isAdmin) {
+                const promoteBtn = document.createElement('button');
+                promoteBtn.type = 'button';
+                promoteBtn.className = 'btn-secondary';
+                promoteBtn.style.cssText = 'font-size:11px; padding:5px 8px; white-space:nowrap;';
+                promoteBtn.textContent = 'Повысить';
+                promoteBtn.addEventListener('click', () => {
+                    socket.emit('set server admin', { code: currentServerInfo.code, username: m.username, makeAdmin: true });
+                });
+                actions.appendChild(promoteBtn);
+            } else if (iAmOwner) {
+                const demoteBtn = document.createElement('button');
+                demoteBtn.type = 'button';
+                demoteBtn.className = 'btn-secondary';
+                demoteBtn.style.cssText = 'font-size:11px; padding:5px 8px; white-space:nowrap;';
+                demoteBtn.textContent = 'Разжаловать';
+                demoteBtn.addEventListener('click', () => {
+                    socket.emit('set server admin', { code: currentServerInfo.code, username: m.username, makeAdmin: false });
+                });
+                actions.appendChild(demoteBtn);
+            }
+
+            // Модератор не может выгнать другого модератора — только владелец.
+            if (iAmOwner || !m.isAdmin) {
+                const kickBtn = document.createElement('button');
+                kickBtn.type = 'button';
+                kickBtn.className = 'action-btn';
+                kickBtn.style.cssText = 'font-size:11px; padding:5px 8px; background:#3a1f24; color:#ff8080; white-space:nowrap;';
+                kickBtn.textContent = 'Выгнать';
+                kickBtn.addEventListener('click', () => {
+                    if (!confirm(`Исключить «${m.username}» с сервера?`)) return;
+                    socket.emit('kick server member', { code: currentServerInfo.code, username: m.username });
+                });
+                actions.appendChild(kickBtn);
+            }
+
+            row.appendChild(actions);
+        }
+
+        serverMembersListEl.appendChild(row);
+    });
+}
+
+socket.on('server members list', ({ code, members } = {}) => {
+    if (!currentServerInfo || currentServerInfo.code !== code) return;
+    renderServerMembers(members || []);
+});
+
+// Пришло, когда нас выгнал создатель или модератор сервера.
+socket.on('kicked from server', ({ code, name } = {}) => {
+    if (!code) return;
+    const btn = customServersList.querySelector(`[data-room="custom:${code}"]`);
+    if (btn) btn.remove();
+    removeMyServerCode(code);
+    if (currentServerInfo && currentServerInfo.code === code) {
+        closeModal(serverInfoModal);
+    }
+    alert(`Вас исключили с сервера «${name || code}».`);
+});
 
 serverInfoAvatarUrl?.addEventListener('input', () => {
     pendingServerInfoAvatarFile = null;
@@ -177,6 +305,18 @@ const messageSoundCurrentLabel = document.getElementById('message-sound-current-
 const messageSoundTestBtn = document.getElementById('message-sound-test-btn');
 const messageSoundFileInput = document.getElementById('message-sound-file-input');
 const messageSoundResetBtn = document.getElementById('message-sound-reset-btn');
+const joinSoundVolumeSlider = document.getElementById('join-sound-volume-slider');
+const joinSoundVolumeValueDisplay = document.getElementById('join-sound-volume-value');
+const joinSoundCurrentLabel = document.getElementById('join-sound-current-label');
+const joinSoundTestBtn = document.getElementById('join-sound-test-btn');
+const joinSoundFileInput = document.getElementById('join-sound-file-input');
+const joinSoundResetBtn = document.getElementById('join-sound-reset-btn');
+const leaveSoundVolumeSlider = document.getElementById('leave-sound-volume-slider');
+const leaveSoundVolumeValueDisplay = document.getElementById('leave-sound-volume-value');
+const leaveSoundCurrentLabel = document.getElementById('leave-sound-current-label');
+const leaveSoundTestBtn = document.getElementById('leave-sound-test-btn');
+const leaveSoundFileInput = document.getElementById('leave-sound-file-input');
+const leaveSoundResetBtn = document.getElementById('leave-sound-reset-btn');
 
 const profileAvatarPreview = document.getElementById('profile-avatar-preview');
 const profileAvatarUrlInput = document.getElementById('profile-avatar-url');
@@ -489,11 +629,22 @@ const NOTIFY_SOUNDS = {
 
 const notifyAudioCache = {};
 
-// ---------- Настройки звука уведомлений о сообщениях: громкость + свой файл ----------
+// ---------- Настройки звука уведомлений: громкость + свой файл (для каждого типа) ----------
 // Хранится отдельно от NOTIFY_SETTINGS_KEY звука микрофона/видео, чтобы не смешивать
-// разные по смыслу настройки в одном объекте. customMessageSound — data URI (base64),
-// который пользователь загрузил сам, вместо встроенного звука колокольчика.
+// разные по смыслу настройки в одном объекте. custom*Sound — data URI (base64),
+// который пользователь загрузил сам, вместо встроенного звука.
+// Изначально свой звук можно было загрузить только для сообщений — теперь то же самое
+// доступно и для звуков входа/выхода из голосового канала.
 const NOTIFY_SETTINGS_KEY = 'mute:notifySettings';
+
+// Описание каждого настраиваемого типа звука: под каким ключом хранить громкость,
+// свой файл и его имя в localStorage, и какая громкость по умолчанию.
+const CUSTOM_SOUND_TYPES = {
+    message: { volumeKey: 'messageVolume', customKey: 'customMessageSound', nameKey: 'customMessageSoundName', defaultVolume: 0.5 },
+    join: { volumeKey: 'joinVolume', customKey: 'customJoinSound', nameKey: 'customJoinSoundName', defaultVolume: 0.6 },
+    leave: { volumeKey: 'leaveVolume', customKey: 'customLeaveSound', nameKey: 'customLeaveSoundName', defaultVolume: 0.6 }
+};
+
 function loadNotifySettings() {
     try {
         const raw = localStorage.getItem(NOTIFY_SETTINGS_KEY);
@@ -512,19 +663,23 @@ function saveNotifySettings(patch) {
         return false;
     }
 }
-function getMessageSoundVolume() {
-    const saved = loadNotifySettings().messageVolume;
-    return typeof saved === 'number' ? saved : 0.5;
+function getSoundVolume(key) {
+    const cfg = CUSTOM_SOUND_TYPES[key];
+    if (!cfg) return 0.6;
+    const saved = loadNotifySettings()[cfg.volumeKey];
+    return typeof saved === 'number' ? saved : cfg.defaultVolume;
 }
-function getCustomMessageSound() {
-    return loadNotifySettings().customMessageSound || null;
+function getCustomSound(key) {
+    const cfg = CUSTOM_SOUND_TYPES[key];
+    if (!cfg) return null;
+    return loadNotifySettings()[cfg.customKey] || null;
 }
 
 function getNotifyAudio(key) {
-    // Для звука сообщения источник может смениться в рантайме (загрузили свой файл
-    // или сбросили на стандартный) — поэтому для него кэш не просто "разово заполнили
-    // и забыли", а сверяем src при каждом обращении.
-    const src = key === 'message' ? (getCustomMessageSound() || NOTIFY_SOUNDS.message) : NOTIFY_SOUNDS[key];
+    // Источник может смениться в рантайме (загрузили свой файл или сбросили на
+    // стандартный) — поэтому кэш не просто "разово заполнили и забыли", а сверяем
+    // src при каждом обращении.
+    const src = getCustomSound(key) || NOTIFY_SOUNDS[key];
     const cached = notifyAudioCache[key];
     if (!cached || cached.src !== src) {
         const audio = new Audio(src);
@@ -549,87 +704,119 @@ function playNotifySound(key, volume = 0.6) {
 
 // Новое сообщение в чате
 function playMessageSound() {
-    playNotifySound('message', getMessageSoundVolume());
+    playNotifySound('message', getSoundVolume('message'));
 }
 
 // Кто-то зашёл в комнату
 function playJoinSound() {
-    playNotifySound('join', 0.6);
+    playNotifySound('join', getSoundVolume('join'));
 }
 
 // Кто-то вышел из комнаты
 function playLeaveSound() {
-    playNotifySound('leave', 0.6);
+    playNotifySound('leave', getSoundVolume('leave'));
 }
 
-// ---------- UI настроек звука сообщений (громкость + свой файл) ----------
-function refreshMessageSoundLabel() {
-    if (!messageSoundCurrentLabel) return;
-    const custom = loadNotifySettings().customMessageSoundName;
-    messageSoundCurrentLabel.textContent = custom ? `Свой звук: ${custom}` : 'Стандартный звук';
-}
+// ---------- UI настроек звука (громкость + свой файл) — общая логика для всех типов ----------
+function setupCustomSoundControls(key, els) {
+    const cfg = CUSTOM_SOUND_TYPES[key];
+    if (!cfg) return;
 
-(function applySavedNotifySettings() {
-    const volumePercent = Math.round(getMessageSoundVolume() * 100);
-    if (messageSoundVolumeSlider) messageSoundVolumeSlider.value = volumePercent;
-    if (messageSoundVolumeValueDisplay) messageSoundVolumeValueDisplay.innerText = `${volumePercent}%`;
-    refreshMessageSoundLabel();
-})();
+    function refreshLabel() {
+        if (!els.label) return;
+        const name = loadNotifySettings()[cfg.nameKey];
+        els.label.textContent = name ? `Свой звук: ${name}` : 'Стандартный звук';
+    }
 
-if (messageSoundVolumeSlider) {
-    messageSoundVolumeSlider.addEventListener('input', () => {
-        const percent = Number(messageSoundVolumeSlider.value);
-        if (messageSoundVolumeValueDisplay) messageSoundVolumeValueDisplay.innerText = `${percent}%`;
-        saveNotifySettings({ messageVolume: percent / 100 });
-    });
-}
+    (function applySaved() {
+        const percent = Math.round(getSoundVolume(key) * 100);
+        if (els.slider) els.slider.value = percent;
+        if (els.valueDisplay) els.valueDisplay.innerText = `${percent}%`;
+        refreshLabel();
+    })();
 
-if (messageSoundTestBtn) {
-    messageSoundTestBtn.addEventListener('click', () => playMessageSound());
-}
+    if (els.slider) {
+        els.slider.addEventListener('input', () => {
+            const percent = Number(els.slider.value);
+            if (els.valueDisplay) els.valueDisplay.innerText = `${percent}%`;
+            saveNotifySettings({ [cfg.volumeKey]: percent / 100 });
+        });
+    }
 
-if (messageSoundFileInput) {
-    messageSoundFileInput.addEventListener('change', () => {
-        const file = messageSoundFileInput.files && messageSoundFileInput.files[0];
-        if (!file) return;
-        // Ограничение размера — звук хранится как base64 в localStorage (лимит там
-        // обычно порядка 5 МБ на весь домен), поэтому даём разумный потолок в 2 МБ
-        // на сам аудиофайл, чтобы не забить хранилище одним звуком уведомления.
-        const MAX_SIZE = 2 * 1024 * 1024;
-        if (file.size > MAX_SIZE) {
-            alert('Файл слишком большой (максимум 2 МБ). Выберите более короткий звук.');
-            messageSoundFileInput.value = '';
-            return;
-        }
-        const reader = new FileReader();
-        reader.onload = () => {
-            const dataUrl = reader.result;
-            const ok = saveNotifySettings({ customMessageSound: dataUrl, customMessageSoundName: file.name });
-            if (!ok) {
-                alert('Не удалось сохранить звук — возможно, он слишком большой для локального хранилища браузера.');
+    if (els.testBtn) {
+        els.testBtn.addEventListener('click', () => playNotifySound(key, getSoundVolume(key)));
+    }
+
+    if (els.fileInput) {
+        els.fileInput.addEventListener('change', () => {
+            const file = els.fileInput.files && els.fileInput.files[0];
+            if (!file) return;
+            // Ограничение размера — звук хранится как base64 в localStorage (лимит там
+            // обычно порядка 5 МБ на весь домен), поэтому даём разумный потолок в 2 МБ
+            // на сам аудиофайл, чтобы не забить хранилище одним звуком уведомления.
+            const MAX_SIZE = 2 * 1024 * 1024;
+            if (file.size > MAX_SIZE) {
+                alert('Файл слишком большой (максимум 2 МБ). Выберите более короткий звук.');
+                els.fileInput.value = '';
                 return;
             }
-            delete notifyAudioCache.message; // пересоздаём Audio с новым src при следующем проигрывании
-            refreshMessageSoundLabel();
-            playMessageSound();
-        };
-        reader.onerror = () => alert('Не удалось прочитать файл.');
-        reader.readAsDataURL(file);
-        messageSoundFileInput.value = '';
-    });
+            const reader = new FileReader();
+            reader.onload = () => {
+                const dataUrl = reader.result;
+                const ok = saveNotifySettings({ [cfg.customKey]: dataUrl, [cfg.nameKey]: file.name });
+                if (!ok) {
+                    alert('Не удалось сохранить звук — возможно, он слишком большой для локального хранилища браузера.');
+                    return;
+                }
+                delete notifyAudioCache[key]; // пересоздаём Audio с новым src при следующем проигрывании
+                refreshLabel();
+                playNotifySound(key, getSoundVolume(key));
+            };
+            reader.onerror = () => alert('Не удалось прочитать файл.');
+            reader.readAsDataURL(file);
+            els.fileInput.value = '';
+        });
+    }
+
+    if (els.resetBtn) {
+        els.resetBtn.addEventListener('click', () => {
+            const settings = loadNotifySettings();
+            delete settings[cfg.customKey];
+            delete settings[cfg.nameKey];
+            try { localStorage.setItem(NOTIFY_SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {}
+            delete notifyAudioCache[key];
+            refreshLabel();
+            playNotifySound(key, getSoundVolume(key));
+        });
+    }
 }
 
-if (messageSoundResetBtn) {
-    messageSoundResetBtn.addEventListener('click', () => {
-        const settings = loadNotifySettings();
-        delete settings.customMessageSound;
-        delete settings.customMessageSoundName;
-        try { localStorage.setItem(NOTIFY_SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {}
-        delete notifyAudioCache.message;
-        refreshMessageSoundLabel();
-        playMessageSound();
-    });
-}
+setupCustomSoundControls('message', {
+    slider: messageSoundVolumeSlider,
+    valueDisplay: messageSoundVolumeValueDisplay,
+    label: messageSoundCurrentLabel,
+    testBtn: messageSoundTestBtn,
+    fileInput: messageSoundFileInput,
+    resetBtn: messageSoundResetBtn
+});
+
+setupCustomSoundControls('join', {
+    slider: joinSoundVolumeSlider,
+    valueDisplay: joinSoundVolumeValueDisplay,
+    label: joinSoundCurrentLabel,
+    testBtn: joinSoundTestBtn,
+    fileInput: joinSoundFileInput,
+    resetBtn: joinSoundResetBtn
+});
+
+setupCustomSoundControls('leave', {
+    slider: leaveSoundVolumeSlider,
+    valueDisplay: leaveSoundVolumeValueDisplay,
+    label: leaveSoundCurrentLabel,
+    testBtn: leaveSoundTestBtn,
+    fileInput: leaveSoundFileInput,
+    resetBtn: leaveSoundResetBtn
+});
 
 // ---------- Короткий сигнал при переключении СВОЕГО мьюта ----------
 // Генерируется на лету через Web Audio API (осциллятор), без отдельного аудиофайла:
@@ -1639,9 +1826,18 @@ socket.on('custom room info', (data) => {
     pendingServerInfoAvatarFile = null;
     serverInfoAvatarFile.value = '';
     showServerError(serverInfoError, '');
+    showServerError(serverMembersError, '');
 
     serverInfoTitle.innerText = data.isOwner ? 'Управление сервером' : 'Сервер';
     serverInfoCode.innerText = data.code;
+
+    // Вкладка "Участники" видна только создателю и модераторам сервера — остальным
+    // управлять некем и незачем показывать эту вкладку вовсе.
+    const canModerate = !!(data.isOwner || data.isAdmin);
+    if (serverInfoTabs) serverInfoTabs.style.display = canModerate ? 'flex' : 'none';
+    if (serverMembersListEl) serverMembersListEl.innerHTML = '';
+    if (serverMembersEmpty) serverMembersEmpty.style.display = 'none';
+    switchServerInfoTab('general');
 
     if (data.isOwner) {
         serverInfoOwnerView.style.display = 'block';
@@ -1830,7 +2026,10 @@ socket.on('custom room joined', (data) => {
 socket.on('custom room error', (message) => {
     let target = createServerError;
     if (serverInfoModal.style.display === 'flex') {
-        target = serverInfoError;
+        // Ошибки кика/повышения относятся к вкладке "Участники" — показываем их там,
+        // а не в скрытой в этот момент вкладке "Настройки".
+        const membersTabActive = document.querySelector('#server-info-tabs .settings-tab[data-server-tab="members"]')?.classList.contains('active');
+        target = membersTabActive ? serverMembersError : serverInfoError;
         serverInfoSaveBtn.disabled = false;
         serverInfoSaveBtn.innerText = 'Сохранить изменения';
     } else if (joinServerModal.style.display === 'flex') {
@@ -2399,8 +2598,11 @@ settingsBtn.addEventListener('click', () => {
 });
 
 // ---------- Вкладки в окне настроек ----------
-const settingsTabButtons = document.querySelectorAll('.settings-tab');
-const settingsTabPanels = document.querySelectorAll('.settings-tab-panel');
+// Запрос ограничен контейнером #settings-tabs/#settings-modal, а не всем документом —
+// иначе он захватил бы и вкладки окна сервера ("Настройки"/"Участники"), которые
+// используют те же CSS-классы для одинакового вида, но переключаются отдельно.
+const settingsTabButtons = document.querySelectorAll('#settings-tabs .settings-tab');
+const settingsTabPanels = document.querySelectorAll('#settings-modal .settings-tab-panel');
 function switchSettingsTab(tabName) {
     settingsTabButtons.forEach(btn => btn.classList.toggle('active', btn.dataset.tab === tabName));
     settingsTabPanels.forEach(panel => panel.classList.toggle('active', panel.dataset.tabPanel === tabName));

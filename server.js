@@ -76,6 +76,9 @@ async function initDb() {
     // существующей таблице (переживает деплои без ручных миграций).
     await pool.query(`ALTER TABLE custom_rooms ADD COLUMN IF NOT EXISTS avatar TEXT;`);
     await pool.query(`ALTER TABLE custom_rooms ADD COLUMN IF NOT EXISTS owner_username TEXT;`);
+    // Модераторы сервера ("повышенные" участники) — могут выгонять и повышать
+    // остальных, но не владельца и не друг друга. Хранится как массив ников.
+    await pool.query(`ALTER TABLE custom_rooms ADD COLUMN IF NOT EXISTS admin_usernames TEXT[] DEFAULT '{}';`);
 }
 
 async function insertMessage({ username, avatar, text, imageUrl, room, createdAt }) {
@@ -325,7 +328,7 @@ function generateRoomCode() {
 
 async function loadCustomRooms() {
     const result = await pool.query(
-        `SELECT code, name, password_hash, avatar, owner_username, created_at FROM custom_rooms ORDER BY created_at ASC`
+        `SELECT code, name, password_hash, avatar, owner_username, admin_usernames, created_at FROM custom_rooms ORDER BY created_at ASC`
     );
     for (const row of result.rows) {
         customRooms[row.code] = {
@@ -334,10 +337,26 @@ async function loadCustomRooms() {
             passwordHash: row.password_hash,
             avatar: row.avatar || '',
             ownerUsername: row.owner_username || null,
+            adminUsernames: row.admin_usernames || [],
             createdAt: Number(row.created_at)
         };
     }
     console.log(`📦 Загружено пользовательских серверов из Neon: ${result.rows.length}`);
+}
+
+// ---------- Роли участников сервера: владелец / модератор ("повышенный") / обычный ----------
+function isRoomOwner(room, username) {
+    return !!(room && room.ownerUsername && username &&
+        room.ownerUsername.toLowerCase() === username.toLowerCase());
+}
+function isRoomAdmin(room, username) {
+    if (!room || !username || !Array.isArray(room.adminUsernames)) return false;
+    const lower = username.toLowerCase();
+    return room.adminUsernames.some(u => String(u).toLowerCase() === lower);
+}
+// Может выгонять/повышать: владелец сервера или тот, кого он (или другой модератор) повысил.
+function canModerateRoom(room, username) {
+    return isRoomOwner(room, username) || isRoomAdmin(room, username);
 }
 
 // Публичные поля сервера для списка иконок — хеш пароля и владелец (username)
@@ -355,9 +374,9 @@ function publicCustomRoom(room) {
 // который решает, что показывать в окне сервера (редактирование или просмотр кода).
 function customRoomInfoFor(room, socket) {
     const viewerUsername = socket && socket.data && socket.data.username;
-    const isOwner = !!(room.ownerUsername && viewerUsername &&
-        room.ownerUsername.toLowerCase() === viewerUsername.toLowerCase());
-    return { ...publicCustomRoom(room), isOwner };
+    const isOwner = isRoomOwner(room, viewerUsername);
+    const isAdmin = isRoomAdmin(room, viewerUsername);
+    return { ...publicCustomRoom(room), isOwner, isAdmin, canModerate: isOwner || isAdmin };
 }
 
 // Проверка ника из БД (findUserByUsername) ловит только совпадение с ЗАРЕГИСТРИРОВАННЫМ
@@ -463,7 +482,7 @@ io.on('connection', (socket) => {
                     const result = await pool.query(
                         `INSERT INTO custom_rooms (code, name, password_hash, avatar, owner_username, created_at)
                          VALUES ($1, $2, $3, $4, $5, $6)
-                         RETURNING code, name, password_hash, avatar, owner_username, created_at`,
+                         RETURNING code, name, password_hash, avatar, owner_username, admin_usernames, created_at`,
                         [code, cleanName, passwordHash, cleanAvatar, ownerUsername, Date.now()]
                     );
                     const row = result.rows[0];
@@ -473,6 +492,7 @@ io.on('connection', (socket) => {
                         passwordHash: row.password_hash,
                         avatar: row.avatar || '',
                         ownerUsername: row.owner_username || null,
+                        adminUsernames: row.admin_usernames || [],
                         createdAt: Number(row.created_at)
                     };
                     break;
@@ -553,7 +573,7 @@ io.on('connection', (socket) => {
             const result = await pool.query(
                 `UPDATE custom_rooms SET name = $1, avatar = $2, password_hash = $3
                  WHERE code = $4
-                 RETURNING code, name, password_hash, avatar, owner_username, created_at`,
+                 RETURNING code, name, password_hash, avatar, owner_username, admin_usernames, created_at`,
                 [cleanName, cleanAvatar, newPasswordHash, cleanCode]
             );
             const row = result.rows[0];
@@ -565,6 +585,7 @@ io.on('connection', (socket) => {
                 passwordHash: row.password_hash,
                 avatar: row.avatar || '',
                 ownerUsername: row.owner_username || null,
+                adminUsernames: row.admin_usernames || [],
                 createdAt: Number(row.created_at)
             };
             customRooms[updated.code] = updated;
@@ -598,6 +619,141 @@ io.on('connection', (socket) => {
             console.error('❌ Ошибка удаления пользовательского сервера:', err);
             socket.emit('custom room error', 'Не удалось удалить сервер.');
         }
+    });
+
+    // ---------- Участники сервера: список (кто сейчас в чате этого сервера), кик, повышение/понижение ----------
+    // "Онлайн"-участники сервера определяются по тому, у кого сейчас открыт чат этого
+    // сервера (комната `chat:${code}`, см. 'select chat room') — отдельного списка
+    // "подписчиков" сервер не хранит, люди просто заходят по коду.
+    function getServerMembers(code) {
+        const chatRoomName = `chat:${code}`;
+        const custom = customRooms[code];
+        const seen = new Map(); // username(lower) -> { username, avatar }
+        for (const [, sock] of io.sockets.sockets) {
+            if (!sock.rooms || !sock.rooms.has(chatRoomName)) continue;
+            const uname = sock.data && sock.data.username;
+            if (!uname) continue;
+            const key = uname.toLowerCase();
+            if (!seen.has(key)) {
+                seen.set(key, { username: uname, avatar: (sock.data && sock.data.avatar) || '' });
+            }
+        }
+        return [...seen.values()]
+            .map(m => ({
+                username: m.username,
+                avatar: m.avatar,
+                isOwner: isRoomOwner(custom, m.username),
+                isAdmin: isRoomAdmin(custom, m.username)
+            }))
+            .sort((a, b) => {
+                if (a.isOwner !== b.isOwner) return a.isOwner ? -1 : 1;
+                if (a.isAdmin !== b.isAdmin) return a.isAdmin ? -1 : 1;
+                return a.username.localeCompare(b.username, 'ru');
+            });
+    }
+
+    socket.on('get server members', ({ code } = {}) => {
+        const cleanCode = String(code || '').trim().toUpperCase();
+        const custom = customRooms[cleanCode];
+        if (!custom) return socket.emit('custom room error', 'Сервер с таким кодом не найден.');
+
+        const viewerUsername = socket.data && socket.data.username;
+        if (!canModerateRoom(custom, viewerUsername)) {
+            return socket.emit('custom room error', 'Список участников доступен только создателю и модераторам сервера.');
+        }
+        socket.emit('server members list', { code: cleanCode, members: getServerMembers(cleanCode) });
+    });
+
+    // Кик: доступен владельцу (может выгнать любого, кроме себя) и модераторам
+    // (могут выгонять только обычных участников — не владельца и не других модераторов).
+    socket.on('kick server member', ({ code, username } = {}) => {
+        const cleanCode = String(code || '').trim().toUpperCase();
+        const targetUsername = String(username || '').trim();
+        const custom = customRooms[cleanCode];
+        if (!custom) return socket.emit('custom room error', 'Сервер с таким кодом не найден.');
+        if (!targetUsername) return;
+
+        const actorUsername = socket.data && socket.data.username;
+        if (!canModerateRoom(custom, actorUsername)) {
+            return socket.emit('custom room error', 'Исключать участников может только создатель или модератор сервера.');
+        }
+        if (actorUsername && targetUsername.toLowerCase() === actorUsername.toLowerCase()) {
+            return socket.emit('custom room error', 'Нельзя исключить самого себя.');
+        }
+        if (isRoomOwner(custom, targetUsername)) {
+            return socket.emit('custom room error', 'Нельзя исключить создателя сервера.');
+        }
+        if (isRoomAdmin(custom, targetUsername) && !isRoomOwner(custom, actorUsername)) {
+            return socket.emit('custom room error', 'Только создатель сервера может исключить модератора.');
+        }
+
+        const chatRoomName = `chat:${cleanCode}`;
+        let kickedAny = false;
+        for (const [, sock] of io.sockets.sockets) {
+            const uname = sock.data && sock.data.username;
+            if (!uname || uname.toLowerCase() !== targetUsername.toLowerCase()) continue;
+            if (!sock.rooms || !sock.rooms.has(chatRoomName)) continue;
+            kickedAny = true;
+
+            sock.leave(chatRoomName);
+
+            // Если тот же человек сидит и в голосовом канале этого сервера — выкидываем и оттуда.
+            if (rooms[cleanCode] && rooms[cleanCode][sock.id]) {
+                const peerId = rooms[cleanCode][sock.id].peerId;
+                delete rooms[cleanCode][sock.id];
+                sock.leave(cleanCode);
+                if (peerId) io.to(cleanCode).emit('user disconnected', peerId);
+                if (Object.keys(rooms[cleanCode]).length === 0) {
+                    delete rooms[cleanCode];
+                } else {
+                    io.to(cleanCode).emit('room users', getRoomUsers(cleanCode));
+                }
+            }
+
+            sock.emit('kicked from server', { code: cleanCode, name: custom.name });
+        }
+
+        if (kickedAny) {
+            io.to(chatRoomName).emit('server members list', { code: cleanCode, members: getServerMembers(cleanCode) });
+        } else {
+            socket.emit('server members list', { code: cleanCode, members: getServerMembers(cleanCode) });
+        }
+    });
+
+    // Повышение до модератора — доступно владельцу и уже назначенным модераторам.
+    // Понижение (снятие прав) — только владельцу, иначе модераторы могли бы разжаловать друг друга.
+    socket.on('set server admin', ({ code, username, makeAdmin } = {}) => {
+        const cleanCode = String(code || '').trim().toUpperCase();
+        const targetUsername = String(username || '').trim();
+        const custom = customRooms[cleanCode];
+        if (!custom) return socket.emit('custom room error', 'Сервер с таким кодом не найден.');
+        if (!targetUsername) return;
+
+        const actorUsername = socket.data && socket.data.username;
+        const wantMakeAdmin = !!makeAdmin;
+
+        if (isRoomOwner(custom, targetUsername)) {
+            return socket.emit('custom room error', 'Создатель сервера уже обладает всеми правами.');
+        }
+        if (wantMakeAdmin && !canModerateRoom(custom, actorUsername)) {
+            return socket.emit('custom room error', 'Повышать участников может только создатель или модератор сервера.');
+        }
+        if (!wantMakeAdmin && !isRoomOwner(custom, actorUsername)) {
+            return socket.emit('custom room error', 'Снять права модератора может только создатель сервера.');
+        }
+
+        const current = Array.isArray(custom.adminUsernames) ? custom.adminUsernames.slice() : [];
+        const lower = targetUsername.toLowerCase();
+        const next = wantMakeAdmin
+            ? (current.some(u => u.toLowerCase() === lower) ? current : [...current, targetUsername])
+            : current.filter(u => u.toLowerCase() !== lower);
+
+        custom.adminUsernames = next; // обновляем кэш сразу, не дожидаясь ответа БД
+
+        pool.query(`UPDATE custom_rooms SET admin_usernames = $1 WHERE code = $2`, [next, cleanCode])
+            .catch(err => console.error('❌ Ошибка сохранения списка модераторов сервера:', err));
+
+        io.to(`chat:${cleanCode}`).emit('server members list', { code: cleanCode, members: getServerMembers(cleanCode) });
     });
 
     // Ник закреплён за зарегистрированным аккаунтом (пароль) только когда

@@ -1209,38 +1209,53 @@
         <div class="modal-card fade-in" style="width: 380px;">
             <h3 id="server-info-title">Сервер</h3>
 
-            <div id="server-info-owner-view">
-                <div class="profile-row">
-                    <img id="server-info-avatar-preview" class="profile-avatar-preview" src="" alt="Аватар сервера">
-                    <div class="profile-avatar-controls">
-                        <div class="avatar-source-row">
-                            <input type="text" id="server-info-avatar-url" placeholder="Ссылка на фото сервера">
-                            <label class="btn-file-label" for="server-info-avatar-file">Файл…</label>
-                            <input type="file" id="server-info-avatar-file" accept="image/*" style="display:none">
+            <div class="settings-tabs" id="server-info-tabs" style="display:none;">
+                <button type="button" class="settings-tab active" data-server-tab="general">Настройки</button>
+                <button type="button" class="settings-tab" data-server-tab="members">Участники</button>
+            </div>
+
+            <div class="settings-tab-panel active" data-server-tab-panel="general">
+                <div id="server-info-owner-view">
+                    <div class="profile-row">
+                        <img id="server-info-avatar-preview" class="profile-avatar-preview" src="" alt="Аватар сервера">
+                        <div class="profile-avatar-controls">
+                            <div class="avatar-source-row">
+                                <input type="text" id="server-info-avatar-url" placeholder="Ссылка на фото сервера">
+                                <label class="btn-file-label" for="server-info-avatar-file">Файл…</label>
+                                <input type="file" id="server-info-avatar-file" accept="image/*" style="display:none">
+                            </div>
+                            <span class="profile-hint">Можно вставить ссылку или загрузить файл — сработает то, что укажете последним</span>
                         </div>
-                        <span class="profile-hint">Можно вставить ссылку или загрузить файл — сработает то, что укажете последним</span>
                     </div>
+                    <div class="input-group"><label>Название</label><input id="server-info-name" maxlength="40"></div>
+                    <div class="input-group"><label>Новый пароль <span style="color:var(--text-faint)">(оставьте пустым, чтобы не менять)</span></label><input id="server-info-password" type="password" maxlength="64" placeholder="Пароль"></div>
+                    <button class="action-btn" id="server-info-remove-password" style="background:#262a35; padding:8px; font-size:12px;">Убрать пароль с сервера</button>
+                    <button class="action-btn" id="server-info-delete" style="background:#3a1f24; color:#ff8080; padding:8px; font-size:12px;">Удалить сервер навсегда</button>
                 </div>
-                <div class="input-group"><label>Название</label><input id="server-info-name" maxlength="40"></div>
-                <div class="input-group"><label>Новый пароль <span style="color:var(--text-faint)">(оставьте пустым, чтобы не менять)</span></label><input id="server-info-password" type="password" maxlength="64" placeholder="Пароль"></div>
-                <button class="action-btn" id="server-info-remove-password" style="background:#262a35; padding:8px; font-size:12px;">Убрать пароль с сервера</button>
-                <button class="action-btn" id="server-info-delete" style="background:#3a1f24; color:#ff8080; padding:8px; font-size:12px;">Удалить сервер навсегда</button>
+
+                <div id="server-info-guest-view" style="display:flex; flex-direction:column; align-items:center; gap:12px;">
+                    <img id="server-info-avatar-preview-guest" class="profile-avatar-preview" src="" alt="Аватар сервера" style="width:72px;height:72px;">
+                    <div id="server-info-name-guest" style="font-weight:700;"></div>
+                    <button class="action-btn" id="server-info-leave" style="background:#262a35; padding:8px; font-size:12px; align-self:stretch;">Покинуть сервер</button>
+                </div>
+
+                <div>
+                    <div class="room-code-hint">Код входа на сервер</div>
+                    <div id="server-info-code" class="room-code-box" title="Нажмите, чтобы скопировать"></div>
+                    <div class="room-code-hint">Нажмите на код — он автоматически скопируется</div>
+                </div>
+
+                <p class="auth-error" id="server-info-error" style="display:none"></p>
+                <button class="btn-primary" id="server-info-save" style="display:none">Сохранить изменения</button>
             </div>
 
-            <div id="server-info-guest-view" style="display:flex; flex-direction:column; align-items:center; gap:12px;">
-                <img id="server-info-avatar-preview-guest" class="profile-avatar-preview" src="" alt="Аватар сервера" style="width:72px;height:72px;">
-                <div id="server-info-name-guest" style="font-weight:700;"></div>
-                <button class="action-btn" id="server-info-leave" style="background:#262a35; padding:8px; font-size:12px; align-self:stretch;">Покинуть сервер</button>
+            <div class="settings-tab-panel" data-server-tab-panel="members" style="max-height:340px; overflow-y:auto;">
+                <span class="profile-hint">Показаны те, у кого сейчас открыт этот сервер. Создатель и модераторы могут выгонять и повышать участников.</span>
+                <div id="server-members-list" style="display:flex; flex-direction:column; gap:8px;"></div>
+                <div class="profile-hint" id="server-members-empty" style="display:none;">Сейчас в чате этого сервера никого нет.</div>
+                <p class="auth-error" id="server-members-error" style="display:none"></p>
             </div>
 
-            <div>
-                <div class="room-code-hint">Код входа на сервер</div>
-                <div id="server-info-code" class="room-code-box" title="Нажмите, чтобы скопировать"></div>
-                <div class="room-code-hint">Нажмите на код — он автоматически скопируется</div>
-            </div>
-
-            <p class="auth-error" id="server-info-error" style="display:none"></p>
-            <button class="btn-primary" id="server-info-save" style="display:none">Сохранить изменения</button>
             <button class="action-btn" id="close-server-info" style="background:#262a35; padding:10px;">Закрыть</button>
         </div>
     </div>
@@ -1385,6 +1400,36 @@
                         <button class="btn-secondary" id="message-sound-reset-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Сбросить</button>
                     </div>
                     <span class="profile-hint">Можно загрузить свой mp3/wav/ogg вместо стандартного звука нового сообщения. Файл сохраняется только у вас в браузере</span>
+                </div>
+                <div class="control-group">
+                    <label>Громкость звука входа в войс: <span id="join-sound-volume-value">60%</span></label>
+                    <input type="range" id="join-sound-volume-slider" min="0" max="100" step="5" value="60">
+                </div>
+                <div class="control-group">
+                    <label>Звук входа в войс</label>
+                    <div class="profile-hint" id="join-sound-current-label">Стандартный звук</div>
+                    <div style="display:flex; gap:8px; margin-top:6px; flex-wrap: wrap;">
+                        <button class="btn-secondary" id="join-sound-test-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Проверить</button>
+                        <label class="btn-secondary" for="join-sound-file-input" style="font-size: 13px; padding: 6px 10px; cursor: pointer;">Загрузить свой звук…</label>
+                        <input type="file" id="join-sound-file-input" accept="audio/*" style="display:none;">
+                        <button class="btn-secondary" id="join-sound-reset-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Сбросить</button>
+                    </div>
+                    <span class="profile-hint">Свой звук вместо стандартного, когда кто-то заходит в голосовой канал</span>
+                </div>
+                <div class="control-group">
+                    <label>Громкость звука выхода из войса: <span id="leave-sound-volume-value">60%</span></label>
+                    <input type="range" id="leave-sound-volume-slider" min="0" max="100" step="5" value="60">
+                </div>
+                <div class="control-group">
+                    <label>Звук выхода из войса</label>
+                    <div class="profile-hint" id="leave-sound-current-label">Стандартный звук</div>
+                    <div style="display:flex; gap:8px; margin-top:6px; flex-wrap: wrap;">
+                        <button class="btn-secondary" id="leave-sound-test-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Проверить</button>
+                        <label class="btn-secondary" for="leave-sound-file-input" style="font-size: 13px; padding: 6px 10px; cursor: pointer;">Загрузить свой звук…</label>
+                        <input type="file" id="leave-sound-file-input" accept="audio/*" style="display:none;">
+                        <button class="btn-secondary" id="leave-sound-reset-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Сбросить</button>
+                    </div>
+                    <span class="profile-hint">Свой звук вместо стандартного, когда кто-то выходит из голосового канала</span>
                 </div>
             </div>
 
