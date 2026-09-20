@@ -862,6 +862,7 @@
 
         .profile-avatar-controls {
             flex: 1;
+            min-width: 0;
             display: flex;
             flex-direction: column;
             gap: 8px;
@@ -873,7 +874,9 @@
         }
         .avatar-source-row input[type="text"] {
             flex: 1;
+            min-width: 0;
         }
+        .avatar-source-row .btn-file-label { flex-shrink: 0; }
 
         /* Единая тёмная тема для всех текстовых/парольных полей приложения — раньше
            часть из них (например, поле ссылки на аватарку, поля создания сервера)
@@ -965,6 +968,71 @@
         .settings-tab-panel.active {
             display: flex;
         }
+
+        /* ---------- Окно сервера: раскладка кнопок ---------- */
+        .server-info-fields {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .server-info-guest {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 12px;
+        }
+        .server-info-code-block {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .server-info-code-block .room-code-hint { margin-top: 0; }
+        .input-with-btn {
+            display: flex;
+            gap: 8px;
+        }
+        .input-with-btn input { flex: 1; min-width: 0; }
+        .btn-inline {
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            border-radius: var(--radius-sm);
+            padding: 0 12px;
+            font-size: 12px;
+            font-family: inherit;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: background 0.15s, color 0.15s, border-color 0.15s;
+        }
+        .btn-inline:hover { color: var(--text); border-color: var(--accent); }
+        .danger-zone {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding-top: 16px;
+            border-top: 1px solid var(--border-soft);
+        }
+        .btn-danger-ghost {
+            background: rgba(239, 68, 68, 0.08);
+            border: 1px solid rgba(239, 68, 68, 0.25);
+            color: #ff8080;
+            border-radius: var(--radius-sm);
+            padding: 10px;
+            font-size: 13px;
+            font-family: inherit;
+            cursor: pointer;
+            transition: background 0.15s, border-color 0.15s;
+        }
+        .btn-danger-ghost:hover {
+            background: rgba(239, 68, 68, 0.16);
+            border-color: rgba(239, 68, 68, 0.5);
+        }
+        .modal-footer {
+            display: flex;
+            gap: 10px;
+        }
+        .modal-footer > button { flex: 1; }
+
 
         .btn-file-label {
             background: var(--bg-input);
@@ -1166,47 +1234,50 @@
         </div>
     </div>
 
-    <!-- Выбор: создать сервер или войти по коду -->
-    <div id="server-choice-modal" class="modal-overlay">
-        <div class="modal-card fade-in" style="width: 430px;">
-            <h3>Сервер</h3>
-            <div class="room-choice-buttons">
-                <button class="room-choice-card" id="open-create-server">
-                    <strong>Создать сервер</strong><span>Создайте свою комнату и получите уникальный код.</span>
-                </button>
-                <button class="room-choice-card" id="open-join-server">
-                    <strong>Войти по коду</strong><span>Введите код сервера, который вам отправил друг.</span>
-                </button>
-            </div>
-            <button class="action-btn" id="close-server-choice" style="background:#262a35; padding:10px;">Отмена</button>
-        </div>
-    </div>
+    <!-- Добавить сервер: вкладки «Создать» / «Войти по коду» (как в настройках и при входе) -->
+    <div id="server-add-modal" class="modal-overlay">
+        <div class="modal-card fade-in" style="width: 400px;">
+            <h3>Добавить сервер</h3>
 
-    <div id="create-server-modal" class="modal-overlay">
-        <div class="modal-card fade-in" style="width: 380px;">
-            <h3>Создать сервер</h3>
-            <div class="profile-row">
-                <img id="create-server-avatar-preview" class="profile-avatar-preview" src="" alt="Аватар сервера">
-                <div class="profile-avatar-controls">
-                    <div class="avatar-source-row">
-                        <input type="text" id="create-server-avatar-url" placeholder="Ссылка на фото сервера">
-                        <label class="btn-file-label" for="create-server-avatar-file">Файл…</label>
-                        <input type="file" id="create-server-avatar-file" accept="image/*" style="display:none">
-                    </div>
-                    <span class="profile-hint">Необязательно. Можно вставить ссылку или загрузить файл — сработает то, что укажете последним</span>
-                </div>
+            <div class="settings-tabs" id="server-add-tabs">
+                <button type="button" class="settings-tab active" data-add-tab="create">Создать</button>
+                <button type="button" class="settings-tab" data-add-tab="join">Войти по коду</button>
             </div>
-            <div class="input-group"><label>Название</label><input id="create-server-name" maxlength="40" placeholder="Например: Мы с друзьями"></div>
-            <div class="input-group"><label>Пароль <span style="color:var(--text-faint)">(необязательно)</span></label><input id="create-server-password" type="password" maxlength="64" placeholder="Пароль"></div>
-            <p class="auth-error" id="create-server-error" style="display:none"></p>
-            <button class="btn-primary" id="create-server-submit">Создать</button>
-            <button class="action-btn" id="close-create-server" style="background:#262a35; padding:10px;">Назад</button>
+
+            <div class="settings-tab-panel active" data-add-tab-panel="create">
+                <span class="profile-hint">Создайте свою комнату и получите уникальный код для друзей.</span>
+                <div class="profile-row">
+                    <img id="create-server-avatar-preview" class="profile-avatar-preview" src="" alt="Аватар сервера">
+                    <div class="profile-avatar-controls">
+                        <div class="avatar-source-row">
+                            <input type="text" id="create-server-avatar-url" placeholder="Ссылка на фото сервера">
+                            <label class="btn-file-label" for="create-server-avatar-file">Файл…</label>
+                            <input type="file" id="create-server-avatar-file" accept="image/*" style="display:none">
+                        </div>
+                        <span class="profile-hint">Необязательно. Можно вставить ссылку или загрузить файл — сработает то, что укажете последним</span>
+                    </div>
+                </div>
+                <div class="input-group"><label>Название</label><input id="create-server-name" maxlength="40" placeholder="Например: Мы с друзьями"></div>
+                <div class="input-group"><label>Пароль <span style="color:var(--text-faint)">(необязательно)</span></label><input id="create-server-password" type="password" maxlength="64" placeholder="Пароль"></div>
+                <p class="auth-error" id="create-server-error" style="display:none"></p>
+                <button class="btn-primary" id="create-server-submit">Создать</button>
+            </div>
+
+            <div class="settings-tab-panel" data-add-tab-panel="join">
+                <span class="profile-hint">Введите код сервера, который вам отправил друг.</span>
+                <div class="input-group"><label>Код сервера</label><input id="join-server-code" maxlength="6" autocomplete="off" placeholder="ABC123" style="text-transform:uppercase;letter-spacing:3px"></div>
+                <div class="input-group"><label>Пароль <span style="color:var(--text-faint)">(если нужен)</span></label><input id="join-server-password" type="password" maxlength="64" placeholder="Пароль"></div>
+                <p class="auth-error" id="join-server-error" style="display:none"></p>
+                <button class="btn-primary" id="join-server-submit">Войти</button>
+            </div>
+
+            <button class="action-btn" id="close-server-add" style="background:#262a35; padding:10px;">Отмена</button>
         </div>
     </div>
 
     <!-- Окно сервера: для владельца — редактирование, для остальных — просмотр кода входа -->
     <div id="server-info-modal" class="modal-overlay">
-        <div class="modal-card fade-in" style="width: 380px;">
+        <div class="modal-card fade-in" style="width: 400px;">
             <h3 id="server-info-title">Сервер</h3>
 
             <div class="settings-tabs" id="server-info-tabs" style="display:none;">
@@ -1215,7 +1286,8 @@
             </div>
 
             <div class="settings-tab-panel active" data-server-tab-panel="general">
-                <div id="server-info-owner-view">
+                <!-- Владелец: аватар, название, пароль -->
+                <div id="server-info-owner-view" class="server-info-fields">
                     <div class="profile-row">
                         <img id="server-info-avatar-preview" class="profile-avatar-preview" src="" alt="Аватар сервера">
                         <div class="profile-avatar-controls">
@@ -1228,25 +1300,35 @@
                         </div>
                     </div>
                     <div class="input-group"><label>Название</label><input id="server-info-name" maxlength="40"></div>
-                    <div class="input-group"><label>Новый пароль <span style="color:var(--text-faint)">(оставьте пустым, чтобы не менять)</span></label><input id="server-info-password" type="password" maxlength="64" placeholder="Пароль"></div>
-                    <button class="action-btn" id="server-info-remove-password" style="background:#262a35; padding:8px; font-size:12px;">Убрать пароль с сервера</button>
-                    <button class="action-btn" id="server-info-delete" style="background:#3a1f24; color:#ff8080; padding:8px; font-size:12px;">Удалить сервер навсегда</button>
+                    <div class="input-group">
+                        <label>Новый пароль <span style="color:var(--text-faint)">(оставьте пустым, чтобы не менять)</span></label>
+                        <div class="input-with-btn">
+                            <input id="server-info-password" type="password" maxlength="64" placeholder="Пароль">
+                            <button type="button" class="btn-inline" id="server-info-remove-password" title="Убрать пароль с сервера">Убрать пароль</button>
+                        </div>
+                    </div>
                 </div>
 
-                <div id="server-info-guest-view" style="display:flex; flex-direction:column; align-items:center; gap:12px;">
+                <!-- Гость: только просмотр -->
+                <div id="server-info-guest-view" class="server-info-guest">
                     <img id="server-info-avatar-preview-guest" class="profile-avatar-preview" src="" alt="Аватар сервера" style="width:72px;height:72px;">
                     <div id="server-info-name-guest" style="font-weight:700;"></div>
-                    <button class="action-btn" id="server-info-leave" style="background:#262a35; padding:8px; font-size:12px; align-self:stretch;">Покинуть сервер</button>
                 </div>
 
-                <div>
+                <!-- Код входа -->
+                <div class="server-info-code-block">
                     <div class="room-code-hint">Код входа на сервер</div>
                     <div id="server-info-code" class="room-code-box" title="Нажмите, чтобы скопировать"></div>
                     <div class="room-code-hint">Нажмите на код — он автоматически скопируется</div>
                 </div>
 
                 <p class="auth-error" id="server-info-error" style="display:none"></p>
-                <button class="btn-primary" id="server-info-save" style="display:none">Сохранить изменения</button>
+
+                <!-- Опасная зона: отделена от основных действий -->
+                <div class="danger-zone">
+                    <button class="btn-danger-ghost" id="server-info-delete">Удалить сервер навсегда</button>
+                    <button class="btn-danger-ghost" id="server-info-leave">Покинуть сервер</button>
+                </div>
             </div>
 
             <div class="settings-tab-panel" data-server-tab-panel="members" style="max-height:340px; overflow-y:auto;">
@@ -1256,7 +1338,11 @@
                 <p class="auth-error" id="server-members-error" style="display:none"></p>
             </div>
 
-            <button class="action-btn" id="close-server-info" style="background:#262a35; padding:10px;">Закрыть</button>
+            <!-- Единый нижний ряд кнопок: «Закрыть» слева, главное действие справа -->
+            <div class="modal-footer">
+                <button class="action-btn" id="close-server-info" style="background:#262a35; padding:12px;">Закрыть</button>
+                <button class="btn-primary" id="server-info-save" style="display:none">Сохранить</button>
+            </div>
         </div>
     </div>
 
@@ -1268,17 +1354,6 @@
             <div class="room-code-hint">Нажмите на код — он автоматически скопируется</div>
             <button class="btn-primary" id="join-created-server">Войти на сервер</button>
             <button class="action-btn" id="close-created-server" style="background:#262a35; padding:10px;">Закрыть</button>
-        </div>
-    </div>
-
-    <div id="join-server-modal" class="modal-overlay">
-        <div class="modal-card fade-in" style="width: 380px;">
-            <h3>Войти по коду</h3>
-            <div class="input-group"><label>Код сервера</label><input id="join-server-code" maxlength="6" autocomplete="off" placeholder="ABC123" style="text-transform:uppercase;letter-spacing:3px"></div>
-            <div class="input-group"><label>Пароль <span style="color:var(--text-faint)">(если нужен)</span></label><input id="join-server-password" type="password" maxlength="64" placeholder="Пароль"></div>
-            <p class="auth-error" id="join-server-error" style="display:none"></p>
-            <button class="btn-primary" id="join-server-submit">Войти</button>
-            <button class="action-btn" id="close-join-server" style="background:#262a35; padding:10px;">Назад</button>
         </div>
     </div>
 

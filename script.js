@@ -43,10 +43,8 @@ function removeMyServerCode(code) {
 // Запрашиваем данные только по серверам, которые мы уже создавали/к которым уже
 // подключались — остальные для нас просто не существуют в списке.
 socket.emit('get my custom rooms', { codes: loadMyServerCodes() });
-const serverChoiceModal = document.getElementById('server-choice-modal');
-const createServerModal = document.getElementById('create-server-modal');
+const serverAddModal = document.getElementById('server-add-modal');
 const serverCreatedModal = document.getElementById('server-created-modal');
-const joinServerModal = document.getElementById('join-server-modal');
 const createServerName = document.getElementById('create-server-name');
 const createServerPassword = document.getElementById('create-server-password');
 const createServerError = document.getElementById('create-server-error');
@@ -116,6 +114,8 @@ const serverInfoRemovePasswordBtn = document.getElementById('server-info-remove-
 const serverInfoCode = document.getElementById('server-info-code');
 const serverInfoError = document.getElementById('server-info-error');
 const serverInfoSaveBtn = document.getElementById('server-info-save');
+const serverInfoDeleteBtn = document.getElementById('server-info-delete');
+const serverInfoLeaveBtn = document.getElementById('server-info-leave');
 const serverInfoTabs = document.getElementById('server-info-tabs');
 const serverMembersListEl = document.getElementById('server-members-list');
 const serverMembersEmpty = document.getElementById('server-members-empty');
@@ -132,6 +132,10 @@ const serverInfoTabPanels = document.querySelectorAll('#server-info-modal .setti
 function switchServerInfoTab(tabName) {
     serverInfoTabButtons.forEach(btn => btn.classList.toggle('active', btn.dataset.serverTab === tabName));
     serverInfoTabPanels.forEach(panel => panel.classList.toggle('active', panel.dataset.serverTabPanel === tabName));
+    // Кнопка «Сохранить» нужна только владельцу и только на вкладке «Настройки»
+    if (serverInfoSaveBtn) {
+        serverInfoSaveBtn.style.display = (tabName === 'general' && currentServerInfo && currentServerInfo.isOwner) ? 'block' : 'none';
+    }
 }
 serverInfoTabButtons.forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1761,39 +1765,49 @@ function showServerError(el, text) {
     el.style.display = text ? 'block' : 'none';
 }
 
-addServerBtn?.addEventListener('click', () => {
+// ---------- Окно «Добавить сервер»: вкладки «Создать» / «Войти по коду» ----------
+const serverAddTabButtons = document.querySelectorAll('#server-add-tabs .settings-tab');
+const serverAddTabPanels = document.querySelectorAll('#server-add-modal .settings-tab-panel');
+let currentServerAddTab = 'create';
+function switchServerAddTab(tabName) {
+    currentServerAddTab = tabName;
+    serverAddTabButtons.forEach(btn => btn.classList.toggle('active', btn.dataset.addTab === tabName));
+    serverAddTabPanels.forEach(panel => panel.classList.toggle('active', panel.dataset.addTabPanel === tabName));
     showServerError(createServerError, '');
     showServerError(joinServerError, '');
-    openModal(serverChoiceModal);
-});
+    // Фокус на первом поле нужной вкладки — можно сразу печатать
+    setTimeout(() => (tabName === 'join' ? joinServerCode : createServerName)?.focus(), 0);
+}
+serverAddTabButtons.forEach(btn => btn.addEventListener('click', () => switchServerAddTab(btn.dataset.addTab)));
 
-document.getElementById('close-server-choice')?.addEventListener('click', () => closeModal(serverChoiceModal));
-document.getElementById('open-create-server')?.addEventListener('click', () => {
-    closeModal(serverChoiceModal);
+function openServerAddModal(tabName = 'create') {
     createServerName.value = '';
     createServerPassword.value = '';
     createServerAvatarUrl.value = '';
     createServerAvatarFile.value = '';
     pendingCreateServerAvatarFile = null;
     createServerAvatarPreview.src = '';
-    showServerError(createServerError, '');
-    openModal(createServerModal);
-});
-document.getElementById('open-join-server')?.addEventListener('click', () => {
-    closeModal(serverChoiceModal);
     joinServerCode.value = '';
     joinServerPassword.value = '';
-    showServerError(joinServerError, '');
-    openModal(joinServerModal);
+    openModal(serverAddModal);
+    switchServerAddTab(tabName);
+}
+
+addServerBtn?.addEventListener('click', () => openServerAddModal('create'));
+document.getElementById('close-server-add')?.addEventListener('click', () => closeModal(serverAddModal));
+
+// Enter в полях — отправить форму текущей вкладки
+[createServerName, createServerPassword].forEach(el => el?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('create-server-submit')?.click();
+}));
+[joinServerCode, joinServerPassword].forEach(el => el?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('join-server-submit')?.click();
+}));
+// Escape закрывает окно
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && serverAddModal.style.display === 'flex') closeModal(serverAddModal);
 });
-document.getElementById('close-create-server')?.addEventListener('click', () => {
-    closeModal(createServerModal);
-    openModal(serverChoiceModal);
-});
-document.getElementById('close-join-server')?.addEventListener('click', () => {
-    closeModal(joinServerModal);
-    openModal(serverChoiceModal);
-});
+
 document.getElementById('close-created-server')?.addEventListener('click', () => closeModal(serverCreatedModal));
 
 socket.on('custom rooms list', (rooms) => {
@@ -1865,9 +1879,12 @@ socket.on('custom room info', (data) => {
     switchServerInfoTab('general');
 
     if (data.isOwner) {
-        serverInfoOwnerView.style.display = 'block';
+        serverInfoOwnerView.style.display = 'flex';
         serverInfoGuestView.style.display = 'none';
         serverInfoSaveBtn.style.display = 'block';
+        serverInfoDeleteBtn.style.display = 'block';
+        serverInfoLeaveBtn.style.display = 'none';
+        serverInfoPassword.placeholder = 'Пароль';
         serverInfoName.value = data.name || '';
         serverInfoAvatarUrl.value = data.avatar || '';
         serverInfoAvatarPreview.src = data.avatar || '';
@@ -1877,6 +1894,8 @@ socket.on('custom room info', (data) => {
         serverInfoOwnerView.style.display = 'none';
         serverInfoGuestView.style.display = 'flex';
         serverInfoSaveBtn.style.display = 'none';
+        serverInfoDeleteBtn.style.display = 'none';
+        serverInfoLeaveBtn.style.display = 'block';
         serverInfoNameGuest.innerText = data.name || data.code;
         serverInfoAvatarPreviewGuest.src = data.avatar || '';
     }
@@ -2034,7 +2053,7 @@ socket.on('custom room created', (data) => {
     lastCreatedServer = data;
     addMyServerCode(data.code);
     addCustomServerButton(data);
-    closeModal(createServerModal);
+    closeModal(serverAddModal);
     createdServerName.innerText = data.name;
     createdServerCode.innerText = data.code;
     openModal(serverCreatedModal);
@@ -2042,7 +2061,7 @@ socket.on('custom room created', (data) => {
 
 socket.on('custom room joined', (data) => {
     addMyServerCode(data.code);
-    closeModal(joinServerModal);
+    closeModal(serverAddModal);
     const btn = addCustomServerButton(data);
     selectRoomButton(btn);
     connectToSelectedRoom();
@@ -2057,8 +2076,8 @@ socket.on('custom room error', (message) => {
         target = membersTabActive ? serverMembersError : serverInfoError;
         serverInfoSaveBtn.disabled = false;
         serverInfoSaveBtn.innerText = 'Сохранить изменения';
-    } else if (joinServerModal.style.display === 'flex') {
-        target = joinServerError;
+    } else if (serverAddModal.style.display === 'flex') {
+        target = currentServerAddTab === 'join' ? joinServerError : createServerError;
     }
     showServerError(target, message);
 });
