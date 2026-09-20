@@ -1119,16 +1119,32 @@ socket.on('connect', () => {
         return; // первое подключение — обычная инициализация и так идёт по остальному коду
     }
     console.log('[Соединение] Восстановлено после разрыва — заново регистрируемся на сервере.');
+
+    // Новый сокет на сервере «чистый»: он не в голосовой комнате и не в комнате чата
+    // (та, из которой приходят обновления списка участников и сообщения). Поэтому после
+    // обрыва (фоновая вкладка, сон ноутбука, прокси Render) восстанавливаем всё сами.
+    const restoreSubscriptions = () => {
+        if (currentUser.room) {
+            socket.emit('join room', { room: currentUser.room, peerId: myPeerId, micMuted: isMuted, deafened: isDeafened });
+        }
+        if (selectedRoom) {
+            // заодно перезагрузит историю чата — подтянет пропущенные сообщения
+            socket.emit('select chat room', { room: selectedRoom });
+            socket.emit('get room users', selectedRoom);
+        }
+    };
+
     if (myPeerId) {
-        socket.emit('register user', {
+        // Ждём подтверждения регистрации (ник на сервере уже выставлен), и только потом входим в канал.
+        // Таймаут — на случай, если ответ потерялся: всё равно восстанавливаемся.
+        socket.timeout(5000).emit('register user', {
             username: currentUser.username,
             avatar: currentUser.avatar,
             peerId: myPeerId,
             token: currentUser.token || null
-        });
-    }
-    if (currentUser.room) {
-        socket.emit('join room', { room: currentUser.room, peerId: myPeerId, micMuted: isMuted, deafened: isDeafened });
+        }, () => restoreSubscriptions());
+    } else {
+        restoreSubscriptions();
     }
 });
 
@@ -2079,7 +2095,20 @@ function cleanupCalls() {
     remoteVideos.innerHTML = '';
 }
 
-socket.on('room users', (usersInRoom) => {
+socket.on('room users', (usersInRoom, room) => {
+    // Сервер шлёт список и участникам канала, и тем, кто просто смотрит сервер (см. broadcastRoomUsers).
+    // `room` — какой именно канал обновился: обновления чужих каналов игнорируем.
+    const inVoiceRoom = room ? room === currentUser.room : currentUser.room === selectedRoom;
+    if (room && !inVoiceRoom && room !== selectedRoom) return;
+
+    if (!inVoiceRoom) {
+        // Только смотрим канал (в звонке нас в нём нет) — просто перерисовываем список.
+        // Если мы сидим в голосе другого канала, его состояние (connectedUsers) не трогаем.
+        if (!currentUser.room) connectedUsers = usersInRoom;
+        updateVoiceUsersList(usersInRoom);
+        return;
+    }
+
     connectedUsers = usersInRoom;
 
     for (let peerId in usersInRoom) {
@@ -2090,44 +2119,41 @@ socket.on('room users', (usersInRoom) => {
         }
     }
 
-    if (currentUser.room === selectedRoom) {
-        // Раньше здесь полностью перезаписывалась своя запись без micMuted/deafened —
-        // из-за этого свой же значок мьюта "слетал" каждый раз, когда кто угодно
-        // заходил в канал или выходил из него (сервер рассылает 'room users' всем).
-        // Состояние мьюта/дефена у нас уже есть локально (isMuted/isDeafened) — берём его оттуда.
-        connectedUsers[myPeerId] = {
-            username: currentUser.username,
-            avatar: currentUser.avatar,
-            micMuted: isMuted,
-            deafened: isDeafened
-        };
-        updateVoiceUsersList();
+    // Раньше здесь полностью перезаписывалась своя запись без micMuted/deafened —
+    // из-за этого свой же значок мьюта "слетал" каждый раз, когда кто угодно
+    // заходил в канал или выходил из него (сервер рассылает 'room users' всем).
+    // Состояние мьюта/дефена у нас уже есть локально (isMuted/isDeafened) — берём его оттуда.
+    connectedUsers[myPeerId] = {
+        username: currentUser.username,
+        avatar: currentUser.avatar,
+        micMuted: isMuted,
+        deafened: isDeafened
+    };
+    // Список рисуем, только если сейчас открыт именно этот канал (иначе смотрим другой).
+    if (!room || room === selectedRoom) updateVoiceUsersList();
 
-        for (let peerId in usersInRoom) {
-            // ВАЖНО: раньше звонок инициировали ОБЕ стороны одновременно (каждый, у кого
-            // ещё нет activeCalls[peerId], звонит другому) — при входе/повторном входе в
-            // канал это почти всегда означало ДВЕ параллельные PeerJS-связи между одной
-            // и той же парой людей. У обеих сторон они регистрировались под одним и тем
-            // же ключом (peerId) в activeCalls, а звуковой <audio>-элемент и узлы
-            // анализатора/громкости тоже общие по id. Когда позже закрывалась "лишняя"
-            // (более старая/более медленная) из двух связей, её обработчик 'close' удалял
-            // этот общий <audio>-элемент и узлы — даже если ВТОРАЯ, актуальная связь
-            // всё ещё была жива и по ней продолжали идти данные. Из-за этого после
-            // выхода и повторного захода в канал человека переставали слышать без
-            // видимой ошибки. Теперь звонок инициирует только одна сторона —
-            // детерминированно, по сравнению peerId — а вторая всегда просто отвечает
-            // через myPeer.on('call'), так что на каждую пару гарантированно ровно одна
-            // связь.
-            if (peerId !== myPeerId && !activeCalls[peerId] && myPeerId < peerId) {
-                const call = myPeer.call(peerId, localMediaStream, {
-                    metadata: { username: currentUser.username, avatar: currentUser.avatar }
-                });
-                handleIncomingCall(call);
-            }
-            renderRemoteVideoState(peerId);
+    for (let peerId in usersInRoom) {
+        // ВАЖНО: раньше звонок инициировали ОБЕ стороны одновременно (каждый, у кого
+        // ещё нет activeCalls[peerId], звонит другому) — при входе/повторном входе в
+        // канал это почти всегда означало ДВЕ параллельные PeerJS-связи между одной
+        // и той же парой людей. У обеих сторон они регистрировались под одним и тем
+        // же ключом (peerId) в activeCalls, а звуковой <audio>-элемент и узлы
+        // анализатора/громкости тоже общие по id. Когда позже закрывалась "лишняя"
+        // (более старая/более медленная) из двух связей, её обработчик 'close' удалял
+        // этот общий <audio>-элемент и узлы — даже если ВТОРАЯ, актуальная связь
+        // всё ещё была жива и по ней продолжали идти данные. Из-за этого после
+        // выхода и повторного захода в канал человека переставали слышать без
+        // видимой ошибки. Теперь звонок инициирует только одна сторона —
+        // детерминированно, по сравнению peerId — а вторая всегда просто отвечает
+        // через myPeer.on('call'), так что на каждую пару гарантированно ровно одна
+        // связь.
+        if (peerId !== myPeerId && !activeCalls[peerId] && myPeerId < peerId) {
+            const call = myPeer.call(peerId, localMediaStream, {
+                metadata: { username: currentUser.username, avatar: currentUser.avatar }
+            });
+            handleIncomingCall(call);
         }
-    } else {
-        updateVoiceUsersList();
+        renderRemoteVideoState(peerId);
     }
 });
 
@@ -2271,7 +2297,7 @@ socket.on('user connected', ({ username, avatar, peerId }) => {
     // Теперь просто дополняем существующую запись, а не заменяем её целиком.
     const prev = connectedUsers[peerId] || {};
     connectedUsers[peerId] = { ...prev, username, avatar };
-    updateVoiceUsersList();
+    if (currentUser.room === selectedRoom) updateVoiceUsersList();
 
     // Звук входа — только если мы сами сейчас в голосовом канале и зашёл не мы сами
     if (isNewcomer && peerId !== myPeerId && currentUser.room) {
@@ -2285,7 +2311,7 @@ socket.on('user disconnected', (peerId) => {
     cleanupRemoteAudio(peerId);
     delete remoteStreamsByPeer[peerId];
     sharingPeers.delete(peerId);
-    updateVoiceUsersList();
+    if (currentUser.room === selectedRoom) updateVoiceUsersList();
 
     // Звук выхода — только если мы сами сейчас в голосовом канале
     if (wasPresent && peerId !== myPeerId && currentUser.room) {
@@ -2320,10 +2346,10 @@ const DEAFEN_OFF_ICON_SVG = `<svg viewBox="0 0 24 24" width="9" height="9" fill=
 const ROOM_IN_ICON_SVG = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>`;
 const ROOM_OUT_ICON_SVG = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>`;
 
-function updateVoiceUsersList() {
+function updateVoiceUsersList(users = connectedUsers) {
     voiceUsersContainer.innerHTML = '';
-    for (let id in connectedUsers) {
-        let user = connectedUsers[id];
+    for (let id in users) {
+        let user = users[id];
         let row = document.createElement('div');
         row.className = 'voice-user-row';
         row.innerHTML = `
@@ -2662,7 +2688,35 @@ document.addEventListener('visibilitychange', () => {
     if (!document.hidden && audioContext && audioContext.state === 'suspended') {
         audioContext.resume().catch(() => {});
     }
+    if (!document.hidden) resyncRoomUsers();
 });
+window.addEventListener('focus', resyncRoomUsers);
+window.addEventListener('online', resyncRoomUsers);
+
+// ---------- Актуальность списка участников, когда вкладка неактивна ----------
+// Основной механизм — push с сервера (см. broadcastRoomUsers): события приходят по
+// WebSocket и обрабатываются даже в фоне, никакого опроса по таймеру (он в фоне
+// всё равно троттлится браузером и только грузил бы CPU/сеть).
+// Страховка от пропущенных событий (вкладку могли «заморозить», сокет — переподключиться):
+// при возврате в окно один раз запрашиваем свежий снимок. Это один маленький запрос.
+let lastRoomUsersResync = 0;
+function resyncRoomUsers() {
+    if (!socket.connected) return;
+    const now = Date.now();
+    if (now - lastRoomUsersResync < 1000) return; // focus + visibilitychange приходят вместе
+    lastRoomUsersResync = now;
+    if (selectedRoom) socket.emit('get room users', selectedRoom);
+    if (currentUser.room && currentUser.room !== selectedRoom) socket.emit('get room users', currentUser.room);
+}
+
+// Просим браузер не замораживать вкладку в фоне (Chrome/Edge замораживают скрытые вкладки
+// после ~5 минут без звука — и тогда сокет перестаёт обрабатывать события). Web Lock
+// ничего не считает и не потребляет CPU — это просто флаг «страница занята».
+try {
+    if (navigator.locks && navigator.locks.request) {
+        navigator.locks.request('mute-keep-alive', () => new Promise(() => {})).catch(() => {});
+    }
+} catch (e) {}
 
 document.addEventListener('fullscreenchange', () => {
     refreshDemoAudioGains();

@@ -813,9 +813,8 @@ io.on('connection', (socket) => {
                 if (peerId) io.to(cleanCode).emit('user disconnected', peerId);
                 if (Object.keys(rooms[cleanCode]).length === 0) {
                     delete rooms[cleanCode];
-                } else {
-                    io.to(cleanCode).emit('room users', getRoomUsers(cleanCode));
                 }
+                broadcastRoomUsers(cleanCode);
             }
 
             sock.emit('kicked from server', { code: cleanCode, name: custom.name });
@@ -869,7 +868,7 @@ io.on('connection', (socket) => {
     // Помимо занятых аккаунтов, также проверяем, не сидит ли прямо сейчас под этим же
     // ником другой гость (см. isUsernameActiveElsewhere) — иначе два человека без
     // аккаунта могут одновременно оказаться под одинаковым именем.
-    socket.on('register user', async (userData) => {
+    socket.on('register user', async (userData, ack) => {
         const requested = ((userData && userData.username) || '').trim() || 'Гость';
         let username = requested;
         const avatar = (userData && userData.avatar) || '';
@@ -893,6 +892,11 @@ io.on('connection', (socket) => {
         }
 
         socket.data = { username, avatar, peerId: userData && userData.peerId };
+
+        // Клиент при переподключении ждёт подтверждения, прежде чем заново входить в канал —
+        // иначе 'join room' может обработаться раньше, чем сокет получит ник, и человек
+        // появится у остальных как «Участник».
+        if (typeof ack === 'function') ack();
     });
 
     socket.on('update profile', async ({ username, avatar, token }) => {
@@ -930,7 +934,7 @@ io.on('connection', (socket) => {
         if (currentUserRoom && rooms[currentUserRoom] && rooms[currentUserRoom][socket.id]) {
             rooms[currentUserRoom][socket.id].username = socket.data.username;
             rooms[currentUserRoom][socket.id].avatar = socket.data.avatar;
-            io.to(currentUserRoom).emit('room users', getRoomUsers(currentUserRoom));
+            broadcastRoomUsers(currentUserRoom);
         }
     });
 
@@ -961,7 +965,7 @@ io.on('connection', (socket) => {
         currentUserData = rooms[room][socket.id];
 
         // Оповещаем всех в комнате о новом участнике
-        io.to(room).emit('room users', getRoomUsers(room));
+        broadcastRoomUsers(room);
         socket.to(room).emit('user connected', {
             username: currentUserData.username,
             avatar: currentUserData.avatar,
@@ -970,7 +974,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('get room users', (room) => {
-        socket.emit('room users', getRoomUsers(room));
+        socket.emit('room users', getRoomUsers(room), room);
     });
 
     socket.on('leave voice', () => {
@@ -980,6 +984,7 @@ io.on('connection', (socket) => {
     socket.on('video state', ({ sharing }) => {
         if (currentUserRoom && rooms[currentUserRoom] && rooms[currentUserRoom][socket.id]) {
             rooms[currentUserRoom][socket.id].sharing = !!sharing;
+            broadcastRoomUsersToWatchers(currentUserRoom);
         }
         if (currentUserRoom && socket.data && socket.data.peerId) {
             socket.to(currentUserRoom).emit('video state', {
@@ -995,6 +1000,7 @@ io.on('connection', (socket) => {
         if (currentUserRoom && rooms[currentUserRoom] && rooms[currentUserRoom][socket.id]) {
             rooms[currentUserRoom][socket.id].micMuted = !!micMuted;
             rooms[currentUserRoom][socket.id].deafened = !!deafened;
+            broadcastRoomUsersToWatchers(currentUserRoom);
         }
         if (currentUserRoom && socket.data && socket.data.peerId) {
             socket.to(currentUserRoom).emit('mute state', {
@@ -1056,13 +1062,29 @@ io.on('connection', (socket) => {
 
             if (Object.keys(rooms[currentUserRoom]).length === 0) {
                 delete rooms[currentUserRoom];
-            } else {
-                io.to(currentUserRoom).emit('room users', getRoomUsers(currentUserRoom));
             }
+            // Шлём и когда канал опустел — наблюдатели должны увидеть пустой список.
+            broadcastRoomUsers(currentUserRoom);
             currentUserRoom = null;
         }
     }
 });
+
+// Актуальный список участников голосового канала получают:
+//  1) те, кто сейчас В канале (socket.io-комната `room`);
+//  2) те, кто просто СМОТРИТ этот сервер (комната `chat:${room}`), но не в голосе.
+// Раньше наблюдатели (открыт сервер, но нет в звонке) не получали ничего и видели
+// список только на момент клика. Push от сервера — без опроса, нагрузки почти нет.
+function broadcastRoomUsers(room) {
+    const users = getRoomUsers(room);
+    io.to(room).emit('room users', users, room);
+    io.to(`chat:${room}`).except(room).emit('room users', users, room);
+}
+
+// Только наблюдателям (для мьюта/демки: участники канала получают свои события отдельно).
+function broadcastRoomUsersToWatchers(room) {
+    io.to(`chat:${room}`).except(room).emit('room users', getRoomUsers(room), room);
+}
 
 function getRoomUsers(room) {
     if (!rooms[room]) return {};
