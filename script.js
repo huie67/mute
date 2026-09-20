@@ -171,6 +171,13 @@ const cameraQualitySelect = document.getElementById('camera-quality-select');
 const micVolumeSlider = document.getElementById('mic-volume-slider');
 const micVolumeValueDisplay = document.getElementById('mic-volume-value');
 
+const messageSoundVolumeSlider = document.getElementById('message-sound-volume-slider');
+const messageSoundVolumeValueDisplay = document.getElementById('message-sound-volume-value');
+const messageSoundCurrentLabel = document.getElementById('message-sound-current-label');
+const messageSoundTestBtn = document.getElementById('message-sound-test-btn');
+const messageSoundFileInput = document.getElementById('message-sound-file-input');
+const messageSoundResetBtn = document.getElementById('message-sound-reset-btn');
+
 const profileAvatarPreview = document.getElementById('profile-avatar-preview');
 const profileAvatarUrlInput = document.getElementById('profile-avatar-url');
 const profileAvatarFileInput = document.getElementById('profile-avatar-file');
@@ -482,9 +489,45 @@ const NOTIFY_SOUNDS = {
 
 const notifyAudioCache = {};
 
+// ---------- Настройки звука уведомлений о сообщениях: громкость + свой файл ----------
+// Хранится отдельно от NOTIFY_SETTINGS_KEY звука микрофона/видео, чтобы не смешивать
+// разные по смыслу настройки в одном объекте. customMessageSound — data URI (base64),
+// который пользователь загрузил сам, вместо встроенного звука колокольчика.
+const NOTIFY_SETTINGS_KEY = 'mute:notifySettings';
+function loadNotifySettings() {
+    try {
+        const raw = localStorage.getItem(NOTIFY_SETTINGS_KEY);
+        return raw ? JSON.parse(raw) : {};
+    } catch (e) { return {}; }
+}
+function saveNotifySettings(patch) {
+    try {
+        const merged = Object.assign(loadNotifySettings(), patch);
+        localStorage.setItem(NOTIFY_SETTINGS_KEY, JSON.stringify(merged));
+        return true;
+    } catch (e) {
+        // Скорее всего переполнение localStorage (обычно лимит ~5 МБ) —
+        // такое бывает, если загрузить слишком длинный/тяжёлый аудиофайл.
+        console.warn('[Звук] Не удалось сохранить настройки уведомлений:', e);
+        return false;
+    }
+}
+function getMessageSoundVolume() {
+    const saved = loadNotifySettings().messageVolume;
+    return typeof saved === 'number' ? saved : 0.5;
+}
+function getCustomMessageSound() {
+    return loadNotifySettings().customMessageSound || null;
+}
+
 function getNotifyAudio(key) {
-    if (!notifyAudioCache[key]) {
-        const audio = new Audio(NOTIFY_SOUNDS[key]);
+    // Для звука сообщения источник может смениться в рантайме (загрузили свой файл
+    // или сбросили на стандартный) — поэтому для него кэш не просто "разово заполнили
+    // и забыли", а сверяем src при каждом обращении.
+    const src = key === 'message' ? (getCustomMessageSound() || NOTIFY_SOUNDS.message) : NOTIFY_SOUNDS[key];
+    const cached = notifyAudioCache[key];
+    if (!cached || cached.src !== src) {
+        const audio = new Audio(src);
         audio.preload = 'auto';
         notifyAudioCache[key] = audio;
     }
@@ -506,7 +549,7 @@ function playNotifySound(key, volume = 0.6) {
 
 // Новое сообщение в чате
 function playMessageSound() {
-    playNotifySound('message', 0.5);
+    playNotifySound('message', getMessageSoundVolume());
 }
 
 // Кто-то зашёл в комнату
@@ -517,6 +560,75 @@ function playJoinSound() {
 // Кто-то вышел из комнаты
 function playLeaveSound() {
     playNotifySound('leave', 0.6);
+}
+
+// ---------- UI настроек звука сообщений (громкость + свой файл) ----------
+function refreshMessageSoundLabel() {
+    if (!messageSoundCurrentLabel) return;
+    const custom = loadNotifySettings().customMessageSoundName;
+    messageSoundCurrentLabel.textContent = custom ? `Свой звук: ${custom}` : 'Стандартный звук';
+}
+
+(function applySavedNotifySettings() {
+    const volumePercent = Math.round(getMessageSoundVolume() * 100);
+    if (messageSoundVolumeSlider) messageSoundVolumeSlider.value = volumePercent;
+    if (messageSoundVolumeValueDisplay) messageSoundVolumeValueDisplay.innerText = `${volumePercent}%`;
+    refreshMessageSoundLabel();
+})();
+
+if (messageSoundVolumeSlider) {
+    messageSoundVolumeSlider.addEventListener('input', () => {
+        const percent = Number(messageSoundVolumeSlider.value);
+        if (messageSoundVolumeValueDisplay) messageSoundVolumeValueDisplay.innerText = `${percent}%`;
+        saveNotifySettings({ messageVolume: percent / 100 });
+    });
+}
+
+if (messageSoundTestBtn) {
+    messageSoundTestBtn.addEventListener('click', () => playMessageSound());
+}
+
+if (messageSoundFileInput) {
+    messageSoundFileInput.addEventListener('change', () => {
+        const file = messageSoundFileInput.files && messageSoundFileInput.files[0];
+        if (!file) return;
+        // Ограничение размера — звук хранится как base64 в localStorage (лимит там
+        // обычно порядка 5 МБ на весь домен), поэтому даём разумный потолок в 2 МБ
+        // на сам аудиофайл, чтобы не забить хранилище одним звуком уведомления.
+        const MAX_SIZE = 2 * 1024 * 1024;
+        if (file.size > MAX_SIZE) {
+            alert('Файл слишком большой (максимум 2 МБ). Выберите более короткий звук.');
+            messageSoundFileInput.value = '';
+            return;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+            const dataUrl = reader.result;
+            const ok = saveNotifySettings({ customMessageSound: dataUrl, customMessageSoundName: file.name });
+            if (!ok) {
+                alert('Не удалось сохранить звук — возможно, он слишком большой для локального хранилища браузера.');
+                return;
+            }
+            delete notifyAudioCache.message; // пересоздаём Audio с новым src при следующем проигрывании
+            refreshMessageSoundLabel();
+            playMessageSound();
+        };
+        reader.onerror = () => alert('Не удалось прочитать файл.');
+        reader.readAsDataURL(file);
+        messageSoundFileInput.value = '';
+    });
+}
+
+if (messageSoundResetBtn) {
+    messageSoundResetBtn.addEventListener('click', () => {
+        const settings = loadNotifySettings();
+        delete settings.customMessageSound;
+        delete settings.customMessageSoundName;
+        try { localStorage.setItem(NOTIFY_SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {}
+        delete notifyAudioCache.message;
+        refreshMessageSoundLabel();
+        playMessageSound();
+    });
 }
 
 // ---------- Короткий сигнал при переключении СВОЕГО мьюта ----------
@@ -831,8 +943,8 @@ async function completeLogin() {
     loginContainer.style.display = 'none';
     appContainer.style.display = 'flex';
 
-    await loadMicrophones();
     await initMediaStream();
+    await loadMicrophones();
 
     if (!placeholderVideoTrack) {
         placeholderVideoTrack = createPlaceholderVideoTrack();
@@ -2391,10 +2503,25 @@ async function loadMicrophones() {
             opt.innerText = mic.label || `Микрофон ${i + 1}`;
             micSelect.appendChild(opt);
         });
+
+        // Если поток уже захвачен (initMediaStream вызывается раньше загрузки
+        // списка, чтобы сначала получить разрешение на микрофон), отражаем в
+        // селекте реально используемое устройство, а не первое в списке.
+        const activeTrack = rawAudioStream && rawAudioStream.getAudioTracks()[0];
+        const activeDeviceId = activeTrack && activeTrack.getSettings().deviceId;
+        if (activeDeviceId && mics.some(m => m.deviceId === activeDeviceId)) {
+            micSelect.value = activeDeviceId;
+        }
     } catch (e) { console.error(e); }
 }
 
 micSelect.addEventListener('change', (e) => initMediaStream(e.target.value));
+
+// Список устройств может измениться уже после старта (подключили гарнитуру,
+// отключили USB-микрофон и т.п.) — обновляем список, не трогая текущий поток.
+navigator.mediaDevices.addEventListener('devicechange', () => {
+    loadMicrophones().catch(() => {});
+});
 noiseCheck.addEventListener('change', () => {
     saveAudioSettings({ noiseSuppression: noiseCheck.checked });
     initMediaStream(micSelect.value);

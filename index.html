@@ -1273,6 +1273,24 @@
             </div>
             <hr class="modal-section-divider">
 
+            <h3>Уведомления</h3>
+            <div class="control-group">
+                <label>Громкость звука сообщений: <span id="message-sound-volume-value">50%</span></label>
+                <input type="range" id="message-sound-volume-slider" min="0" max="100" step="5" value="50">
+            </div>
+            <div class="control-group">
+                <label>Звук сообщения</label>
+                <div class="profile-hint" id="message-sound-current-label">Стандартный звук</div>
+                <div style="display:flex; gap:8px; margin-top:6px; flex-wrap: wrap;">
+                    <button class="btn-secondary" id="message-sound-test-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Проверить</button>
+                    <label class="btn-secondary" for="message-sound-file-input" style="font-size: 13px; padding: 6px 10px; cursor: pointer;">Загрузить свой звук…</label>
+                    <input type="file" id="message-sound-file-input" accept="audio/*" style="display:none;">
+                    <button class="btn-secondary" id="message-sound-reset-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Сбросить</button>
+                </div>
+                <span class="profile-hint">Можно загрузить свой mp3/wav/ogg вместо стандартного звука нового сообщения. Файл сохраняется только у вас в браузере</span>
+            </div>
+            <hr class="modal-section-divider">
+
             <h3>Настройки видео</h3>
             <div class="control-group">
                 <label>Качество демонстрации экрана</label>
