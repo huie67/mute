@@ -1840,10 +1840,10 @@ socket.on('custom room info', (data) => {
     serverInfoTitle.innerText = data.isOwner ? 'Управление сервером' : 'Сервер';
     serverInfoCode.innerText = data.code;
 
-    // Вкладка "Участники" видна только создателю и модераторам сервера — остальным
-    // управлять некем и незачем показывать эту вкладку вовсе.
-    const canModerate = !!(data.isOwner || data.isAdmin);
-    if (serverInfoTabs) serverInfoTabs.style.display = canModerate ? 'flex' : 'none';
+    // Вкладка "Участники" теперь видна всем, кто открыл сервер — кнопки
+    // "Выгнать"/"Повысить" в ней всё равно показываются только создателю и
+    // модераторам (см. renderServerMembers).
+    if (serverInfoTabs) serverInfoTabs.style.display = 'flex';
     if (serverMembersListEl) serverMembersListEl.innerHTML = '';
     if (serverMembersEmpty) serverMembersEmpty.style.display = 'none';
     switchServerInfoTab('general');

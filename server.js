@@ -474,6 +474,7 @@ io.on('connection', (socket) => {
         const cleanRoom = String(room || '').trim().slice(0, 80);
         if (!cleanRoom) return;
 
+        const previousChatRoom = currentChatRoom;
         if (currentChatRoom) socket.leave(`chat:${currentChatRoom}`);
         currentChatRoom = cleanRoom;
         socket.join(`chat:${cleanRoom}`);
@@ -484,6 +485,13 @@ io.on('connection', (socket) => {
         } catch (err) {
             console.error('❌ Ошибка чтения истории чата:', err);
         }
+
+        // Список участников сервера зависит от того, кто реально сейчас его открыл —
+        // оповещаем и новую комнату (кто-то зашёл), и предыдущую (кто-то вышел/переключился
+        // на другой сервер), чтобы у всех, кто держит открытой вкладку "Участники",
+        // список обновился сам, без повторного клика по вкладке.
+        broadcastServerMembers(cleanRoom);
+        if (previousChatRoom && previousChatRoom !== cleanRoom) broadcastServerMembers(previousChatRoom);
     });
 
     // ---------- Пользовательские серверы ----------
@@ -743,17 +751,24 @@ io.on('connection', (socket) => {
             });
     }
 
+    // Список участников теперь виден всем, кто открыл сервер (не только создателю и
+    // модераторам) — кнопки "Выгнать"/"Повысить" всё равно показываются только тем,
+    // у кого есть на это права (это уже проверяется отдельно в соответствующих
+    // обработчиках ниже и скрывается в интерфейсе клиента).
     socket.on('get server members', async ({ code } = {}) => {
         const cleanCode = String(code || '').trim().toUpperCase();
         const custom = customRooms[cleanCode];
         if (!custom) return socket.emit('custom room error', 'Сервер с таким кодом не найден.');
-
-        const viewerUsername = socket.data && socket.data.username;
-        if (!canModerateRoom(custom, viewerUsername)) {
-            return socket.emit('custom room error', 'Список участников доступен только создателю и модераторам сервера.');
-        }
         socket.emit('server members list', { code: cleanCode, members: await getServerMembers(cleanCode) });
     });
+
+    // Рассылает актуальный список участников всем, у кого сейчас открыт чат этого
+    // сервера — вызывается при входе/выходе, кике и смене ролей, чтобы вкладка
+    // "Участники" обновлялась сама, пока открыта, а не только по клику на неё.
+    async function broadcastServerMembers(code) {
+        if (!code || !customRooms[code]) return;
+        io.to(`chat:${code}`).emit('server members list', { code, members: await getServerMembers(code) });
+    }
 
     // Кик: доступен владельцу (может выгнать любого, кроме себя) и модераторам
     // (могут выгонять только обычных участников — не владельца и не других модераторов).
@@ -809,13 +824,7 @@ io.on('connection', (socket) => {
         // Убираем из постоянного списка участников независимо от того, был ли человек
         // онлайн в момент кика — иначе он остался бы висеть в списке до следующего входа.
         await removeRoomMember(cleanCode, targetUsername);
-
-        const membersPayload = { code: cleanCode, members: await getServerMembers(cleanCode) };
-        if (kickedAny) {
-            io.to(chatRoomName).emit('server members list', membersPayload);
-        } else {
-            socket.emit('server members list', membersPayload);
-        }
+        await broadcastServerMembers(cleanCode);
     });
 
     // Повышение до модератора — доступно владельцу и уже назначенным модераторам.
@@ -851,7 +860,7 @@ io.on('connection', (socket) => {
         pool.query(`UPDATE custom_rooms SET admin_usernames = $1 WHERE code = $2`, [next, cleanCode])
             .catch(err => console.error('❌ Ошибка сохранения списка модераторов сервера:', err));
 
-        io.to(`chat:${cleanCode}`).emit('server members list', { code: cleanCode, members: await getServerMembers(cleanCode) });
+        await broadcastServerMembers(cleanCode);
     });
 
     // Ник закреплён за зарегистрированным аккаунтом (пароль) только когда
@@ -998,6 +1007,10 @@ io.on('connection', (socket) => {
 
     socket.on('disconnect', () => {
         leaveCurrentRoom(socket);
+        // К моменту 'disconnect' сокет уже вышел из всех комнат (socket.io чистит их
+        // сам перед этим событием), поэтому getServerMembers внутри уже не посчитает
+        // отключившегося как онлайн — рассылаем обновление тем, кто остался.
+        if (currentChatRoom) broadcastServerMembers(currentChatRoom);
     });
 
     socket.on('chat message', async (payload) => {
