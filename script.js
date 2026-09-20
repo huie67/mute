@@ -244,9 +244,49 @@ function renderServerMembers(members) {
     });
 }
 
+// Небольшое всплывающее уведомление внизу экрана
+function showToast(text, ms = 4500) {
+    let box = document.getElementById('toast-container');
+    if (!box) {
+        box = document.createElement('div');
+        box.id = 'toast-container';
+        document.body.appendChild(box);
+    }
+    const toast = document.createElement('div');
+    toast.className = 'toast fade-in';
+    toast.textContent = text;
+    box.appendChild(toast);
+    setTimeout(() => {
+        toast.classList.add('toast-hide');
+        setTimeout(() => toast.remove(), 300);
+    }, ms);
+}
+
 socket.on('server members list', ({ code, members } = {}) => {
     if (!currentServerInfo || currentServerInfo.code !== code) return;
+    // Свои права берём из свежего списка — так, если нас повысили/разжаловали,
+    // кнопки управления появляются или пропадают сразу, без переоткрытия окна.
+    const meLower = ((currentUser && currentUser.username) || '').toLowerCase();
+    const me = (members || []).find(m => m.username.toLowerCase() === meLower);
+    if (me) {
+        currentServerInfo.isOwner = !!me.isOwner;
+        currentServerInfo.isAdmin = !!me.isAdmin;
+        currentServerInfo.canModerate = !!(me.isOwner || me.isAdmin);
+    }
     renderServerMembers(members || []);
+});
+
+// Нам выдали или сняли права модератора — узнаём сразу, на каком бы сервере ни находились.
+socket.on('server role changed', ({ code, name, isAdmin } = {}) => {
+    if (!code) return;
+    showToast(isAdmin
+        ? `Вас назначили модератором сервера «${name || code}»`
+        : `С вас сняли права модератора сервера «${name || code}»`);
+    if (currentServerInfo && currentServerInfo.code === code) {
+        currentServerInfo.isAdmin = !!isAdmin;
+        currentServerInfo.canModerate = !!(currentServerInfo.isOwner || isAdmin);
+        socket.emit('get server members', { code });
+    }
 });
 
 // Пришло, когда нас выгнал создатель или модератор сервера.
@@ -1877,6 +1917,7 @@ socket.on('custom room info', (data) => {
     if (serverMembersListEl) serverMembersListEl.innerHTML = '';
     if (serverMembersEmpty) serverMembersEmpty.style.display = 'none';
     switchServerInfoTab('general');
+    socket.emit('get server members', { code: data.code });
 
     if (data.isOwner) {
         serverInfoOwnerView.style.display = 'flex';
@@ -2657,9 +2698,13 @@ settingsBtn.addEventListener('click', () => {
 // используют те же CSS-классы для одинакового вида, но переключаются отдельно.
 const settingsTabButtons = document.querySelectorAll('#settings-tabs .settings-tab');
 const settingsTabPanels = document.querySelectorAll('#settings-modal .settings-tab-panel');
+const settingsSectionTitle = document.getElementById('settings-section-title');
 function switchSettingsTab(tabName) {
     settingsTabButtons.forEach(btn => btn.classList.toggle('active', btn.dataset.tab === tabName));
     settingsTabPanels.forEach(panel => panel.classList.toggle('active', panel.dataset.tabPanel === tabName));
+    // Заголовок справа повторяет название выбранного раздела
+    const activeBtn = Array.from(settingsTabButtons).find(btn => btn.dataset.tab === tabName);
+    if (settingsSectionTitle && activeBtn) settingsSectionTitle.innerText = activeBtn.innerText.trim();
 }
 settingsTabButtons.forEach(btn => {
     btn.addEventListener('click', () => switchSettingsTab(btn.dataset.tab));
@@ -2667,6 +2712,10 @@ settingsTabButtons.forEach(btn => {
 
 closeSettings.addEventListener('click', () => {
     settingsModal.style.display = 'none';
+});
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && settingsModal.style.display === 'flex') settingsModal.style.display = 'none';
 });
 
 window.addEventListener('click', (event) => {

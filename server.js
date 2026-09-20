@@ -463,6 +463,135 @@ async function resolveFreeGuestUsername(requested, excludeSocketId) {
     return { username: candidate, changed: true };
 }
 
+// ---------- Участники пользовательских серверов ----------
+// ВАЖНО: на клиенте у пользовательского сервера комната называется `custom:КОД`
+// (и голосовой канал, и чат — `chat:custom:КОД`). Раньше сервер искал `chat:КОД`
+// без префикса, поэтому никто никогда не считался «в сети», а обновления списка
+// участников (в том числе повышение до модератора) не доходили ни до кого.
+function voiceRoomForCode(code) { return `custom:${code}`; }
+function chatRoomForCode(code) { return `chat:custom:${code}`; }
+function customCodeFromRoom(room) {
+    const r = String(room || '');
+    return r.startsWith('custom:') ? r.slice('custom:'.length).trim().toUpperCase() : null;
+}
+
+// «В сети» — у человека сейчас есть хотя бы одно живое подключение к приложению
+// (не обязательно с открытым именно этим сервером).
+async function getServerMembers(code) {
+    const custom = customRooms[code];
+    const chatRoomName = chatRoomForCode(code);
+
+    const onlineUsernames = new Set();
+    const onlineAvatars = new Map();
+    for (const [, sock] of io.sockets.sockets) {
+        const uname = sock.data && sock.data.username;
+        if (!uname) continue;
+        const lower = uname.toLowerCase();
+        onlineUsernames.add(lower);
+        if (!onlineAvatars.has(lower)) onlineAvatars.set(lower, (sock.data && sock.data.avatar) || '');
+    }
+
+    let rows = [];
+    try {
+        const result = await pool.query(
+            `SELECT username, avatar FROM custom_room_members WHERE code = $1 ORDER BY joined_at ASC`,
+            [code]
+        );
+        rows = result.rows;
+    } catch (err) {
+        console.error('❌ Ошибка чтения участников сервера:', err);
+    }
+
+    const known = new Map(rows.map(r => [r.username.toLowerCase(), { username: r.username, avatar: r.avatar || '' }]));
+
+    // Подстраховка для серверов/участников, созданных до появления этой таблицы —
+    // если человек сейчас сидит в чате этого сервера, но в БД его почему-то нет,
+    // дописываем его туда (не блокируя ответ) и сразу показываем в списке.
+    for (const [, sock] of io.sockets.sockets) {
+        if (!sock.rooms || !sock.rooms.has(chatRoomName)) continue;
+        const uname = sock.data && sock.data.username;
+        if (!uname) continue;
+        const lower = uname.toLowerCase();
+        if (!known.has(lower)) {
+            known.set(lower, { username: uname, avatar: (sock.data && sock.data.avatar) || '' });
+            addRoomMember(code, uname, sock.data && sock.data.avatar);
+        }
+    }
+    if (custom && custom.ownerUsername && !known.has(custom.ownerUsername.toLowerCase())) {
+        known.set(custom.ownerUsername.toLowerCase(), { username: custom.ownerUsername, avatar: '' });
+        addRoomMember(code, custom.ownerUsername, null);
+    }
+
+    return [...known.entries()]
+        .map(([lower, m]) => ({
+            username: m.username,
+            avatar: onlineAvatars.get(lower) || m.avatar || '',
+            isOwner: isRoomOwner(custom, m.username),
+            isAdmin: isRoomAdmin(custom, m.username),
+            online: onlineUsernames.has(lower)
+        }))
+        .sort((a, b) => {
+            if (a.isOwner !== b.isOwner) return a.isOwner ? -1 : 1;
+            if (a.isAdmin !== b.isAdmin) return a.isAdmin ? -1 : 1;
+            if (a.online !== b.online) return a.online ? -1 : 1;
+            return a.username.localeCompare(b.username, 'ru');
+        });
+}
+
+// Рассылает актуальный список участников всем, у кого сейчас открыт чат этого
+// сервера — вызывается при входе/выходе, кике, смене ролей и смене статуса «в сети».
+async function broadcastServerMembers(code) {
+    if (!code || !customRooms[code]) return;
+    io.to(chatRoomForCode(code)).emit('server members list', { code, members: await getServerMembers(code) });
+}
+
+// То же, но не чаще раза в ~250 мс на сервер и только если этот сервер кто-то сейчас
+// смотрит — иначе лишние запросы в БД. Нужно для частых событий (вход/выход людей).
+const memberBroadcastTimers = new Map();
+function scheduleBroadcastServerMembers(code, delay = 250) {
+    if (!code || !customRooms[code]) return;
+    if (!io.sockets.adapter.rooms.has(chatRoomForCode(code))) return; // никто не смотрит
+    if (memberBroadcastTimers.has(code)) return;
+    memberBroadcastTimers.set(code, setTimeout(() => {
+        memberBroadcastTimers.delete(code);
+        broadcastServerMembers(code).catch(err => console.error('❌ Ошибка рассылки участников:', err));
+    }, delay));
+}
+
+// Человек зашёл в сеть / вышел / сменил ник — обновляем списки на тех серверах,
+// где он состоит и которые сейчас кто-то смотрит.
+async function notifyPresenceChange(username) {
+    if (!username) return;
+    const viewed = Object.keys(customRooms).filter(code => io.sockets.adapter.rooms.has(chatRoomForCode(code)));
+    if (viewed.length === 0) return;
+    try {
+        const result = await pool.query(
+            `SELECT code FROM custom_room_members WHERE code = ANY($1) AND LOWER(username) = LOWER($2)`,
+            [viewed, username]
+        );
+        const codes = new Set(result.rows.map(r => r.code));
+        // Владелец мог не попасть в таблицу участников — проверяем и по владельцу
+        for (const code of viewed) {
+            if (isRoomOwner(customRooms[code], username)) codes.add(code);
+        }
+        codes.forEach(code => scheduleBroadcastServerMembers(code));
+    } catch (err) {
+        console.error('❌ Ошибка обновления статуса «в сети»:', err);
+    }
+}
+
+// Всем открытым подключениям человека (на любом сервере) сообщаем, что его роль изменилась.
+function notifyRoleChange(code, username, isAdmin) {
+    const custom = customRooms[code];
+    if (!custom || !username) return;
+    const lower = username.toLowerCase();
+    for (const [, sock] of io.sockets.sockets) {
+        const uname = sock.data && sock.data.username;
+        if (!uname || uname.toLowerCase() !== lower) continue;
+        sock.emit('server role changed', { code, name: custom.name, isAdmin: !!isAdmin });
+    }
+}
+
 io.on('connection', (socket) => {
     let currentUserRoom = null;
     let currentUserData = null;
@@ -490,8 +619,8 @@ io.on('connection', (socket) => {
         // оповещаем и новую комнату (кто-то зашёл), и предыдущую (кто-то вышел/переключился
         // на другой сервер), чтобы у всех, кто держит открытой вкладку "Участники",
         // список обновился сам, без повторного клика по вкладке.
-        broadcastServerMembers(cleanRoom);
-        if (previousChatRoom && previousChatRoom !== cleanRoom) broadcastServerMembers(previousChatRoom);
+        scheduleBroadcastServerMembers(customCodeFromRoom(cleanRoom));
+        if (previousChatRoom && previousChatRoom !== cleanRoom) scheduleBroadcastServerMembers(customCodeFromRoom(previousChatRoom));
     });
 
     // ---------- Пользовательские серверы ----------
@@ -587,6 +716,7 @@ io.on('connection', (socket) => {
             }
             if (socket.data && socket.data.username) {
                 await addRoomMember(cleanCode, socket.data.username, socket.data.avatar);
+                scheduleBroadcastServerMembers(cleanCode);
             }
             socket.emit('custom room joined', customRoomInfoFor(custom, socket));
         } catch (err) {
@@ -689,68 +819,6 @@ io.on('connection', (socket) => {
     // "Онлайн" считается тот, у кого сейчас открыт чат этого сервера (комната
     // `chat:${code}`, см. 'select chat room') — это просто пометка в UI, на сам факт
     // присутствия в списке участников она не влияет.
-    async function getServerMembers(code) {
-        const custom = customRooms[code];
-        const chatRoomName = `chat:${code}`;
-
-        const onlineUsernames = new Set();
-        const onlineAvatars = new Map();
-        for (const [, sock] of io.sockets.sockets) {
-            if (!sock.rooms || !sock.rooms.has(chatRoomName)) continue;
-            const uname = sock.data && sock.data.username;
-            if (!uname) continue;
-            const lower = uname.toLowerCase();
-            onlineUsernames.add(lower);
-            if (!onlineAvatars.has(lower)) onlineAvatars.set(lower, (sock.data && sock.data.avatar) || '');
-        }
-
-        let rows = [];
-        try {
-            const result = await pool.query(
-                `SELECT username, avatar FROM custom_room_members WHERE code = $1 ORDER BY joined_at ASC`,
-                [code]
-            );
-            rows = result.rows;
-        } catch (err) {
-            console.error('❌ Ошибка чтения участников сервера:', err);
-        }
-
-        const known = new Map(rows.map(r => [r.username.toLowerCase(), { username: r.username, avatar: r.avatar || '' }]));
-
-        // Подстраховка для серверов/участников, созданных до появления этой таблицы —
-        // если человек сейчас онлайн, но в БД его почему-то нет, дописываем его туда
-        // (не блокируя ответ) и всё равно показываем в списке сразу.
-        for (const [, sock] of io.sockets.sockets) {
-            if (!sock.rooms || !sock.rooms.has(chatRoomName)) continue;
-            const uname = sock.data && sock.data.username;
-            if (!uname) continue;
-            const lower = uname.toLowerCase();
-            if (!known.has(lower)) {
-                known.set(lower, { username: uname, avatar: (sock.data && sock.data.avatar) || '' });
-                addRoomMember(code, uname, sock.data && sock.data.avatar);
-            }
-        }
-        if (custom && custom.ownerUsername && !known.has(custom.ownerUsername.toLowerCase())) {
-            known.set(custom.ownerUsername.toLowerCase(), { username: custom.ownerUsername, avatar: '' });
-            addRoomMember(code, custom.ownerUsername, null);
-        }
-
-        return [...known.entries()]
-            .map(([lower, m]) => ({
-                username: m.username,
-                avatar: onlineAvatars.get(lower) || m.avatar || '',
-                isOwner: isRoomOwner(custom, m.username),
-                isAdmin: isRoomAdmin(custom, m.username),
-                online: onlineUsernames.has(lower)
-            }))
-            .sort((a, b) => {
-                if (a.isOwner !== b.isOwner) return a.isOwner ? -1 : 1;
-                if (a.isAdmin !== b.isAdmin) return a.isAdmin ? -1 : 1;
-                if (a.online !== b.online) return a.online ? -1 : 1;
-                return a.username.localeCompare(b.username, 'ru');
-            });
-    }
-
     // Список участников теперь виден всем, кто открыл сервер (не только создателю и
     // модераторам) — кнопки "Выгнать"/"Повысить" всё равно показываются только тем,
     // у кого есть на это права (это уже проверяется отдельно в соответствующих
@@ -761,14 +829,6 @@ io.on('connection', (socket) => {
         if (!custom) return socket.emit('custom room error', 'Сервер с таким кодом не найден.');
         socket.emit('server members list', { code: cleanCode, members: await getServerMembers(cleanCode) });
     });
-
-    // Рассылает актуальный список участников всем, у кого сейчас открыт чат этого
-    // сервера — вызывается при входе/выходе, кике и смене ролей, чтобы вкладка
-    // "Участники" обновлялась сама, пока открыта, а не только по клику на неё.
-    async function broadcastServerMembers(code) {
-        if (!code || !customRooms[code]) return;
-        io.to(`chat:${code}`).emit('server members list', { code, members: await getServerMembers(code) });
-    }
 
     // Кик: доступен владельцу (может выгнать любого, кроме себя) и модераторам
     // (могут выгонять только обычных участников — не владельца и не других модераторов).
@@ -795,26 +855,26 @@ io.on('connection', (socket) => {
             return socket.emit('custom room error', 'Только создатель сервера может исключить модератора.');
         }
 
-        const chatRoomName = `chat:${cleanCode}`;
+        const chatRoomName = chatRoomForCode(cleanCode);
+        const voiceRoom = voiceRoomForCode(cleanCode);
         let kickedAny = false;
         for (const [, sock] of io.sockets.sockets) {
             const uname = sock.data && sock.data.username;
             if (!uname || uname.toLowerCase() !== targetUsername.toLowerCase()) continue;
-            if (!sock.rooms || !sock.rooms.has(chatRoomName)) continue;
             kickedAny = true;
 
-            sock.leave(chatRoomName);
+            if (sock.rooms && sock.rooms.has(chatRoomName)) sock.leave(chatRoomName);
 
             // Если тот же человек сидит и в голосовом канале этого сервера — выкидываем и оттуда.
-            if (rooms[cleanCode] && rooms[cleanCode][sock.id]) {
-                const peerId = rooms[cleanCode][sock.id].peerId;
-                delete rooms[cleanCode][sock.id];
-                sock.leave(cleanCode);
-                if (peerId) io.to(cleanCode).emit('user disconnected', peerId);
-                if (Object.keys(rooms[cleanCode]).length === 0) {
-                    delete rooms[cleanCode];
+            if (rooms[voiceRoom] && rooms[voiceRoom][sock.id]) {
+                const peerId = rooms[voiceRoom][sock.id].peerId;
+                delete rooms[voiceRoom][sock.id];
+                sock.leave(voiceRoom);
+                if (peerId) io.to(voiceRoom).emit('user disconnected', peerId);
+                if (Object.keys(rooms[voiceRoom]).length === 0) {
+                    delete rooms[voiceRoom];
                 }
-                broadcastRoomUsers(cleanCode);
+                broadcastRoomUsers(voiceRoom);
             }
 
             sock.emit('kicked from server', { code: cleanCode, name: custom.name });
@@ -860,6 +920,8 @@ io.on('connection', (socket) => {
             .catch(err => console.error('❌ Ошибка сохранения списка модераторов сервера:', err));
 
         await broadcastServerMembers(cleanCode);
+        // Сам человек узнаёт о новой роли сразу, где бы он ни находился
+        notifyRoleChange(cleanCode, targetUsername, wantMakeAdmin);
     });
 
     // Ник закреплён за зарегистрированным аккаунтом (пароль) только когда
@@ -897,10 +959,15 @@ io.on('connection', (socket) => {
         // иначе 'join room' может обработаться раньше, чем сокет получит ник, и человек
         // появится у остальных как «Участник».
         if (typeof ack === 'function') ack();
+
+        // Человек появился в сети — обновляем списки участников на его серверах
+        notifyPresenceChange(username);
     });
 
     socket.on('update profile', async ({ username, avatar, token }) => {
         if (!socket.data) return;
+
+        const previousName = socket.data.username;
 
         if (typeof avatar === 'string' && avatar.trim()) {
             socket.data.avatar = avatar.trim();
@@ -936,6 +1003,10 @@ io.on('connection', (socket) => {
             rooms[currentUserRoom][socket.id].avatar = socket.data.avatar;
             broadcastRoomUsers(currentUserRoom);
         }
+
+        // Новый ник/аватар должен сразу отразиться в списках участников серверов
+        notifyPresenceChange(socket.data.username);
+        if (previousName && previousName !== socket.data.username) notifyPresenceChange(previousName);
     });
 
     // Кто-то заходит в голосовой канал. Мьют/дефен передаём сразу тем же событием
@@ -1016,7 +1087,10 @@ io.on('connection', (socket) => {
         // К моменту 'disconnect' сокет уже вышел из всех комнат (socket.io чистит их
         // сам перед этим событием), поэтому getServerMembers внутри уже не посчитает
         // отключившегося как онлайн — рассылаем обновление тем, кто остался.
-        if (currentChatRoom) broadcastServerMembers(currentChatRoom);
+        if (currentChatRoom) scheduleBroadcastServerMembers(customCodeFromRoom(currentChatRoom));
+        // Статус «в сети» у остальных на всех серверах, где состоит этот человек
+        const goneName = socket.data && socket.data.username;
+        if (goneName) notifyPresenceChange(goneName);
     });
 
     socket.on('chat message', async (payload) => {
