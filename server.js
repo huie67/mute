@@ -626,17 +626,49 @@ io.on('connection', (socket) => {
     // ---------- Пользовательские серверы ----------
     // В общий список сервера больше не отдаются — только по конкретным кодам,
     // которые клиент уже знает (создал сам или когда-то вошёл по коду).
-    socket.on('get my custom rooms', ({ codes } = {}) => {
-        const cleanCodes = Array.isArray(codes)
-            ? [...new Set(codes.map(c => String(c || '').trim().toUpperCase()).filter(Boolean))].slice(0, 200)
-            : [];
-        if (cleanCodes.length === 0) return socket.emit('custom rooms list', []);
+    // Список серверов пользователя. Для вошедших в аккаунт он хранится на сервере
+    // (таблица участников сервера), поэтому одинаковый в браузере и в приложении.
+    // Для гостей (без аккаунта) нет способа узнать «это тот же человек», поэтому у них
+    // список остаётся локальным — по кодам, которые присылает сам клиент.
+    socket.on('get my custom rooms', async ({ codes } = {}) => {
+        const wanted = new Set(
+            Array.isArray(codes)
+                ? codes.map(c => String(c || '').trim().toUpperCase()).filter(Boolean).slice(0, 200)
+                : []
+        );
 
-        const found = cleanCodes
+        const username = socket.data && socket.data.username;
+        if (socket.data && socket.data.verified && username) {
+            try {
+                const result = await pool.query(
+                    `SELECT code FROM custom_room_members WHERE LOWER(username) = LOWER($1)`,
+                    [username]
+                );
+                result.rows.forEach(r => wanted.add(r.code));
+            } catch (err) {
+                console.error('❌ Ошибка чтения списка серверов пользователя:', err);
+            }
+            for (const code of Object.keys(customRooms)) {
+                if (isRoomOwner(customRooms[code], username)) wanted.add(code);
+            }
+        }
+
+        const found = [...wanted]
             .map(code => customRooms[code])
             .filter(Boolean)
             .map(room => publicCustomRoom(room));
         socket.emit('custom rooms list', found);
+    });
+
+    // «Покинуть сервер» — убираем себя из участников, чтобы сервер не вернулся
+    // в список на другом устройстве. Владелец покинуть свой сервер не может (только удалить).
+    socket.on('leave custom room', async ({ code } = {}) => {
+        const cleanCode = String(code || '').trim().toUpperCase();
+        const custom = customRooms[cleanCode];
+        const username = socket.data && socket.data.username;
+        if (!custom || !username || isRoomOwner(custom, username)) return;
+        await removeRoomMember(cleanCode, username);
+        scheduleBroadcastServerMembers(cleanCode);
     });
 
     socket.on('create custom room', async ({ name, password, avatar }) => {
@@ -935,12 +967,14 @@ io.on('connection', (socket) => {
         let username = requested;
         const avatar = (userData && userData.avatar) || '';
         const token = userData && userData.token;
+        let verified = false; // ник подтверждён токеном аккаунта — можно доверять для синхронизации между устройствами
 
         try {
             if (token) {
                 const decoded = verifyToken(token);
                 if (decoded && decoded.username) {
                     username = decoded.username; // сервер — источник истины по нику владельца аккаунта
+                    verified = true;
                 }
             } else {
                 const resolved = await resolveFreeGuestUsername(requested, socket.id);
@@ -953,7 +987,7 @@ io.on('connection', (socket) => {
             console.error('❌ Ошибка проверки ника при регистрации сокета:', err);
         }
 
-        socket.data = { username, avatar, peerId: userData && userData.peerId };
+        socket.data = { username, avatar, peerId: userData && userData.peerId, verified };
 
         // Клиент при переподключении ждёт подтверждения, прежде чем заново входить в канал —
         // иначе 'join room' может обработаться раньше, чем сокет получит ник, и человек

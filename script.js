@@ -43,6 +43,9 @@ function removeMyServerCode(code) {
 // Запрашиваем данные только по серверам, которые мы уже создавали/к которым уже
 // подключались — остальные для нас просто не существуют в списке.
 socket.emit('get my custom rooms', { codes: loadMyServerCodes() });
+function requestMyServers() {
+    socket.emit('get my custom rooms', { codes: loadMyServerCodes() });
+}
 const serverAddModal = document.getElementById('server-add-modal');
 const serverCreatedModal = document.getElementById('server-created-modal');
 const createServerName = document.getElementById('create-server-name');
@@ -1186,7 +1189,10 @@ socket.on('connect', () => {
             avatar: currentUser.avatar,
             peerId: myPeerId,
             token: currentUser.token || null
-        }, () => restoreSubscriptions());
+        }, () => {
+            requestMyServers();
+            restoreSubscriptions();
+        });
     } else {
         restoreSubscriptions();
     }
@@ -1227,12 +1233,14 @@ function initPeer() {
     myPeer.on('open', (id) => {
         myPeerId = id;
         console.log('[Peer] Мой Peer ID:', id);
-        socket.emit('register user', {
+        // После подтверждения регистрации сервер уже знает, кто мы (и вошли ли в аккаунт) —
+        // только теперь можно получить полный список своих серверов, общий для всех устройств.
+        socket.timeout(5000).emit('register user', {
             username: currentUser.username,
             avatar: currentUser.avatar,
             peerId: id,
             token: currentUser.token || null
-        });
+        }, () => requestMyServers());
     });
 
     myPeer.on('call', (call) => {
@@ -1853,7 +1861,15 @@ document.getElementById('close-created-server')?.addEventListener('click', () =>
 socket.on('custom rooms list', (rooms) => {
     if (!Array.isArray(rooms)) return;
     customServersList.innerHTML = '';
-    for (const room of rooms) addCustomServerButton(room);
+    for (const room of rooms) {
+        addCustomServerButton(room);
+        addMyServerCode(room.code); // запоминаем и локально — список с сервера общий для устройств
+    }
+    // Пересборка списка не должна сбрасывать подсветку открытого сервера
+    if (selectedRoom) {
+        const sel = customServersList.querySelector(`[data-room="${CSS.escape(selectedRoom)}"]`);
+        if (sel) sel.classList.add('active');
+    }
 });
 
 function addCustomServerButton(data) {
@@ -1963,6 +1979,7 @@ document.getElementById('server-info-leave')?.addEventListener('click', () => {
     const btn = customServersList.querySelector(`[data-room="custom:${currentServerInfo.code}"]`);
     if (btn) btn.remove();
     removeMyServerCode(currentServerInfo.code);
+    socket.emit('leave custom room', { code: currentServerInfo.code });
     closeModal(serverInfoModal);
 });
 

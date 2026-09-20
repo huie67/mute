@@ -1035,11 +1035,13 @@
            Размер карточки задан явно, а содержимое активной вкладки прокручивается
            внутри неё — окно больше не «прыгает» при смене вкладки. */
         .modal-card-fixed { overflow: hidden; }
+        /* У .action-btn стоит flex:1 — в карточке фиксированной высоты кнопка
+           «Отмена» раздувалась на всё свободное место. Здесь она обычного размера. */
+        .modal-card-fixed > .action-btn { flex: 0 0 auto; }
         .modal-card-fixed > .settings-tab-panel.active {
             flex: 1;
             min-height: 0;
             overflow-y: auto;
-            padding-right: 4px;
         }
         .modal-card-fixed > .settings-tab-panel .panel-bottom-btn { margin-top: auto; }
         .modal-card-fixed > .settings-tab-panel .danger-zone { margin-top: auto; }
