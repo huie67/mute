@@ -265,7 +265,12 @@ function showToast(text, ms = 4500) {
     }, ms);
 }
 
+// Кэш участников серверов для автодополнения @упоминаний в чате — обновляется
+// при каждом приходе списка участников, независимо от того, открыта ли вкладка
+// "Участники" в окне сервера (см. mentionMembersCache ниже).
 socket.on('server members list', ({ code, members } = {}) => {
+    if (code) mentionMembersCache[code] = members || [];
+
     if (!currentServerInfo || currentServerInfo.code !== code) return;
     // Свои права берём из свежего списка — так, если нас повысили/разжаловали,
     // кнопки управления появляются или пропадают сразу, без переоткрытия окна.
@@ -398,12 +403,33 @@ const messagesDiv = document.getElementById('messages');
 const messageInput = document.getElementById('message-input');
 const remoteVideos = document.getElementById('remote-videos');
 
+// ---------- Упоминания (@ник) в чате ----------
+// Кэш участников сервера по коду — берётся из событий 'server members list',
+// которые сервер и так рассылает всем, у кого открыт чат этого сервера
+// (см. scheduleBroadcastServerMembers на бэкенде), так что список для
+// автодополнения обычно уже готов к моменту, когда человек набирает "@".
+const mentionMembersCache = {};
+
+// Комнаты пользовательских серверов на клиенте называются "custom:КОД" —
+// список участников есть только у таких серверов (см. customCodeFromRoom в server.js).
+function customCodeFromRoomName(room) {
+    const r = String(room || '');
+    return r.startsWith('custom:') ? r.slice('custom:'.length).trim().toUpperCase() : null;
+}
+
+function getMentionCandidates() {
+    const code = customCodeFromRoomName(selectedRoom);
+    if (!code) return [];
+    return mentionMembersCache[code] || [];
+}
+
 // Чат теперь отдельный для каждой комнаты — пока комната не выбрана, писать некуда.
 function setChatEnabled(enabled) {
     messageInput.disabled = !enabled;
     messageInput.placeholder = enabled ? 'Написать в чат...' : 'Выберите сервер слева, чтобы открыть чат';
     const attachBtnEl = document.getElementById('attach-image-btn');
     if (attachBtnEl) attachBtnEl.disabled = !enabled;
+    if (!enabled && typeof closeMentionAutocomplete === 'function') closeMentionAutocomplete();
 }
 setChatEnabled(false);
 
@@ -1772,7 +1798,13 @@ function selectRoomButton(btn) {
     // чтобы повторный клик (открывающий настройки сервера) не дёргал историю чата заново.
     if (roomChanged) {
         setChatEnabled(true);
+        if (typeof closeMentionAutocomplete === 'function') closeMentionAutocomplete();
         socket.emit('select chat room', { room: roomName });
+        // Список участников для автодополнения @упоминаний — сервер и так пришлёт его
+        // сам через ~250 мс после 'select chat room', но запрашиваем явно, чтобы
+        // подсказки были готовы, даже если человек начнёт печатать "@" сразу же.
+        const mentionCode = customCodeFromRoomName(roomName);
+        if (mentionCode) socket.emit('get server members', { code: mentionCode });
     }
 }
 
@@ -3032,6 +3064,54 @@ function maybeInsertDateSeparator(date) {
     messagesDiv.appendChild(sep);
 }
 
+// Экранирование спецсимволов регулярных выражений в нике (ники не ограничены
+// по составу символов на сервере, так что подстраховываемся).
+function escapeRegExp(str) {
+    return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Находит вхождения "@ник" в тексте сообщения, где ник — реальный участник
+// сервера из переданного списка. Возвращает массив {index, length, username}
+// с позициями в ИСХОДНОМ (неэкранированном) тексте.
+function findMentionMatches(text, members) {
+    if (!text || !members || !members.length) return [];
+    const names = [...new Set(members.map(m => m && m.username).filter(Boolean))]
+        .sort((a, b) => b.length - a.length) // сначала длинные ники — иначе короткий "hu" мог бы "съесть" часть "huie"
+        .map(escapeRegExp);
+    if (!names.length) return [];
+
+    // Перед "@" не должно быть буквы/цифры/другого "@" (чтобы не путать с email),
+    // а после ника не должно идти продолжение слова (иначе "@huie" не должен
+    // матчиться как "@hu" из-за более раннего варианта в списке).
+    const pattern = new RegExp(`(^|[^\\wа-яА-ЯёЁ@])@(${names.join('|')})(?![\\wа-яА-ЯёЁ])`, 'giu');
+    const matches = [];
+    let m;
+    while ((m = pattern.exec(text))) {
+        matches.push({ index: m.index + m[1].length, length: m[2].length + 1, username: m[2] });
+        if (m.index === pattern.lastIndex) pattern.lastIndex++; // защита от зацикливания на пустом совпадении
+    }
+    return matches;
+}
+
+// Собирает HTML текста сообщения с подсвеченными @упоминаниями. Текст всё
+// равно полностью экранируется — подсветка добавляется поверх escapeHtml.
+function renderMessageTextWithMentions(text, members, myUsername) {
+    const matches = findMentionMatches(text, members);
+    if (!matches.length) return escapeHtml(text);
+
+    const meLower = (myUsername || '').toLowerCase();
+    let html = '';
+    let lastIndex = 0;
+    matches.forEach(({ index, length, username }) => {
+        html += escapeHtml(text.slice(lastIndex, index));
+        const isMe = username.toLowerCase() === meLower;
+        html += `<span class="mention${isMe ? ' mention-me' : ''}">@${escapeHtml(username)}</span>`;
+        lastIndex = index + length;
+    });
+    html += escapeHtml(text.slice(lastIndex));
+    return html;
+}
+
 function renderChatMessage({ username, user, avatar, text, image_url, created_at }) {
     const name = username || user || 'Участник';
     // created_at приходит с сервера как Date.now() (мс) — если вдруг отсутствует или же
@@ -3047,7 +3127,7 @@ function renderChatMessage({ username, user, avatar, text, image_url, created_at
     msg.className = 'chat-message fade-in';
 
     let html = `<strong class="msg-sender" style="color:${getUserColor(name)}">${escapeHtml(name)}:</strong> `;
-    if (text) html += `<span class="msg-text">${escapeHtml(text)}</span>`;
+    if (text) html += `<span class="msg-text">${renderMessageTextWithMentions(text, getMentionCandidates(), currentUser.username)}</span>`;
     if (image_url) {
         html += `<div class="chat-image-wrap"><img src="${image_url}" class="chat-image" alt="Изображение" onclick="openImageLightbox('${image_url}')"></div>`;
     }
@@ -3079,14 +3159,159 @@ socket.on('chat message', (payload) => {
     const senderName = payload.username || payload.user;
     if (senderName !== currentUser.username) {
         playMessageSound();
+
+        // Если в сообщении упомянули нас по нику — отдельное уведомление,
+        // чтобы не пропустить его среди прочих сообщений в чате.
+        const mentions = findMentionMatches(payload.text || '', getMentionCandidates());
+        const meLower = (currentUser.username || '').toLowerCase();
+        if (meLower && mentions.some(m => m.username.toLowerCase() === meLower)) {
+            showToast(`${senderName} упомянул(а) вас в чате`);
+        }
     }
 });
 
-messageInput.addEventListener('keypress', (e) => {
+// ---------- Автодополнение @упоминаний в поле ввода чата ----------
+const mentionAutocompleteEl = document.getElementById('mention-autocomplete');
+let mentionState = { active: false, startIndex: -1, query: '', items: [], activeIndex: 0 };
+
+function closeMentionAutocomplete() {
+    mentionState = { active: false, startIndex: -1, query: '', items: [], activeIndex: 0 };
+    if (mentionAutocompleteEl) {
+        mentionAutocompleteEl.style.display = 'none';
+        mentionAutocompleteEl.innerHTML = '';
+    }
+}
+
+function renderMentionAutocomplete() {
+    if (!mentionAutocompleteEl) return;
+    mentionAutocompleteEl.innerHTML = '';
+    mentionState.items.forEach((m, idx) => {
+        const row = document.createElement('div');
+        row.className = 'mention-item' + (idx === mentionState.activeIndex ? ' active' : '');
+
+        const avatar = document.createElement('img');
+        avatar.className = 'mention-avatar';
+        avatar.src = m.avatar || `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(m.username)}`;
+        avatar.alt = '';
+        row.appendChild(avatar);
+
+        const nameEl = document.createElement('span');
+        nameEl.className = 'mention-name';
+        nameEl.style.color = getUserColor(m.username);
+        nameEl.textContent = m.username;
+        row.appendChild(nameEl);
+
+        const dot = document.createElement('span');
+        dot.className = 'mention-status-dot';
+        dot.style.background = m.online ? '#3ba55d' : '#6b7280';
+        dot.title = m.online ? 'В сети' : 'Не в сети';
+        row.appendChild(dot);
+
+        // mousedown, а не click — срабатывает раньше blur поля ввода,
+        // иначе список бы закрывался (и терял выбор) до обработки клика.
+        row.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            applyMention(idx);
+        });
+
+        mentionAutocompleteEl.appendChild(row);
+    });
+    mentionAutocompleteEl.style.display = mentionState.items.length ? 'block' : 'none';
+}
+
+// Смотрит на текст перед курсором: если там набирается "@ник" — ищет среди
+// участников текущего сервера подходящие варианты (по началу ника) и
+// показывает подсказку. Иначе — скрывает её.
+function updateMentionAutocomplete() {
+    const value = messageInput.value;
+    const cursor = messageInput.selectionStart ?? value.length;
+    const beforeCursor = value.slice(0, cursor);
+
+    // "@" в начале строки или после пробела/переноса, дальше — без пробелов до курсора.
+    const match = beforeCursor.match(/(^|\s)@([^\s@]{0,32})$/u);
+    if (!match) { closeMentionAutocomplete(); return; }
+
+    const query = match[2];
+    const startIndex = cursor - query.length - 1; // позиция символа '@'
+    const candidates = getMentionCandidates();
+    if (!candidates.length) { closeMentionAutocomplete(); return; }
+
+    const lowerQuery = query.toLowerCase();
+    const meLower = (currentUser.username || '').toLowerCase();
+    const items = candidates
+        .filter(m => m && m.username && m.username.toLowerCase() !== meLower)
+        .filter(m => m.username.toLowerCase().startsWith(lowerQuery))
+        .sort((a, b) => {
+            if (a.online !== b.online) return a.online ? -1 : 1;
+            return a.username.localeCompare(b.username, 'ru');
+        })
+        .slice(0, 8);
+
+    if (!items.length) { closeMentionAutocomplete(); return; }
+
+    const activeIndex = mentionState.active && mentionState.startIndex === startIndex
+        ? Math.min(mentionState.activeIndex, items.length - 1)
+        : 0;
+    mentionState = { active: true, startIndex, query, items, activeIndex };
+    renderMentionAutocomplete();
+}
+
+// Подставляет выбранный ник вместо набранного "@запроса" и ставит курсор сразу после него.
+function applyMention(idx) {
+    const item = mentionState.items[idx];
+    if (!item) { closeMentionAutocomplete(); return; }
+
+    const value = messageInput.value;
+    const before = value.slice(0, mentionState.startIndex);
+    const after = value.slice(mentionState.startIndex + 1 + mentionState.query.length);
+    const insertion = `@${item.username} `;
+
+    messageInput.value = before + insertion + after;
+    const newCursor = (before + insertion).length;
+    closeMentionAutocomplete();
+    messageInput.focus();
+    messageInput.setSelectionRange(newCursor, newCursor);
+}
+
+messageInput.addEventListener('input', updateMentionAutocomplete);
+messageInput.addEventListener('click', updateMentionAutocomplete);
+messageInput.addEventListener('blur', () => {
+    // Небольшая задержка, чтобы клик по подсказке (mousedown) успел обработаться раньше закрытия.
+    setTimeout(closeMentionAutocomplete, 150);
+});
+
+messageInput.addEventListener('keydown', (e) => {
     e.stopPropagation();
+
+    if (mentionState.active) {
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            mentionState.activeIndex = (mentionState.activeIndex + 1) % mentionState.items.length;
+            renderMentionAutocomplete();
+            return;
+        }
+        if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            mentionState.activeIndex = (mentionState.activeIndex - 1 + mentionState.items.length) % mentionState.items.length;
+            renderMentionAutocomplete();
+            return;
+        }
+        if (e.key === 'Enter' || e.key === 'Tab') {
+            e.preventDefault();
+            applyMention(mentionState.activeIndex);
+            return;
+        }
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            closeMentionAutocomplete();
+            return;
+        }
+    }
+
     if (e.key === 'Enter' && messageInput.value.trim() && !messageInput.disabled) {
         socket.emit('chat message', { text: messageInput.value.trim() });
         messageInput.value = '';
+        closeMentionAutocomplete();
     }
 });
 
