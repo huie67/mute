@@ -164,11 +164,18 @@ function renderServerMembers(members) {
         const row = document.createElement('div');
         row.style.cssText = 'display:flex; align-items:center; gap:10px; padding:8px; background:var(--bg-input); border-radius:8px;';
 
+        const avatarWrap = document.createElement('div');
+        avatarWrap.style.cssText = 'position:relative; flex-shrink:0;';
         const avatar = document.createElement('img');
         avatar.src = m.avatar || `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(m.username)}`;
         avatar.alt = '';
-        avatar.style.cssText = 'width:34px; height:34px; border-radius:50%; object-fit:cover; flex-shrink:0;';
-        row.appendChild(avatar);
+        avatar.style.cssText = 'width:34px; height:34px; border-radius:50%; object-fit:cover; display:block;';
+        avatarWrap.appendChild(avatar);
+        const statusDot = document.createElement('span');
+        statusDot.title = m.online ? 'В сети' : 'Не в сети';
+        statusDot.style.cssText = `position:absolute; right:-1px; bottom:-1px; width:10px; height:10px; border-radius:50%; border:2px solid var(--bg-input); background:${m.online ? '#3ba55d' : '#6b7280'};`;
+        avatarWrap.appendChild(statusDot);
+        row.appendChild(avatarWrap);
 
         const info = document.createElement('div');
         info.style.cssText = 'flex:1; min-width:0; display:flex; flex-direction:column;';
@@ -176,12 +183,14 @@ function renderServerMembers(members) {
         nameEl.style.cssText = 'font-weight:600; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
         nameEl.textContent = m.username + (isSelf ? ' (вы)' : '');
         info.appendChild(nameEl);
-        if (m.isOwner || m.isAdmin) {
-            const roleEl = document.createElement('div');
-            roleEl.style.cssText = 'font-size:11px; color:var(--text-faint);';
-            roleEl.textContent = m.isOwner ? 'Создатель' : 'Модератор';
-            info.appendChild(roleEl);
-        }
+        const subParts = [];
+        if (m.isOwner) subParts.push('Создатель');
+        else if (m.isAdmin) subParts.push('Модератор');
+        subParts.push(m.online ? 'в сети' : 'не в сети');
+        const roleEl = document.createElement('div');
+        roleEl.style.cssText = 'font-size:11px; color:var(--text-faint);';
+        roleEl.textContent = subParts.join(' · ');
+        info.appendChild(roleEl);
         row.appendChild(info);
 
         if (iAmModerator && !m.isOwner && !isSelf) {
