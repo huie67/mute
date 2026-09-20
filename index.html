@@ -1742,6 +1742,66 @@
                     </div>
                     <span class="profile-hint">Свой звук вместо стандартного, когда кто-то выходит из голосового канала</span>
                 </div>
+                <div class="control-group">
+                    <label>Громкость звука мьюта: <span id="mute-sound-volume-value">50%</span></label>
+                    <input type="range" id="mute-sound-volume-slider" min="0" max="100" step="5" value="50">
+                </div>
+                <div class="control-group">
+                    <label>Звук мьюта микрофона</label>
+                    <div class="profile-hint" id="mute-sound-current-label">Стандартный звук</div>
+                    <div style="display:flex; gap:8px; margin-top:6px; flex-wrap: wrap;">
+                        <button class="btn-secondary" id="mute-sound-test-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Проверить</button>
+                        <label class="btn-secondary" for="mute-sound-file-input" style="font-size: 13px; padding: 6px 10px; cursor: pointer;">Загрузить свой звук…</label>
+                        <input type="file" id="mute-sound-file-input" accept="audio/*" style="display:none;">
+                        <button class="btn-secondary" id="mute-sound-reset-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Сбросить</button>
+                    </div>
+                    <span class="profile-hint">Играет и у вас, и у остальных в канале при включении/выключении вашего микрофона</span>
+                </div>
+                <div class="control-group">
+                    <label>Громкость звука дефена: <span id="deafen-sound-volume-value">50%</span></label>
+                    <input type="range" id="deafen-sound-volume-slider" min="0" max="100" step="5" value="50">
+                </div>
+                <div class="control-group">
+                    <label>Звук заглушения звука (дефен)</label>
+                    <div class="profile-hint" id="deafen-sound-current-label">Стандартный звук</div>
+                    <div style="display:flex; gap:8px; margin-top:6px; flex-wrap: wrap;">
+                        <button class="btn-secondary" id="deafen-sound-test-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Проверить</button>
+                        <label class="btn-secondary" for="deafen-sound-file-input" style="font-size: 13px; padding: 6px 10px; cursor: pointer;">Загрузить свой звук…</label>
+                        <input type="file" id="deafen-sound-file-input" accept="audio/*" style="display:none;">
+                        <button class="btn-secondary" id="deafen-sound-reset-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Сбросить</button>
+                    </div>
+                    <span class="profile-hint">Играет при включении/выключении наушников (когда вы перестаёте слышать остальных)</span>
+                </div>
+                <div class="control-group">
+                    <label>Громкость звука демонстрации: <span id="screenshare-sound-volume-value">50%</span></label>
+                    <input type="range" id="screenshare-sound-volume-slider" min="0" max="100" step="5" value="50">
+                </div>
+                <div class="control-group">
+                    <label>Звук демонстрации экрана / вебки</label>
+                    <div class="profile-hint" id="screenshare-sound-current-label">Стандартный звук</div>
+                    <div style="display:flex; gap:8px; margin-top:6px; flex-wrap: wrap;">
+                        <button class="btn-secondary" id="screenshare-sound-test-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Проверить</button>
+                        <label class="btn-secondary" for="screenshare-sound-file-input" style="font-size: 13px; padding: 6px 10px; cursor: pointer;">Загрузить свой звук…</label>
+                        <input type="file" id="screenshare-sound-file-input" accept="audio/*" style="display:none;">
+                        <button class="btn-secondary" id="screenshare-sound-reset-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Сбросить</button>
+                    </div>
+                    <span class="profile-hint">Играет при старте/остановке демонстрации экрана или веб-камеры — у вас и у остальных в канале</span>
+                </div>
+                <div class="control-group">
+                    <label>Громкость звука упоминания: <span id="mention-sound-volume-value">70%</span></label>
+                    <input type="range" id="mention-sound-volume-slider" min="0" max="100" step="5" value="70">
+                </div>
+                <div class="control-group">
+                    <label>Звук, когда вас упомянули (@ник)</label>
+                    <div class="profile-hint" id="mention-sound-current-label">Стандартный звук</div>
+                    <div style="display:flex; gap:8px; margin-top:6px; flex-wrap: wrap;">
+                        <button class="btn-secondary" id="mention-sound-test-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Проверить</button>
+                        <label class="btn-secondary" for="mention-sound-file-input" style="font-size: 13px; padding: 6px 10px; cursor: pointer;">Загрузить свой звук…</label>
+                        <input type="file" id="mention-sound-file-input" accept="audio/*" style="display:none;">
+                        <button class="btn-secondary" id="mention-sound-reset-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Сбросить</button>
+                    </div>
+                    <span class="profile-hint">Играет вместо обычного звука сообщения, когда кто-то отмечает вас через @ник в чате</span>
+                </div>
             </div>
 
             <div class="settings-tab-panel" data-tab-panel="video">
