@@ -875,6 +875,97 @@
             flex: 1;
         }
 
+        /* Единая тёмная тема для всех текстовых/парольных полей приложения — раньше
+           часть из них (например, поле ссылки на аватарку, поля создания сервера)
+           не попадали ни под один из более специфичных селекторов выше и оставались
+           белыми полями браузера по умолчанию. */
+        input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]) {
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 10px;
+            border-radius: var(--radius-sm);
+            outline: none;
+            font-size: 14px;
+            font-family: inherit;
+            transition: border-color 0.2s;
+        }
+        input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):focus {
+            border-color: var(--accent);
+        }
+        /* Автозаполнение браузера красит поле в жёлто-белый вне зависимости от CSS —
+           этот трюк с огромной внутренней тенью перекрашивает именно фон под тему. */
+        input:-webkit-autofill,
+        input:-webkit-autofill:hover,
+        input:-webkit-autofill:focus {
+            -webkit-box-shadow: 0 0 0px 1000px var(--bg-input) inset;
+            -webkit-text-fill-color: var(--text);
+            caret-color: var(--text);
+            transition: background-color 9999s ease-in-out 0s;
+        }
+
+        /* Скроллбар в цветах приложения (акцент на ползунке) вместо системного
+           серо-белого — применяется ко всем прокручиваемым областям: чат, список
+           видео, модальные окна. */
+        * {
+            scrollbar-width: thin;
+            scrollbar-color: var(--accent) var(--bg-raised);
+        }
+        *::-webkit-scrollbar {
+            width: 10px;
+            height: 10px;
+        }
+        *::-webkit-scrollbar-track {
+            background: var(--bg-raised);
+        }
+        *::-webkit-scrollbar-thumb {
+            background: var(--accent);
+            border-radius: 8px;
+            border: 2px solid var(--bg-raised);
+        }
+        *::-webkit-scrollbar-thumb:hover {
+            background: var(--accent-hover);
+        }
+
+        /* Вкладки в окне настроек (Профиль / Микрофон / Звук / Видео) */
+        .settings-modal-card {
+            width: 460px;
+        }
+        .settings-tabs {
+            display: flex;
+            gap: 4px;
+            background: var(--bg-input);
+            padding: 4px;
+            border-radius: var(--radius-sm);
+            flex-shrink: 0;
+        }
+        .settings-tab {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            font-size: 13px;
+            font-weight: 500;
+            padding: 8px 6px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background 0.15s, color 0.15s;
+            font-family: inherit;
+        }
+        .settings-tab:hover { color: var(--text); }
+        .settings-tab.active {
+            background: var(--accent);
+            color: #fff;
+        }
+        .settings-tab-panel {
+            display: none;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .settings-tab-panel.active {
+            display: flex;
+        }
+
         .btn-file-label {
             background: var(--bg-input);
             border: 1px solid var(--border);
@@ -1199,123 +1290,131 @@
     </div>
 
     <div id="settings-modal" class="modal-overlay">
-        <div class="modal-card fade-in">
-            <h3>Профиль</h3>
-            <div class="profile-row">
-                <img id="profile-avatar-preview" class="profile-avatar-preview" src="" alt="Аватар">
-                <div class="profile-avatar-controls">
-                    <div class="avatar-source-row">
-                        <input type="text" id="profile-avatar-url" placeholder="Ссылка на аватарку">
-                        <label class="btn-file-label" for="profile-avatar-file">Файл…</label>
-                        <input type="file" id="profile-avatar-file" accept="image/*" style="display:none">
+        <div class="modal-card fade-in settings-modal-card">
+            <div class="settings-tabs" id="settings-tabs">
+                <button type="button" class="settings-tab active" data-tab="profile">Профиль</button>
+                <button type="button" class="settings-tab" data-tab="mic">Микрофон</button>
+                <button type="button" class="settings-tab" data-tab="sound">Звук</button>
+                <button type="button" class="settings-tab" data-tab="video">Видео</button>
+            </div>
+
+            <div class="settings-tab-panel active" data-tab-panel="profile">
+                <div class="profile-row">
+                    <img id="profile-avatar-preview" class="profile-avatar-preview" src="" alt="Аватар">
+                    <div class="profile-avatar-controls">
+                        <div class="avatar-source-row">
+                            <input type="text" id="profile-avatar-url" placeholder="Ссылка на аватарку">
+                            <label class="btn-file-label" for="profile-avatar-file">Файл…</label>
+                            <input type="file" id="profile-avatar-file" accept="image/*" style="display:none">
+                        </div>
+                        <span class="profile-hint">Можно вставить ссылку или загрузить файл — сработает то, что укажете последним</span>
                     </div>
-                    <span class="profile-hint">Можно вставить ссылку или загрузить файл — сработает то, что укажете последним</span>
+                </div>
+                <div class="control-group">
+                    <label>Никнейм</label>
+                    <input type="text" id="profile-username">
+                </div>
+                <button class="btn-primary" id="save-profile-btn">Сохранить профиль</button>
+                <button class="btn-secondary" id="logout-btn" style="font-size: 13px; padding: 8px;">Выйти из профиля</button>
+            </div>
+
+            <div class="settings-tab-panel" data-tab-panel="mic">
+                <div class="control-group">
+                    <label>Микрофон</label>
+                    <select id="mic-select"></select>
+                </div>
+                <div class="control-group">
+                    <label>Громкость своего микрофона: <span id="mic-volume-value">100%</span></label>
+                    <input type="range" id="mic-volume-slider" min="0" max="200" step="5" value="100">
+                    <span class="profile-hint">Усиливает или приглушает ваш голос перед отправкой собеседникам</span>
+                </div>
+                <div class="control-group">
+                    <label>Чувствительность микрофона (Тест уровня)</label>
+                    <div class="meter-bar">
+                        <div id="mic-meter"></div>
+                        <div id="threshold-indicator"></div>
+                    </div>
+                    <span class="profile-hint" id="gate-debug-status">Уровень: — дБ · Гейт: —</span>
+                </div>
+                <div class="control-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="mic-monitor-check"> Слышать себя (проверка микрофона)
+                    </label>
+                    <span class="profile-hint">Включает микрофон в динамики, чтобы услышать, как вас слышат другие. Используйте наушники — иначе будет эхо/свист</span>
+                </div>
+                <div class="control-group">
+                    <label>Порог срабатывания (Gate): <span id="threshold-value">-45 дБ</span></label>
+                    <input type="range" id="threshold-slider" min="-70" max="-10" step="1" value="-45">
+                    <span class="profile-hint">Микрофон отключается, когда громкость ниже этого уровня — так фон и шумы не летят в чат</span>
+                </div>
+                <div class="control-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="gate-enabled-check" checked> Автоматическая активация микрофона (Voice Gate)
+                    </label>
+                </div>
+                <div class="control-group">
+                    <label>Задержка закрытия гейта: <span id="gate-hangover-value">300 мс</span></label>
+                    <input type="range" id="gate-hangover-slider" min="50" max="1500" step="50" value="300">
+                    <span class="profile-hint">Сколько микрофон остаётся включённым после того, как вы замолчали, прежде чем гейт закроется снова. Больше — меньше режет окончания слов, меньше — быстрее отсекает тишину</span>
+                </div>
+                <div class="control-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="noise-suppression-check" checked> Базовое шумоподавление (браузер)
+                    </label>
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="echo-cancellation-check" checked> Подавление эха (Echo Cancellation)
+                    </label>
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="agc-check" checked> Автоматическая регулировка усиления (AGC)
+                    </label>
                 </div>
             </div>
-            <div class="control-group">
-                <label>Никнейм</label>
-                <input type="text" id="profile-username">
-            </div>
-            <button class="btn-primary" id="save-profile-btn">Сохранить профиль</button>
-            <button class="btn-secondary" id="logout-btn" style="font-size: 13px; padding: 8px;">Выйти из профиля</button>
 
-            <hr class="modal-section-divider">
-
-            <h3>Настройки звука</h3>
-            <div class="control-group">
-                <label>Микрофон</label>
-                <select id="mic-select"></select>
-            </div>
-            <div class="control-group">
-                <label>Громкость своего микрофона: <span id="mic-volume-value">100%</span></label>
-                <input type="range" id="mic-volume-slider" min="0" max="200" step="5" value="100">
-                <span class="profile-hint">Усиливает или приглушает ваш голос перед отправкой собеседникам</span>
-            </div>
-            <div class="control-group">
-                <label>Чувствительность микрофона (Тест уровня)</label>
-                <div class="meter-bar">
-                    <div id="mic-meter"></div>
-                    <div id="threshold-indicator"></div>
+            <div class="settings-tab-panel" data-tab-panel="sound">
+                <div class="control-group">
+                    <label>Громкость звука сообщений: <span id="message-sound-volume-value">50%</span></label>
+                    <input type="range" id="message-sound-volume-slider" min="0" max="100" step="5" value="50">
                 </div>
-                <span class="profile-hint" id="gate-debug-status">Уровень: — дБ · Гейт: —</span>
-            </div>
-            <div class="control-group">
-                <label class="checkbox-label">
-                    <input type="checkbox" id="mic-monitor-check"> Слышать себя (проверка микрофона)
-                </label>
-                <span class="profile-hint">Включает микрофон в динамики, чтобы услышать, как вас слышат другие. Используйте наушники — иначе будет эхо/свист</span>
-            </div>
-            <div class="control-group">
-                <label>Порог срабатывания (Gate): <span id="threshold-value">-45 дБ</span></label>
-                <input type="range" id="threshold-slider" min="-70" max="-10" step="1" value="-45">
-                <span class="profile-hint">Микрофон отключается, когда громкость ниже этого уровня — так фон и шумы не летят в чат</span>
-            </div>
-            <div class="control-group">
-                <label class="checkbox-label">
-                    <input type="checkbox" id="gate-enabled-check" checked> Автоматическая активация микрофона (Voice Gate)
-                </label>
-            </div>
-            <div class="control-group">
-                <label>Задержка закрытия гейта: <span id="gate-hangover-value">300 мс</span></label>
-                <input type="range" id="gate-hangover-slider" min="50" max="1500" step="50" value="300">
-                <span class="profile-hint">Сколько микрофон остаётся включённым после того, как вы замолчали, прежде чем гейт закроется снова. Больше — меньше режет окончания слов, меньше — быстрее отсекает тишину</span>
-            </div>
-            <div class="control-group">
-                <label class="checkbox-label">
-                    <input type="checkbox" id="noise-suppression-check" checked> Базовое шумоподавление (браузер)
-                </label>
-                <label class="checkbox-label">
-                    <input type="checkbox" id="echo-cancellation-check" checked> Подавление эха (Echo Cancellation)
-                </label>
-                <label class="checkbox-label">
-                    <input type="checkbox" id="agc-check" checked> Автоматическая регулировка усиления (AGC)
-                </label>
-            </div>
-            <hr class="modal-section-divider">
-
-            <h3>Уведомления</h3>
-            <div class="control-group">
-                <label>Громкость звука сообщений: <span id="message-sound-volume-value">50%</span></label>
-                <input type="range" id="message-sound-volume-slider" min="0" max="100" step="5" value="50">
-            </div>
-            <div class="control-group">
-                <label>Звук сообщения</label>
-                <div class="profile-hint" id="message-sound-current-label">Стандартный звук</div>
-                <div style="display:flex; gap:8px; margin-top:6px; flex-wrap: wrap;">
-                    <button class="btn-secondary" id="message-sound-test-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Проверить</button>
-                    <label class="btn-secondary" for="message-sound-file-input" style="font-size: 13px; padding: 6px 10px; cursor: pointer;">Загрузить свой звук…</label>
-                    <input type="file" id="message-sound-file-input" accept="audio/*" style="display:none;">
-                    <button class="btn-secondary" id="message-sound-reset-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Сбросить</button>
+                <div class="control-group">
+                    <label>Звук сообщения</label>
+                    <div class="profile-hint" id="message-sound-current-label">Стандартный звук</div>
+                    <div style="display:flex; gap:8px; margin-top:6px; flex-wrap: wrap;">
+                        <button class="btn-secondary" id="message-sound-test-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Проверить</button>
+                        <label class="btn-secondary" for="message-sound-file-input" style="font-size: 13px; padding: 6px 10px; cursor: pointer;">Загрузить свой звук…</label>
+                        <input type="file" id="message-sound-file-input" accept="audio/*" style="display:none;">
+                        <button class="btn-secondary" id="message-sound-reset-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Сбросить</button>
+                    </div>
+                    <span class="profile-hint">Можно загрузить свой mp3/wav/ogg вместо стандартного звука нового сообщения. Файл сохраняется только у вас в браузере</span>
                 </div>
-                <span class="profile-hint">Можно загрузить свой mp3/wav/ogg вместо стандартного звука нового сообщения. Файл сохраняется только у вас в браузере</span>
             </div>
-            <hr class="modal-section-divider">
 
-            <h3>Настройки видео</h3>
-            <div class="control-group">
-                <label>Качество демонстрации экрана</label>
-                <select id="screen-quality-select">
-                    <option value="720p30">720p, 30 FPS (меньше нагрузка на CPU)</option>
-                    <option value="720p60">720p, 60 FPS</option>
-                    <option value="1080p30">1080p (Full HD), 30 FPS</option>
-                    <option value="1080p60">1080p (Full HD), 60 FPS (максимум)</option>
-                </select>
-                <span class="profile-hint">Чем выше разрешение и FPS, тем плавнее картинка у собеседников, но тем сильнее нагрузка на процессор при кодировании видео. Применяется при следующем запуске демонстрации экрана</span>
-            </div>
-            <div class="control-group">
-                <label>Качество камеры</label>
-                <select id="camera-quality-select">
-                    <option value="720p30">720p, 30 FPS (меньше нагрузка на CPU)</option>
-                    <option value="720p60">720p, 60 FPS</option>
-                    <option value="1080p30">1080p (Full HD), 30 FPS</option>
-                    <option value="1080p60">1080p (Full HD), 60 FPS (максимум)</option>
-                </select>
-                <span class="profile-hint">Применяется при следующем включении камеры</span>
+            <div class="settings-tab-panel" data-tab-panel="video">
+                <div class="control-group">
+                    <label>Качество демонстрации экрана</label>
+                    <select id="screen-quality-select">
+                        <option value="720p30">720p, 30 FPS (меньше нагрузка на CPU)</option>
+                        <option value="720p60">720p, 60 FPS</option>
+                        <option value="1080p30">1080p (Full HD), 30 FPS</option>
+                        <option value="1080p60">1080p (Full HD), 60 FPS (максимум)</option>
+                    </select>
+                    <span class="profile-hint">Чем выше разрешение и FPS, тем плавнее картинка у собеседников, но тем сильнее нагрузка на процессор при кодировании видео. Применяется при следующем запуске демонстрации экрана</span>
+                </div>
+                <div class="control-group">
+                    <label>Качество камеры</label>
+                    <select id="camera-quality-select">
+                        <option value="720p30">720p, 30 FPS (меньше нагрузка на CPU)</option>
+                        <option value="720p60">720p, 60 FPS</option>
+                        <option value="1080p30">1080p (Full HD), 30 FPS</option>
+                        <option value="1080p60">1080p (Full HD), 60 FPS (максимум)</option>
+                    </select>
+                    <span class="profile-hint">Применяется при следующем включении камеры</span>
+                </div>
             </div>
 
             <button class="btn-primary" id="close-settings" style="margin-top: 10px;">Закрыть</button>
         </div>
     </div>
+
 
     <!-- Полноэкранный просмотр фото из чата -->
     <div id="image-lightbox">

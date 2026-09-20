@@ -2394,7 +2394,19 @@ settingsBtn.addEventListener('click', () => {
     profileAvatarUrlInput.value = currentUser.avatar;
     profileAvatarPreview.src = currentUser.avatar;
     pendingAvatarFile = null;
+    switchSettingsTab('profile');
     settingsModal.style.display = 'flex';
+});
+
+// ---------- Вкладки в окне настроек ----------
+const settingsTabButtons = document.querySelectorAll('.settings-tab');
+const settingsTabPanels = document.querySelectorAll('.settings-tab-panel');
+function switchSettingsTab(tabName) {
+    settingsTabButtons.forEach(btn => btn.classList.toggle('active', btn.dataset.tab === tabName));
+    settingsTabPanels.forEach(panel => panel.classList.toggle('active', panel.dataset.tabPanel === tabName));
+}
+settingsTabButtons.forEach(btn => {
+    btn.addEventListener('click', () => switchSettingsTab(btn.dataset.tab));
 });
 
 closeSettings.addEventListener('click', () => {
