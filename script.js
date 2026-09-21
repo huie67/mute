@@ -734,7 +734,22 @@ function saveRemoteVolume(username, percent) {
     if (thresholdIndicator) thresholdIndicator.style.left = `${((gateThreshold + 70) / 60) * 100}%`;
     if (micVolumeSlider) micVolumeSlider.value = Math.round(micVolume * 100);
     if (micVolumeValueDisplay) micVolumeValueDisplay.innerText = `${Math.round(micVolume * 100)}%`;
+    updateGateControlsDisabled();
 })();
+
+// Порог и задержка гейта имеют смысл только когда сам гейт включён — при
+// выключенном чекбоксе визуально гасим эти два контрола (см. .control-group-disabled)
+// и выставляем им disabled, а не просто прячем, чтобы было видно, что они есть,
+// но сейчас не участвуют в работе.
+function updateGateControlsDisabled() {
+    const disabled = gateEnabledCheck ? !gateEnabledCheck.checked : false;
+    if (thresholdSlider) thresholdSlider.disabled = disabled;
+    if (gateHangoverSlider) gateHangoverSlider.disabled = disabled;
+    const thresholdGroup = document.getElementById('gate-threshold-group');
+    const hangoverGroup = document.getElementById('gate-hangover-group');
+    if (thresholdGroup) thresholdGroup.classList.toggle('control-group-disabled', disabled);
+    if (hangoverGroup) hangoverGroup.classList.toggle('control-group-disabled', disabled);
+}
 
 // ---------- Звуковые уведомления (сообщение / вход / выход из комнаты) ----------
 // Все три звука сделаны из одного и того же исходного колокольчика (mp3, который
@@ -2979,6 +2994,7 @@ gateEnabledCheck.addEventListener('change', (e) => {
         }
         gateOpen = true;
     }
+    updateGateControlsDisabled();
     applyGateToMicTrack();
     saveAudioSettings({ gateEnabled });
 });

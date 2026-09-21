@@ -895,6 +895,27 @@
             cursor: pointer;
         }
 
+        /* Группировка настроек микрофона по смыслу (устройство / уровень / гейт /
+           обработка), чтобы длинный список карточек не выглядел одной сплошной стеной. */
+        .settings-section {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .settings-section-title {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: var(--text-faint);
+            padding: 0 2px;
+        }
+        .settings-section-title svg { flex-shrink: 0; }
+        .control-group-disabled { opacity: 0.4; }
+
         .meter-bar {
             height: 6px;
             background: var(--bg-input);
@@ -1734,53 +1755,76 @@
             </div>
 
             <div class="settings-tab-panel" data-tab-panel="mic">
-                <div class="control-group">
-                    <label>Микрофон</label>
-                    <select id="mic-select"></select>
-                </div>
-                <div class="control-group">
-                    <label>Громкость своего микрофона: <span id="mic-volume-value">100%</span></label>
-                    <input type="range" id="mic-volume-slider" min="0" max="200" step="5" value="100">
-                </div>
-                <div class="control-group">
-                    <label>Чувствительность микрофона (Тест уровня)</label>
-                    <div class="meter-bar">
-                        <div id="mic-meter"></div>
-                        <div id="threshold-indicator"></div>
+                <div class="settings-section">
+                    <div class="settings-section-title">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"></rect><path d="M5 10a7 7 0 0 0 14 0"></path><line x1="12" y1="19" x2="12" y2="22"></line><line x1="8" y1="22" x2="16" y2="22"></line></svg>
+                        Устройство
                     </div>
-                    <span class="profile-hint" id="gate-debug-status">Уровень: — дБ · Гейт: —</span>
+                    <div class="control-group">
+                        <label>Микрофон</label>
+                        <select id="mic-select"></select>
+                    </div>
+                    <div class="control-group">
+                        <label>Громкость: <span id="mic-volume-value">100%</span></label>
+                        <input type="range" id="mic-volume-slider" min="0" max="200" step="5" value="100">
+                    </div>
                 </div>
-                <div class="control-group">
-                    <label class="checkbox-label">
-                        <input type="checkbox" id="mic-monitor-check"> Слышать себя (проверка микрофона)
-                    </label>
-                    <span class="profile-hint">Нужны наушники — иначе эхо</span>
+
+                <div class="settings-section">
+                    <div class="settings-section-title">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+                        Уровень сигнала
+                    </div>
+                    <div class="control-group">
+                        <div class="meter-bar">
+                            <div id="mic-meter"></div>
+                            <div id="threshold-indicator"></div>
+                        </div>
+                        <span class="profile-hint" id="gate-debug-status">Уровень: — дБ · Гейт: —</span>
+                    </div>
+                    <div class="control-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="mic-monitor-check"> Слышать себя (только в наушниках)
+                        </label>
+                    </div>
                 </div>
-                <div class="control-group">
-                    <label>Порог срабатывания (Gate): <span id="threshold-value">-45 дБ</span></label>
-                    <input type="range" id="threshold-slider" min="-70" max="-10" step="1" value="-45">
-                    <span class="profile-hint">Отсекает тихий фон</span>
+
+                <div class="settings-section">
+                    <div class="settings-section-title">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg>
+                        Автоактивация (Voice Gate)
+                    </div>
+                    <div class="control-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="gate-enabled-check" checked> Включена
+                        </label>
+                    </div>
+                    <div class="control-group" id="gate-threshold-group">
+                        <label>Порог: <span id="threshold-value">-45 дБ</span></label>
+                        <input type="range" id="threshold-slider" min="-70" max="-10" step="1" value="-45">
+                    </div>
+                    <div class="control-group" id="gate-hangover-group">
+                        <label>Задержка закрытия: <span id="gate-hangover-value">300 мс</span></label>
+                        <input type="range" id="gate-hangover-slider" min="50" max="1500" step="50" value="300">
+                    </div>
                 </div>
-                <div class="control-group">
-                    <label class="checkbox-label">
-                        <input type="checkbox" id="gate-enabled-check" checked> Автоматическая активация микрофона (Voice Gate)
-                    </label>
-                </div>
-                <div class="control-group">
-                    <label>Задержка закрытия гейта: <span id="gate-hangover-value">300 мс</span></label>
-                    <input type="range" id="gate-hangover-slider" min="50" max="1500" step="50" value="300">
-                    <span class="profile-hint">Задержка перед отключением</span>
-                </div>
-                <div class="control-group">
-                    <label class="checkbox-label">
-                        <input type="checkbox" id="noise-suppression-check" checked> Базовое шумоподавление (браузер)
-                    </label>
-                    <label class="checkbox-label">
-                        <input type="checkbox" id="echo-cancellation-check" checked> Подавление эха (Echo Cancellation)
-                    </label>
-                    <label class="checkbox-label">
-                        <input type="checkbox" id="agc-check" checked> Автоматическая регулировка усиления (AGC)
-                    </label>
+
+                <div class="settings-section">
+                    <div class="settings-section-title">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"></line><line x1="4" y1="10" x2="4" y2="3"></line><line x1="12" y1="21" x2="12" y2="12"></line><line x1="12" y1="8" x2="12" y2="3"></line><line x1="20" y1="21" x2="20" y2="16"></line><line x1="20" y1="12" x2="20" y2="3"></line><line x1="1" y1="14" x2="7" y2="14"></line><line x1="9" y1="8" x2="15" y2="8"></line><line x1="17" y1="16" x2="23" y2="16"></line></svg>
+                        Обработка сигнала
+                    </div>
+                    <div class="control-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="noise-suppression-check" checked> Шумоподавление
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="echo-cancellation-check" checked> Подавление эха
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="agc-check" checked> Автоусиление (AGC)
+                        </label>
+                    </div>
                 </div>
             </div>
 
