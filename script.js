@@ -1696,13 +1696,20 @@ async function loadIceServersConfig() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         if (data && data.configured && Array.isArray(data.iceServers) && data.iceServers.length) {
-            console.log('[ICE] Используются TURN/STUN-серверы из dashboard.metered.ca');
-            return { iceServers: data.iceServers, sdpSemantics: 'unified-plan' };
+            console.log('[ICE] Используются TURN/STUN-серверы из dashboard.metered.ca:',
+                data.iceServers.map(s => Array.isArray(s.urls) ? s.urls.join(',') : s.urls).join(' | '));
+            // Публичный STUN добавляем на всякий случай — он бесплатный и не расходует трафик TURN.
+            const hasGoogleStun = data.iceServers.some(s => String(s.urls).includes('stun.l.google.com'));
+            const servers = hasGoogleStun ? data.iceServers : [...data.iceServers, { urls: 'stun:stun.l.google.com:19302' }];
+            return { iceServers: servers, sdpSemantics: 'unified-plan', iceCandidatePoolSize: 2 };
         }
+        console.warn('[ICE] Сервер сообщил, что Metered НЕ настроен (нет METERED_APP_NAME / METERED_API_KEY, ' +
+            'либо запрос к Metered упал — смотри логи сервера). Используем общий openrelayproject — ' +
+            'он часто не работает, и участники из разных сетей могут не слышать друг друга.');
     } catch (err) {
         console.warn('[ICE] Не удалось получить ICE-серверы с сервера, используем запасной список:', err);
     }
-    return { iceServers: FALLBACK_ICE_SERVERS, sdpSemantics: 'unified-plan' };
+    return { iceServers: FALLBACK_ICE_SERVERS, sdpSemantics: 'unified-plan', iceCandidatePoolSize: 2 };
 }
 
 async function initPeer() {
@@ -1747,6 +1754,33 @@ async function initPeer() {
 
     myPeer.on('error', (err) => {
         console.error('[Ошибка] PeerJS:', err);
+
+        // Собеседник в этот момент не зарегистрирован на сигнальном сервере PeerJS
+        // (переподключается, вкладка засыпает и т.п.). Заготовка звонка при этом остаётся
+        // в activeCalls в состоянии ICE "new" НАВСЕГДА — браузер не считает это ошибкой,
+        // 'failed' никогда не наступает, и 'room users' больше не пытается перезвонить.
+        // Убираем такой звонок сразу и планируем повтор.
+        if (err && err.type === 'peer-unavailable') {
+            const m = /peer\s+(\S+)/i.exec(String(err.message || ''));
+            const pid = m && m[1];
+            const stuck = pid && activeCalls[pid];
+            if (stuck && !isIceConnected(stuck.peerConnection)) {
+                stuck.__recovered = true;
+                try { stuck.close(); } catch (e) {}
+                if (activeCalls[pid] === stuck) delete activeCalls[pid];
+                scheduleCallRetry(pid);
+            }
+        }
+
+        // Сигнальное соединение PeerJS отвалилось — без него не проходят ни входящие, ни исходящие звонки.
+        if (err && ['network', 'server-error', 'socket-error', 'socket-closed'].includes(err.type)) {
+            setTimeout(() => {
+                if (myPeer && !myPeer.destroyed && myPeer.disconnected) {
+                    console.warn('[Peer] Повторная попытка подключиться к сигнальному серверу…');
+                    try { myPeer.reconnect(); } catch (e) {}
+                }
+            }, 3000);
+        }
     });
 
     // PeerJS общается со своим сигнальным сервером через отдельное WebSocket-соединение
@@ -2712,10 +2746,7 @@ socket.on('room users', (usersInRoom, room) => {
         // через myPeer.on('call'), так что на каждую пару гарантированно ровно одна
         // связь.
         if (peerId !== myPeerId && !activeCalls[peerId] && myPeerId < peerId) {
-            const call = myPeer.call(peerId, localMediaStream, {
-                metadata: { username: currentUser.username, avatar: currentUser.avatar }
-            });
-            handleIncomingCall(call);
+            startCall(peerId);
         }
         renderRemoteVideoState(peerId);
     }
@@ -2816,76 +2847,129 @@ function attachRemoteStream(stream, peerId) {
 // неудачного ICE-соединения — чтобы не долбить бесконечно, если человек правда
 // недоступен (закрыл вкладку и т.п.), а не просто временный сбой сети/TURN.
 const callRetryCount = {};
-const MAX_CALL_RETRIES = 3;
+const MAX_CALL_RETRIES = 8;
+// Если за это время соединение так и не стало 'connected' — считаем звонок неудачным, не дожидаясь,
+// пока браузер сам объявит 'failed' (а он может не объявить никогда — см. peer-unavailable).
+const CALL_CONNECT_TIMEOUT_MS = 15000;
+
+function isIceConnected(pc) {
+    return !!pc && (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed');
+}
+
+// Исходящий звонок. Звонит только сторона с меньшим peerId (см. 'room users').
+function startCall(peerId) {
+    if (!myPeer || myPeer.destroyed || !localMediaStream) { scheduleCallRetry(peerId); return; }
+    const call = myPeer.call(peerId, localMediaStream, {
+        metadata: { username: currentUser.username, avatar: currentUser.avatar }
+    });
+    // PeerJS возвращает undefined, если сигнальное соединение сейчас разорвано.
+    if (!call) { scheduleCallRetry(peerId); return; }
+    handleIncomingCall(call);
+}
+
+function scheduleCallRetry(peerId) {
+    // Перезваниваем только та сторона, что и должна звонить этой паре
+    // (детерминированно, по сравнению peerId — см. 'room users'), иначе
+    // опять получим двойное соединение.
+    if (!(myPeerId < peerId) || !currentUser.room) return;
+    const attempts = (callRetryCount[peerId] || 0) + 1;
+    callRetryCount[peerId] = attempts;
+    if (attempts > MAX_CALL_RETRIES) {
+        console.warn(`[ICE] Исчерпан лимит попыток дозвониться до ${peerId}`);
+        return;
+    }
+    setTimeout(() => {
+        if (activeCalls[peerId] || !currentUser.room || !connectedUsers[peerId]) return;
+        startCall(peerId);
+    }, Math.min(1000 * attempts, 8000));
+}
+
+// После установления связи пишем в консоль, ЧЕРЕЗ ЧТО именно она идёт:
+// host/srflx — напрямую, relay — через TURN. Если у кого-то relay не встречается
+// никогда, а связь с другой сетью не поднимается — TURN не работает.
+async function logSelectedCandidatePair(pc, peerId) {
+    try {
+        const stats = await pc.getStats();
+        let pair = null;
+        stats.forEach(r => {
+            if (r.type === 'transport' && r.selectedCandidatePairId) pair = stats.get(r.selectedCandidatePairId);
+        });
+        if (!pair) {
+            stats.forEach(r => {
+                if (r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded') pair = r;
+            });
+        }
+        if (!pair) return;
+        const local = stats.get(pair.localCandidateId) || {};
+        const remote = stats.get(pair.remoteCandidateId) || {};
+        console.log(`[ICE] Связь с ${peerId} установлена: у меня=${local.candidateType}/${local.protocol}, ` +
+            `у собеседника=${remote.candidateType}/${remote.protocol}` +
+            (local.candidateType === 'relay' || remote.candidateType === 'relay' ? '  (через TURN)' : ''));
+    } catch (e) { /* ignore */ }
+}
 
 // Раньше, если ICE-соединение для конкретного звонка не устанавливалось (или
 // обрывалось из-за временных проблем с TURN/сетью), звонок так и оставался
 // висеть в activeCalls "навечно" — событие 'room users' видело, что запись уже
-// есть, и никогда не пробовало перезвонить. Из-за этого один человек мог
-// намертво "выпасть" из разговора (не слышит и не слышен) до тех пор, пока
-// кто-то не выйдет и не зайдёт в канал заново. Теперь при провале ICE звонок
-// закрывается и, если мы — инициирующая сторона для этой пары (см. сравнение
-// peerId в обработчике 'room users'), пробуем позвонить снова через паузу.
+// есть, и никогда не пробовало перезвонить. Из-за этого часть участников
+// оказывалась отрезанной друг от друга (например, 3 человека слышат друг друга,
+// а ещё двое — только друг друга). Теперь при провале ICE (или если связь не
+// поднялась за CALL_CONNECT_TIMEOUT_MS) звонок закрывается и, если мы —
+// инициирующая сторона для этой пары, пробуем позвонить снова.
 function watchCallConnection(call, peerId) {
     const pc = call.peerConnection;
     if (!pc) return;
 
-    // Диагностика: показывает, КАКОЙ именно сервер (STUN/TURN) не ответил и почему —
-    // без этого из одних только "failed"/"disconnected" непонятно, сама сеть
-    // блокирует WebRTC-трафик, или конкретно наши TURN-сервера сейчас недоступны/
-    // отклоняют логин (например, если бесплатные креды перестали работать).
+    // Диагностика: показывает, КАКОЙ именно сервер (STUN/TURN) не ответил и почему.
     pc.addEventListener('icecandidateerror', (e) => {
         console.warn(`[ICE candidate error] с ${peerId}: url=${e.url} код=${e.errorCode} текст="${e.errorText}"`);
     });
+
+    const recover = async (reason) => {
+        if (call.__recovered) return;
+        // Уже есть ДРУГОЙ (новый) звонок с этим человеком — старый таймер не должен его трогать.
+        // Раньше запоздавший таймер старого звонка удалял запись НОВОГО звонка из activeCalls
+        // и его аудио-узлы, из-за чего возникали дубли соединений и пропадал звук.
+        if (activeCalls[peerId] && activeCalls[peerId] !== call) return;
+        if (isIceConnected(pc)) return;
+        call.__recovered = true;
+
+        try {
+            const stats = await pc.getStats();
+            const cands = [];
+            stats.forEach(r => {
+                if (r.type === 'local-candidate' || r.type === 'remote-candidate') {
+                    cands.push(`${r.type}:${r.candidateType}${r.protocol ? '/' + r.protocol : ''}`);
+                }
+            });
+            console.warn(`[ICE] Кандидаты для ${peerId}:`, cands.join(', ') || '(нет ни одного)');
+        } catch (e) { /* ignore */ }
+        console.warn(`[ICE] Соединение с ${peerId} не поднялось (${reason}, state=${pc.iceConnectionState}), переустанавливаем звонок`);
+
+        // Повторная проверка после await: за это время могли создать новый звонок.
+        if (activeCalls[peerId] && activeCalls[peerId] !== call) return;
+        try { call.close(); } catch (e) {}
+        if (activeCalls[peerId] === call) delete activeCalls[peerId];
+        cleanupRemoteAudio(peerId);
+        delete remoteStreamsByPeer[peerId];
+        const el = document.getElementById(`video-${peerId}`);
+        if (el) el.remove();
+
+        scheduleCallRetry(peerId);
+    };
+
+    // Сторожевой таймер: связь должна подняться за разумное время.
+    setTimeout(() => recover('таймаут установки связи'), CALL_CONNECT_TIMEOUT_MS);
 
     pc.addEventListener('iceconnectionstatechange', () => {
         const state = pc.iceConnectionState;
         console.log(`[ICE] Состояние соединения с ${peerId}:`, state);
         if (state === 'failed' || state === 'disconnected') {
-            // Даём немного времени на самовосстановление (ICE restart браузера) —
-            // прежде чем считать связь окончательно потерянной.
-            setTimeout(async () => {
-                if (!pc || pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') return;
-                // Перед закрытием звонка — печатаем, какие кандидаты вообще удалось
-                // собрать (host/srflx/relay), чтобы видеть, дошло ли дело до TURN-relay
-                // вообще, или соединение не проходит даже STUN.
-                try {
-                    const stats = await pc.getStats();
-                    const cands = [];
-                    stats.forEach(r => {
-                        if (r.type === 'local-candidate' || r.type === 'remote-candidate') {
-                            cands.push(`${r.type}:${r.candidateType}${r.protocol ? '/' + r.protocol : ''}`);
-                        }
-                    });
-                    console.warn(`[ICE] Кандидаты для ${peerId}:`, cands.join(', ') || '(нет ни одного)');
-                } catch (e) { /* ignore */ }
-                console.warn(`[ICE] Соединение с ${peerId} не восстановилось, переустанавливаем звонок`);
-                try { call.close(); } catch (e) {}
-                delete activeCalls[peerId];
-                cleanupRemoteAudio(peerId);
-                delete remoteStreamsByPeer[peerId];
-                const el = document.getElementById(`video-${peerId}`);
-                if (el) el.remove();
-
-                // Перезваниваем только та сторона, что и должна звонить этой паре
-                // (детерминированно, по сравнению peerId — см. 'room users'), иначе
-                // опять получим двойное соединение.
-                if (myPeerId < peerId && currentUser.room) {
-                    const attempts = (callRetryCount[peerId] || 0) + 1;
-                    callRetryCount[peerId] = attempts;
-                    if (attempts <= MAX_CALL_RETRIES) {
-                        setTimeout(() => {
-                            if (activeCalls[peerId] || !currentUser.room) return;
-                            const newCall = myPeer.call(peerId, localMediaStream, {
-                                metadata: { username: currentUser.username, avatar: currentUser.avatar }
-                            });
-                            handleIncomingCall(newCall);
-                        }, 1000);
-                    }
-                }
-            }, 4000);
+            // Даём немного времени на самовосстановление (ICE restart браузера).
+            setTimeout(() => recover(`ICE ${state}`), 4000);
         } else if (state === 'connected' || state === 'completed') {
             callRetryCount[peerId] = 0;
+            logSelectedCandidatePair(pc, peerId);
         }
     });
 }
@@ -2910,6 +2994,9 @@ function handleIncomingCall(call) {
     });
 
     call.on('close', () => {
+        // Если этот звонок уже заменён новым — его закрытие не должно ломать новый
+        // (иначе пропадали <audio>-элемент и узлы громкости живого соединения).
+        if (activeCalls[call.peer] && activeCalls[call.peer] !== call) return;
         const wrap = document.getElementById(`video-${call.peer}`);
         if (wrap) wrap.remove();
         delete activeCalls[call.peer];
@@ -3586,6 +3673,9 @@ function runKeybindAction(id) {
 }
 
 function keyEventToCombo(e) {
+    // У синтетических keydown (например, когда Chrome подставляет значение автозаполнения
+    // в поле ввода) поля e.code нет вообще — раньше это ронуло .replace() ниже.
+    if (!e || typeof e.code !== 'string' || !e.code) return null;
     if (/^(Control|Shift|Alt|Meta)(Left|Right)$/.test(e.code)) return null; // только модификатор
     const mods = [];
     if (e.ctrlKey) mods.push('Control');
@@ -4495,3 +4585,17 @@ document.addEventListener('copy', (e) => {
         e.preventDefault();
     }
 });
+
+
+// Если картинка аватарки не грузится (например, Cloudinary отвечает 401/404, файл удалён),
+// подставляем сгенерированный identicon вместо «битой» картинки.
+document.addEventListener('error', (e) => {
+    const img = e.target;
+    if (!img || img.tagName !== 'IMG' || !img.classList.contains('user-avatar')) return;
+    if (img.dataset.avatarFallback) return; // не зацикливаться
+    img.dataset.avatarFallback = '1';
+    const row = img.closest('.voice-user-row, .member-row, .message, [data-username]');
+    const nameEl = row && row.querySelector('.voice-user-name, .username, .msg-username');
+    const seed = (nameEl && nameEl.textContent.trim()) || (row && row.dataset.username) || (img.src.split('/').pop() || 'user');
+    img.src = `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(seed)}`;
+}, true);
