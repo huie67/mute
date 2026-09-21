@@ -484,7 +484,6 @@ let pendingAvatarFile = null; // выбранный файл аватарки, �
 // вошёл в аккаунт, дублируется на сервере — чтобы тема была одинаковой на всех устройствах.
 const THEME_STORAGE_KEY = 'voicechat_theme';
 const DEFAULT_THEME = { accent: '#6366f1', textMode: 'light', bgColor: '#0f1117' }; // как в исходном :root
-const LIGHT_BG_PRESET = '#f3f4f6';
 let currentTheme = { ...DEFAULT_THEME };
 let themeSaveServerTimer = null;
 
@@ -590,6 +589,13 @@ function applyTheme(theme) {
     root.setProperty('--bg-input', shadeHex(bg, inputShift));
     root.setProperty('--border', shadeHex(bg, borderShift));
     root.setProperty('--border-soft', shadeHex(bg, borderSoftShift));
+    // Раньше эти оттенки (кнопки, аватарки-заглушки, боковая панель серверов) были
+    // зашиты в CSS напрямую и не перекрашивались вместе с окном — теперь считаем их
+    // тоже от выбранного цвета, поэтому перекрашивается действительно всё.
+    root.setProperty('--bg-elevated', shadeHex(bg, isLightBg ? -10 : 13));
+    root.setProperty('--bg-elevated-hover', shadeHex(bg, isLightBg ? -18 : 22));
+    root.setProperty('--bg-sunken', shadeHex(bg, isLightBg ? 9 : -6));
+    root.setProperty('--border-strong', shadeHex(bg, isLightBg ? -30 : 28));
 
     // Обновляем элементы настроек кастомизации, если панель уже отрисована.
     const picker = document.getElementById('theme-color-picker');
@@ -735,8 +741,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const bgPicker = document.getElementById('theme-bg-color-picker');
     const bgHexInput = document.getElementById('theme-bg-color-hex');
     const bgErrorEl = document.getElementById('theme-bg-color-error');
-    const bgDarkBtn = document.getElementById('theme-bg-dark-btn');
-    const bgLightBtn = document.getElementById('theme-bg-light-btn');
+    const bgResetBtn = document.getElementById('theme-bg-reset-btn');
 
     if (bgPicker) {
         bgPicker.addEventListener('input', () => {
@@ -760,8 +765,7 @@ document.addEventListener('DOMContentLoaded', () => {
         bgHexInput.addEventListener('change', tryApplyBgHex);
         bgHexInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') tryApplyBgHex(); });
     }
-    if (bgDarkBtn) bgDarkBtn.addEventListener('click', () => setThemeBg(DEFAULT_THEME.bgColor));
-    if (bgLightBtn) bgLightBtn.addEventListener('click', () => setThemeBg(LIGHT_BG_PRESET));
+    if (bgResetBtn) bgResetBtn.addEventListener('click', () => setThemeBg(DEFAULT_THEME.bgColor));
 });
 let selectedRoom = null; 
 
