@@ -28,8 +28,8 @@ let meteredIceCache = { data: null, fetchedAt: 0 };
 const METERED_ICE_CACHE_MS = 60 * 1000;
 
 async function fetchMeteredIceServers() {
-    const appName = process.env.METERED_APP_NAME;
-    const apiKey = process.env.METERED_API_KEY;
+    const appName = (process.env.METERED_APP_NAME || '').trim().replace(/^https?:\/\//, '').replace(/\.metered\.live.*$/, '');
+    const apiKey = (process.env.METERED_API_KEY || '').trim();
     if (!appName || !apiKey) return null; // свой аккаунт не настроен
 
     const now = Date.now();
@@ -46,15 +46,24 @@ async function fetchMeteredIceServers() {
 }
 
 app.get('/api/ice-servers', async (req, res) => {
+    const envState = {
+        METERED_APP_NAME: !!(process.env.METERED_APP_NAME || '').trim(),
+        METERED_API_KEY: !!(process.env.METERED_API_KEY || '').trim()
+    };
     try {
         const iceServers = await fetchMeteredIceServers();
         if (!iceServers) {
-            return res.json({ configured: false, iceServers: [] });
+            console.warn('⚠️ /api/ice-servers: METERED_APP_NAME / METERED_API_KEY не заданы', envState);
+            return res.json({ configured: false, reason: 'env-missing', env: envState, iceServers: [] });
+        }
+        if (!Array.isArray(iceServers) || !iceServers.length) {
+            console.error('❌ Metered вернул неожиданный ответ:', JSON.stringify(iceServers).slice(0, 300));
+            return res.json({ configured: false, reason: 'metered-bad-response', env: envState, iceServers: [] });
         }
         res.json({ configured: true, iceServers });
     } catch (err) {
         console.error('❌ Ошибка получения ICE-серверов от Metered:', err.message);
-        res.json({ configured: false, iceServers: [] });
+        res.json({ configured: false, reason: `metered-error: ${err.message}`, env: envState, iceServers: [] });
     }
 });
 

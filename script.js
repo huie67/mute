@@ -1703,6 +1703,7 @@ async function loadIceServersConfig() {
             const servers = hasGoogleStun ? data.iceServers : [...data.iceServers, { urls: 'stun:stun.l.google.com:19302' }];
             return { iceServers: servers, sdpSemantics: 'unified-plan', iceCandidatePoolSize: 2 };
         }
+        console.warn('[ICE] Причина от сервера:', data && data.reason, data && data.env);
         console.warn('[ICE] Сервер сообщил, что Metered НЕ настроен (нет METERED_APP_NAME / METERED_API_KEY, ' +
             'либо запрос к Metered упал — смотри логи сервера). Используем общий openrelayproject — ' +
             'он часто не работает, и участники из разных сетей могут не слышать друг друга.');
@@ -4589,11 +4590,13 @@ document.addEventListener('copy', (e) => {
 
 // Если картинка аватарки не грузится (например, Cloudinary отвечает 401/404, файл удалён),
 // подставляем сгенерированный identicon вместо «битой» картинки.
+const brokenAvatarUrls = new Set();
 document.addEventListener('error', (e) => {
     const img = e.target;
     if (!img || img.tagName !== 'IMG' || !img.classList.contains('user-avatar')) return;
     if (img.dataset.avatarFallback) return; // не зацикливаться
     img.dataset.avatarFallback = '1';
+    brokenAvatarUrls.add(img.src);
     const row = img.closest('.voice-user-row, .member-row, .message, [data-username]');
     const nameEl = row && row.querySelector('.voice-user-name, .username, .msg-username');
     const seed = (nameEl && nameEl.textContent.trim()) || (row && row.dataset.username) || (img.src.split('/').pop() || 'user');
