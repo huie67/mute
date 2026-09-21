@@ -1396,6 +1396,9 @@
 
         /* ---------- Своя шапка окна десктоп-приложения (Tauri, без системной рамки) ---------- */
         #app-titlebar {
+            position: fixed; /* body — flex-row, без fixed шапка становилась колонкой слева */
+            top: 0; left: 0; right: 0;
+            z-index: 100000;
             display: none; /* по умолчанию скрыта — показываем только внутри Tauri, см. .tauri-app ниже */
             height: 36px;
             flex-shrink: 0;
@@ -1409,6 +1412,8 @@
         html.tauri-app #app-titlebar { display: flex; }
         /* Сдвигаем всю остальную вёрстку вниз ровно на высоту шапки, чтобы она её не перекрывала */
         html.tauri-app body { padding-top: 36px; }
+        /* body получил padding-top, поэтому основной контейнер должен быть ниже на 36px, иначе низ обрезается */
+        html.tauri-app #app-container { height: calc(100vh - 36px); }
         /* Экраны во весь вьюпорт (inset:0) иначе оказались бы НАД шапкой, т.к. position:fixed
            игнорирует padding родителя — сдвигаем именно их верхнюю границу. */
         html.tauri-app #login-container,
