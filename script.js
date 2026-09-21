@@ -1655,40 +1655,52 @@ async function completeLogin() {
         localMediaStream.addTrack(placeholderDemoAudioTrack);
     }
 
-    initPeer();              
+    await initPeer();
 }
 
 // Список ICE-серверов (STUN + TURN) для установки соединения между собеседниками.
-// БЕЗ ЭТОГО у new Peer() используются только серверы по умолчанию из PeerJS
-// (google-STUN + один бесплатный общий TURN на peerjs.com), которых для part
-// прямого P2P-соединения вроде между двумя друзьями в одной сети — достаточно,
-// но если третий человек сидит за более строгим NAT/firewall (мобильный интернет,
-// корпоративная/учебная сеть, некоторые роутеры) и прямое соединение невозможно,
-// а единственный бесплатный TURN-сервер PeerJS перегружен или недоступен —
-// его WebRTC-соединение с остальными вообще не устанавливается: он никого не
-// слышит, его не слышно и не видно демку (потому что медиапоток просто никогда
-// не доходит), а связанные с этим соединением ползунки громкости не действуют
-// (не на что влиять — аудиоузлы создаются только после реального прихода потока).
-// Добавляем несколько независимых STUN/TURN-серверов, чтобы у браузера было
-// больше путей для установления соединения.
-const ICE_SERVERS_CONFIG = {
-    iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun.relay.metered.ca:80' },
-        // Open Relay Project (metered.ca) — общедоступный бесплатный TURN, независимый
-        // от инфраструктуры PeerJS. Резервирует связь, если прямое соединение невозможно.
-        { urls: 'turn:global.relay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-        { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-        { urls: 'turn:global.relay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-        { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
-    ],
-    sdpSemantics: 'unified-plan'
-};
+// Раньше TURN-креды были захардкожены прямо тут (публичные общие openrelayproject) —
+// но, как показала диагностика, эти общие креды сейчас отклоняются TURN-сервером
+// (TURN allocate error), то есть реально не работают. Теперь список запрашивается
+// у СВОЕГО сервера (/api/ice-servers) — там TURN берётся из .env (свои личные
+// креды, например с dashboard.metered.ca), и его можно поменять в любой момент
+// без правки клиентского кода. Если TURN не настроен или запрос не удался —
+// используем только публичный STUN (P2P между собеседниками без строгого NAT
+// по-прежнему будет работать, просто без подстраховки на сложных сетях).
+async function fetchIceServersConfig() {
+    // Встроенный в PeerJS бесплатный TURN — регистрация не нужна, работает "из коробки".
+    // Раньше он подключался автоматически (PeerJS сам добавляет его, если не передавать
+    // свой config), но как только мы передаём собственный config — он замещает
+    // дефолтный целиком, и этот TURN пропадает. Возвращаем его явно, чтобы не быть
+    // хуже, чем было до наших правок, даже если свой TURN (через .env) не настроен.
+    const PEERJS_BUILTIN_TURN = [
+        { urls: ['turn:eu-0.turn.peerjs.com:3478', 'turn:us-0.turn.peerjs.com:3478'], username: 'peerjs', credential: 'peerjsp' }
+    ];
+    try {
+        const res = await fetch('/api/ice-servers');
+        if (!res.ok) throw new Error('bad status');
+        const data = await res.json();
+        if (Array.isArray(data.iceServers) && data.iceServers.length) {
+            return { iceServers: [...data.iceServers, ...PEERJS_BUILTIN_TURN], sdpSemantics: 'unified-plan' };
+        }
+    } catch (e) {
+        console.warn('[ICE] Не удалось получить список ICE-серверов с сервера, используем запасной набор:', e);
+    }
+    return {
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            ...PEERJS_BUILTIN_TURN
+        ],
+        sdpSemantics: 'unified-plan'
+    };
+}
 
-function initPeer() {
+async function initPeer() {
     if (myPeer) return;
-    myPeer = new Peer({ config: ICE_SERVERS_CONFIG });
+    const iceConfig = await fetchIceServersConfig();
+    if (myPeer) return; // на случай, если initPeer() успели вызвать повторно, пока ждали fetch
+    myPeer = new Peer({ config: iceConfig });
 
     myPeer.on('open', (id) => {
         myPeerId = id;

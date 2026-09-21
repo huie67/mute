@@ -17,6 +17,36 @@ const io = new Server(server);
 app.use(express.static(__dirname)); // Клиентские файлы лежат в корне репозитория
 app.use(express.json());
 
+// ---------- ICE-серверы (STUN/TURN) для WebRTC — отдаём клиенту из .env, а не ----------
+// зашиваем в публичный JS-файл. Так креды можно поменять/отозвать в любой момент
+// без правки кода, и они не "утекают" всем желающим прямо из script.js.
+// TURN добавляется, только если в .env реально заданы TURN_USERNAME/TURN_CREDENTIAL —
+// без него отдаём только публичный Google STUN (этого достаточно для прямых P2P-звонков
+// между собеседниками без строгого NAT/firewall).
+app.get('/api/ice-servers', (req, res) => {
+    const iceServers = [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' }
+    ];
+    if (process.env.TURN_URL && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL) {
+        iceServers.push({
+            urls: process.env.TURN_URL,
+            username: process.env.TURN_USERNAME,
+            credential: process.env.TURN_CREDENTIAL
+        });
+        // Тот же хост на 443/tcp — запасной путь для сетей, где режут UDP или порт 80.
+        const tcpUrl = process.env.TURN_URL.replace(/:80(\D|$)/, ':443$1');
+        if (tcpUrl !== process.env.TURN_URL) {
+            iceServers.push({
+                urls: `${tcpUrl}?transport=tcp`,
+                username: process.env.TURN_USERNAME,
+                credential: process.env.TURN_CREDENTIAL
+            });
+        }
+    }
+    res.json({ iceServers });
+});
+
 // ---------- База данных: Postgres (Neon) — общий чат хранится тут, не на диске сервера ----------
 if (!process.env.DATABASE_URL) {
     console.error('❌ Не задан DATABASE_URL (строка подключения к Neon Postgres). Смотрите .env.example');
