@@ -879,7 +879,8 @@ function setupCustomSoundControls(key, els) {
     function refreshLabel() {
         if (!els.label) return;
         const name = loadNotifySettings()[cfg.nameKey];
-        els.label.textContent = name ? `Свой звук: ${name}` : 'Стандартный звук';
+        els.label.textContent = name ? `Свой: ${name}` : 'Стандартный';
+        if (els.label) els.label.title = name ? `Свой звук: ${name}` : 'Стандартный звук';
     }
 
     (function applySaved() {

@@ -1277,6 +1277,85 @@
             color: var(--text-faint);
         }
 
+        /* Компактный список звуков в настройках — одна строка на звук вместо
+           повторяющегося блока "громкость + подпись + 3 кнопки + текст", чтобы
+           не создавать однообразный визуальный шум из семи одинаковых секций. */
+        .sound-settings-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .sound-row {
+            padding: 9px 10px;
+            border-radius: var(--radius-sm);
+            background: var(--bg-input);
+            border: 1px solid var(--border-soft);
+        }
+        .sound-row-top {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .sound-row-icon {
+            font-size: 14px;
+            width: 18px;
+            flex-shrink: 0;
+            text-align: center;
+        }
+        .sound-row-name {
+            font-size: 12.5px;
+            font-weight: 600;
+            color: var(--text);
+            flex: 1;
+            min-width: 0;
+        }
+        .sound-row-badge {
+            font-size: 10.5px;
+            color: var(--text-faint);
+            flex-shrink: 0;
+            max-width: 40%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .sound-row-bottom {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-top: 7px;
+        }
+        .sound-row-bottom input[type="range"] {
+            flex: 1;
+            min-width: 0;
+        }
+        .sound-row-value {
+            font-size: 10.5px;
+            color: var(--text-muted);
+            width: 30px;
+            text-align: right;
+            flex-shrink: 0;
+        }
+        .sound-icon-btn {
+            width: 24px;
+            height: 24px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: var(--bg-card);
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-size: 11px;
+            line-height: 1;
+            flex-shrink: 0;
+            padding: 0;
+        }
+        .sound-icon-btn:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
         .bottom-actions {
             display: flex;
             flex-direction: column;
@@ -1471,7 +1550,6 @@
             </div>
 
             <div class="settings-tab-panel active" data-add-tab-panel="create">
-                <span class="profile-hint">Создайте свою комнату и получите уникальный код для друзей.</span>
                 <div class="profile-row">
                     <img id="create-server-avatar-preview" class="profile-avatar-preview" src="" alt="Аватар сервера">
                     <div class="profile-avatar-controls">
@@ -1480,7 +1558,7 @@
                             <label class="btn-file-label" for="create-server-avatar-file">Файл…</label>
                             <input type="file" id="create-server-avatar-file" accept="image/*" style="display:none">
                         </div>
-                        <span class="profile-hint">Необязательно. Можно вставить ссылку или загрузить файл — сработает то, что укажете последним</span>
+                        <span class="profile-hint">Ссылка или файл</span>
                     </div>
                 </div>
                 <div class="input-group"><label>Название</label><input id="create-server-name" maxlength="40" placeholder="Например: Мы с друзьями"></div>
@@ -1490,7 +1568,6 @@
             </div>
 
             <div class="settings-tab-panel" data-add-tab-panel="join">
-                <span class="profile-hint">Введите код сервера, который вам отправил друг.</span>
                 <div class="input-group"><label>Код сервера</label><input id="join-server-code" maxlength="6" autocomplete="off" placeholder="ABC123" style="text-transform:uppercase;letter-spacing:3px"></div>
                 <div class="input-group"><label>Пароль <span style="color:var(--text-faint)">(если нужен)</span></label><input id="join-server-password" type="password" maxlength="64" placeholder="Пароль"></div>
                 <p class="auth-error" id="join-server-error" style="display:none"></p>
@@ -1522,7 +1599,7 @@
                                 <label class="btn-file-label" for="server-info-avatar-file">Файл…</label>
                                 <input type="file" id="server-info-avatar-file" accept="image/*" style="display:none">
                             </div>
-                            <span class="profile-hint">Можно вставить ссылку или загрузить файл — сработает то, что укажете последним</span>
+                            <span class="profile-hint">Ссылка или файл</span>
                         </div>
                     </div>
                     <div class="input-group"><label>Название</label><input id="server-info-name" maxlength="40"></div>
@@ -1545,7 +1622,7 @@
                 <div class="server-info-code-block">
                     <div class="room-code-hint">Код входа на сервер</div>
                     <div id="server-info-code" class="room-code-box" title="Нажмите, чтобы скопировать"></div>
-                    <div class="room-code-hint">Нажмите на код — он автоматически скопируется</div>
+                    <div class="room-code-hint">Клик — скопируется</div>
                 </div>
 
                 <p class="auth-error" id="server-info-error" style="display:none"></p>
@@ -1558,9 +1635,9 @@
             </div>
 
             <div class="settings-tab-panel" data-server-tab-panel="members">
-                <span class="profile-hint">Все участники сервера. Зелёная точка — сейчас в сети. Создатель и модераторы могут выгонять и повышать участников.</span>
+                <span class="profile-hint">🟢 — в сети</span>
                 <div id="server-members-list" style="display:flex; flex-direction:column; gap:8px;"></div>
-                <div class="profile-hint" id="server-members-empty" style="display:none;">Сейчас в чате этого сервера никого нет.</div>
+                <div class="profile-hint" id="server-members-empty" style="display:none;">Никого нет</div>
                 <p class="auth-error" id="server-members-error" style="display:none"></p>
             </div>
 
@@ -1633,7 +1710,7 @@
                             <label class="btn-file-label" for="profile-avatar-file">Файл…</label>
                             <input type="file" id="profile-avatar-file" accept="image/*" style="display:none">
                         </div>
-                        <span class="profile-hint">Можно вставить ссылку или загрузить файл — сработает то, что укажете последним</span>
+                        <span class="profile-hint">Ссылка или файл</span>
                     </div>
                 </div>
                 <div class="control-group">
@@ -1652,7 +1729,6 @@
                 <div class="control-group">
                     <label>Громкость своего микрофона: <span id="mic-volume-value">100%</span></label>
                     <input type="range" id="mic-volume-slider" min="0" max="200" step="5" value="100">
-                    <span class="profile-hint">Усиливает или приглушает ваш голос перед отправкой собеседникам</span>
                 </div>
                 <div class="control-group">
                     <label>Чувствительность микрофона (Тест уровня)</label>
@@ -1666,12 +1742,12 @@
                     <label class="checkbox-label">
                         <input type="checkbox" id="mic-monitor-check"> Слышать себя (проверка микрофона)
                     </label>
-                    <span class="profile-hint">Включает микрофон в динамики, чтобы услышать, как вас слышат другие. Используйте наушники — иначе будет эхо/свист</span>
+                    <span class="profile-hint">Нужны наушники — иначе эхо</span>
                 </div>
                 <div class="control-group">
                     <label>Порог срабатывания (Gate): <span id="threshold-value">-45 дБ</span></label>
                     <input type="range" id="threshold-slider" min="-70" max="-10" step="1" value="-45">
-                    <span class="profile-hint">Микрофон отключается, когда громкость ниже этого уровня — так фон и шумы не летят в чат</span>
+                    <span class="profile-hint">Отсекает тихий фон</span>
                 </div>
                 <div class="control-group">
                     <label class="checkbox-label">
@@ -1681,7 +1757,7 @@
                 <div class="control-group">
                     <label>Задержка закрытия гейта: <span id="gate-hangover-value">300 мс</span></label>
                     <input type="range" id="gate-hangover-slider" min="50" max="1500" step="50" value="300">
-                    <span class="profile-hint">Сколько микрофон остаётся включённым после того, как вы замолчали, прежде чем гейт закроется снова. Больше — меньше режет окончания слов, меньше — быстрее отсекает тишину</span>
+                    <span class="profile-hint">Задержка перед отключением</span>
                 </div>
                 <div class="control-group">
                     <label class="checkbox-label">
@@ -1697,110 +1773,112 @@
             </div>
 
             <div class="settings-tab-panel" data-tab-panel="sound">
-                <div class="control-group">
-                    <label>Громкость звука сообщений: <span id="message-sound-volume-value">50%</span></label>
-                    <input type="range" id="message-sound-volume-slider" min="0" max="100" step="5" value="50">
-                </div>
-                <div class="control-group">
-                    <label>Звук сообщения</label>
-                    <div class="profile-hint" id="message-sound-current-label">Стандартный звук</div>
-                    <div style="display:flex; gap:8px; margin-top:6px; flex-wrap: wrap;">
-                        <button class="btn-secondary" id="message-sound-test-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Проверить</button>
-                        <label class="btn-secondary" for="message-sound-file-input" style="font-size: 13px; padding: 6px 10px; cursor: pointer;">Загрузить свой звук…</label>
-                        <input type="file" id="message-sound-file-input" accept="audio/*" style="display:none;">
-                        <button class="btn-secondary" id="message-sound-reset-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Сбросить</button>
+                <div class="sound-settings-list">
+                    <div class="sound-row">
+                        <div class="sound-row-top">
+                            <span class="sound-row-icon">💬</span>
+                            <span class="sound-row-name">Сообщение</span>
+                            <span class="sound-row-badge" id="message-sound-current-label">Стандартный</span>
+                        </div>
+                        <div class="sound-row-bottom">
+                            <input type="range" id="message-sound-volume-slider" min="0" max="100" step="5" value="50">
+                            <span class="sound-row-value" id="message-sound-volume-value">50%</span>
+                            <button class="sound-icon-btn" id="message-sound-test-btn" type="button" title="Проверить">▶</button>
+                            <label class="sound-icon-btn" for="message-sound-file-input" title="Свой звук">📎</label>
+                            <input type="file" id="message-sound-file-input" accept="audio/*" style="display:none;">
+                            <button class="sound-icon-btn" id="message-sound-reset-btn" type="button" title="Сбросить">↺</button>
+                        </div>
                     </div>
-                    <span class="profile-hint">Можно загрузить свой mp3/wav/ogg вместо стандартного звука нового сообщения. Файл сохраняется только у вас в браузере</span>
-                </div>
-                <div class="control-group">
-                    <label>Громкость звука входа в войс: <span id="join-sound-volume-value">60%</span></label>
-                    <input type="range" id="join-sound-volume-slider" min="0" max="100" step="5" value="60">
-                </div>
-                <div class="control-group">
-                    <label>Звук входа в войс</label>
-                    <div class="profile-hint" id="join-sound-current-label">Стандартный звук</div>
-                    <div style="display:flex; gap:8px; margin-top:6px; flex-wrap: wrap;">
-                        <button class="btn-secondary" id="join-sound-test-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Проверить</button>
-                        <label class="btn-secondary" for="join-sound-file-input" style="font-size: 13px; padding: 6px 10px; cursor: pointer;">Загрузить свой звук…</label>
-                        <input type="file" id="join-sound-file-input" accept="audio/*" style="display:none;">
-                        <button class="btn-secondary" id="join-sound-reset-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Сбросить</button>
+                    <div class="sound-row">
+                        <div class="sound-row-top">
+                            <span class="sound-row-icon">🔔</span>
+                            <span class="sound-row-name">Вход в войс</span>
+                            <span class="sound-row-badge" id="join-sound-current-label">Стандартный</span>
+                        </div>
+                        <div class="sound-row-bottom">
+                            <input type="range" id="join-sound-volume-slider" min="0" max="100" step="5" value="60">
+                            <span class="sound-row-value" id="join-sound-volume-value">60%</span>
+                            <button class="sound-icon-btn" id="join-sound-test-btn" type="button" title="Проверить">▶</button>
+                            <label class="sound-icon-btn" for="join-sound-file-input" title="Свой звук">📎</label>
+                            <input type="file" id="join-sound-file-input" accept="audio/*" style="display:none;">
+                            <button class="sound-icon-btn" id="join-sound-reset-btn" type="button" title="Сбросить">↺</button>
+                        </div>
                     </div>
-                    <span class="profile-hint">Свой звук вместо стандартного, когда кто-то заходит в голосовой канал</span>
-                </div>
-                <div class="control-group">
-                    <label>Громкость звука выхода из войса: <span id="leave-sound-volume-value">60%</span></label>
-                    <input type="range" id="leave-sound-volume-slider" min="0" max="100" step="5" value="60">
-                </div>
-                <div class="control-group">
-                    <label>Звук выхода из войса</label>
-                    <div class="profile-hint" id="leave-sound-current-label">Стандартный звук</div>
-                    <div style="display:flex; gap:8px; margin-top:6px; flex-wrap: wrap;">
-                        <button class="btn-secondary" id="leave-sound-test-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Проверить</button>
-                        <label class="btn-secondary" for="leave-sound-file-input" style="font-size: 13px; padding: 6px 10px; cursor: pointer;">Загрузить свой звук…</label>
-                        <input type="file" id="leave-sound-file-input" accept="audio/*" style="display:none;">
-                        <button class="btn-secondary" id="leave-sound-reset-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Сбросить</button>
+                    <div class="sound-row">
+                        <div class="sound-row-top">
+                            <span class="sound-row-icon">🚪</span>
+                            <span class="sound-row-name">Выход из войса</span>
+                            <span class="sound-row-badge" id="leave-sound-current-label">Стандартный</span>
+                        </div>
+                        <div class="sound-row-bottom">
+                            <input type="range" id="leave-sound-volume-slider" min="0" max="100" step="5" value="60">
+                            <span class="sound-row-value" id="leave-sound-volume-value">60%</span>
+                            <button class="sound-icon-btn" id="leave-sound-test-btn" type="button" title="Проверить">▶</button>
+                            <label class="sound-icon-btn" for="leave-sound-file-input" title="Свой звук">📎</label>
+                            <input type="file" id="leave-sound-file-input" accept="audio/*" style="display:none;">
+                            <button class="sound-icon-btn" id="leave-sound-reset-btn" type="button" title="Сбросить">↺</button>
+                        </div>
                     </div>
-                    <span class="profile-hint">Свой звук вместо стандартного, когда кто-то выходит из голосового канала</span>
-                </div>
-                <div class="control-group">
-                    <label>Громкость звука мьюта: <span id="mute-sound-volume-value">50%</span></label>
-                    <input type="range" id="mute-sound-volume-slider" min="0" max="100" step="5" value="50">
-                </div>
-                <div class="control-group">
-                    <label>Звук мьюта микрофона</label>
-                    <div class="profile-hint" id="mute-sound-current-label">Стандартный звук</div>
-                    <div style="display:flex; gap:8px; margin-top:6px; flex-wrap: wrap;">
-                        <button class="btn-secondary" id="mute-sound-test-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Проверить</button>
-                        <label class="btn-secondary" for="mute-sound-file-input" style="font-size: 13px; padding: 6px 10px; cursor: pointer;">Загрузить свой звук…</label>
-                        <input type="file" id="mute-sound-file-input" accept="audio/*" style="display:none;">
-                        <button class="btn-secondary" id="mute-sound-reset-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Сбросить</button>
+                    <div class="sound-row">
+                        <div class="sound-row-top">
+                            <span class="sound-row-icon">🎙️</span>
+                            <span class="sound-row-name">Мьют микрофона</span>
+                            <span class="sound-row-badge" id="mute-sound-current-label">Стандартный</span>
+                        </div>
+                        <div class="sound-row-bottom">
+                            <input type="range" id="mute-sound-volume-slider" min="0" max="100" step="5" value="50">
+                            <span class="sound-row-value" id="mute-sound-volume-value">50%</span>
+                            <button class="sound-icon-btn" id="mute-sound-test-btn" type="button" title="Проверить">▶</button>
+                            <label class="sound-icon-btn" for="mute-sound-file-input" title="Свой звук">📎</label>
+                            <input type="file" id="mute-sound-file-input" accept="audio/*" style="display:none;">
+                            <button class="sound-icon-btn" id="mute-sound-reset-btn" type="button" title="Сбросить">↺</button>
+                        </div>
                     </div>
-                    <span class="profile-hint">Играет и у вас, и у остальных в канале при включении/выключении вашего микрофона</span>
-                </div>
-                <div class="control-group">
-                    <label>Громкость звука дефена: <span id="deafen-sound-volume-value">50%</span></label>
-                    <input type="range" id="deafen-sound-volume-slider" min="0" max="100" step="5" value="50">
-                </div>
-                <div class="control-group">
-                    <label>Звук заглушения звука (дефен)</label>
-                    <div class="profile-hint" id="deafen-sound-current-label">Стандартный звук</div>
-                    <div style="display:flex; gap:8px; margin-top:6px; flex-wrap: wrap;">
-                        <button class="btn-secondary" id="deafen-sound-test-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Проверить</button>
-                        <label class="btn-secondary" for="deafen-sound-file-input" style="font-size: 13px; padding: 6px 10px; cursor: pointer;">Загрузить свой звук…</label>
-                        <input type="file" id="deafen-sound-file-input" accept="audio/*" style="display:none;">
-                        <button class="btn-secondary" id="deafen-sound-reset-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Сбросить</button>
+                    <div class="sound-row">
+                        <div class="sound-row-top">
+                            <span class="sound-row-icon">🔇</span>
+                            <span class="sound-row-name">Дефен</span>
+                            <span class="sound-row-badge" id="deafen-sound-current-label">Стандартный</span>
+                        </div>
+                        <div class="sound-row-bottom">
+                            <input type="range" id="deafen-sound-volume-slider" min="0" max="100" step="5" value="50">
+                            <span class="sound-row-value" id="deafen-sound-volume-value">50%</span>
+                            <button class="sound-icon-btn" id="deafen-sound-test-btn" type="button" title="Проверить">▶</button>
+                            <label class="sound-icon-btn" for="deafen-sound-file-input" title="Свой звук">📎</label>
+                            <input type="file" id="deafen-sound-file-input" accept="audio/*" style="display:none;">
+                            <button class="sound-icon-btn" id="deafen-sound-reset-btn" type="button" title="Сбросить">↺</button>
+                        </div>
                     </div>
-                    <span class="profile-hint">Играет при включении/выключении наушников (когда вы перестаёте слышать остальных)</span>
-                </div>
-                <div class="control-group">
-                    <label>Громкость звука демонстрации: <span id="screenshare-sound-volume-value">50%</span></label>
-                    <input type="range" id="screenshare-sound-volume-slider" min="0" max="100" step="5" value="50">
-                </div>
-                <div class="control-group">
-                    <label>Звук демонстрации экрана / вебки</label>
-                    <div class="profile-hint" id="screenshare-sound-current-label">Стандартный звук</div>
-                    <div style="display:flex; gap:8px; margin-top:6px; flex-wrap: wrap;">
-                        <button class="btn-secondary" id="screenshare-sound-test-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Проверить</button>
-                        <label class="btn-secondary" for="screenshare-sound-file-input" style="font-size: 13px; padding: 6px 10px; cursor: pointer;">Загрузить свой звук…</label>
-                        <input type="file" id="screenshare-sound-file-input" accept="audio/*" style="display:none;">
-                        <button class="btn-secondary" id="screenshare-sound-reset-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Сбросить</button>
+                    <div class="sound-row">
+                        <div class="sound-row-top">
+                            <span class="sound-row-icon">🖥️</span>
+                            <span class="sound-row-name">Демонстрация</span>
+                            <span class="sound-row-badge" id="screenshare-sound-current-label">Стандартный</span>
+                        </div>
+                        <div class="sound-row-bottom">
+                            <input type="range" id="screenshare-sound-volume-slider" min="0" max="100" step="5" value="50">
+                            <span class="sound-row-value" id="screenshare-sound-volume-value">50%</span>
+                            <button class="sound-icon-btn" id="screenshare-sound-test-btn" type="button" title="Проверить">▶</button>
+                            <label class="sound-icon-btn" for="screenshare-sound-file-input" title="Свой звук">📎</label>
+                            <input type="file" id="screenshare-sound-file-input" accept="audio/*" style="display:none;">
+                            <button class="sound-icon-btn" id="screenshare-sound-reset-btn" type="button" title="Сбросить">↺</button>
+                        </div>
                     </div>
-                    <span class="profile-hint">Играет при старте/остановке демонстрации экрана или веб-камеры — у вас и у остальных в канале</span>
-                </div>
-                <div class="control-group">
-                    <label>Громкость звука упоминания: <span id="mention-sound-volume-value">70%</span></label>
-                    <input type="range" id="mention-sound-volume-slider" min="0" max="100" step="5" value="70">
-                </div>
-                <div class="control-group">
-                    <label>Звук, когда вас упомянули (@ник)</label>
-                    <div class="profile-hint" id="mention-sound-current-label">Стандартный звук</div>
-                    <div style="display:flex; gap:8px; margin-top:6px; flex-wrap: wrap;">
-                        <button class="btn-secondary" id="mention-sound-test-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Проверить</button>
-                        <label class="btn-secondary" for="mention-sound-file-input" style="font-size: 13px; padding: 6px 10px; cursor: pointer;">Загрузить свой звук…</label>
-                        <input type="file" id="mention-sound-file-input" accept="audio/*" style="display:none;">
-                        <button class="btn-secondary" id="mention-sound-reset-btn" type="button" style="font-size: 13px; padding: 6px 10px;">Сбросить</button>
+                    <div class="sound-row">
+                        <div class="sound-row-top">
+                            <span class="sound-row-icon">📣</span>
+                            <span class="sound-row-name">Упоминание</span>
+                            <span class="sound-row-badge" id="mention-sound-current-label">Стандартный</span>
+                        </div>
+                        <div class="sound-row-bottom">
+                            <input type="range" id="mention-sound-volume-slider" min="0" max="100" step="5" value="70">
+                            <span class="sound-row-value" id="mention-sound-volume-value">70%</span>
+                            <button class="sound-icon-btn" id="mention-sound-test-btn" type="button" title="Проверить">▶</button>
+                            <label class="sound-icon-btn" for="mention-sound-file-input" title="Свой звук">📎</label>
+                            <input type="file" id="mention-sound-file-input" accept="audio/*" style="display:none;">
+                            <button class="sound-icon-btn" id="mention-sound-reset-btn" type="button" title="Сбросить">↺</button>
+                        </div>
                     </div>
-                    <span class="profile-hint">Играет вместо обычного звука сообщения, когда кто-то отмечает вас через @ник в чате</span>
                 </div>
             </div>
 
@@ -1813,7 +1891,7 @@
                         <option value="1080p30">1080p (Full HD), 30 FPS</option>
                         <option value="1080p60">1080p (Full HD), 60 FPS (максимум)</option>
                     </select>
-                    <span class="profile-hint">Чем выше разрешение и FPS, тем плавнее картинка у собеседников, но тем сильнее нагрузка на процессор при кодировании видео. Применяется при следующем запуске демонстрации экрана</span>
+                    <span class="profile-hint">Выше — чётче, но грузит ЦП</span>
                 </div>
                 <div class="control-group">
                     <label>Качество камеры</label>
@@ -1823,7 +1901,6 @@
                         <option value="1080p30">1080p (Full HD), 30 FPS</option>
                         <option value="1080p60">1080p (Full HD), 60 FPS (максимум)</option>
                     </select>
-                    <span class="profile-hint">Применяется при следующем включении камеры</span>
                 </div>
             </div>
 
