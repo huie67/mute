@@ -375,6 +375,36 @@
             margin-top: 6px;
         }
 
+        .voice-offcall-divider {
+            font-size: 11px;
+            color: var(--text-faint);
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            margin: 8px 0 2px;
+            padding-top: 8px;
+            border-top: 1px solid var(--border-soft);
+        }
+        .voice-user-row.offcall { opacity: 0.85; }
+        .voice-user-row.offcall.offline { opacity: 0.5; }
+        .voice-user-row.offcall .offcall-sub {
+            font-size: 11px;
+            color: var(--text-faint);
+            margin-left: auto;
+            padding-left: 6px;
+            white-space: nowrap;
+        }
+        .presence-dot {
+            position: absolute;
+            right: -2px;
+            bottom: -2px;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            border: 2px solid var(--bg-sunken, var(--bg-app));
+            background: #6b7280;
+        }
+        .presence-dot.online { background: #3ba55d; }
+
         .voice-user-row {
             display: flex;
             align-items: center;
@@ -2160,13 +2190,6 @@
                         <label>Быстрый выбор</label>
                         <div class="theme-presets" id="theme-presets"></div>
                     </div>
-                    <div class="control-group">
-                        <label>Предпросмотр</label>
-                        <div class="theme-preview-card">
-                            <span class="theme-preview-dot" id="theme-preview-dot"></span>
-                            <span class="theme-preview-text">Так будут выглядеть акценты, кнопки и ссылки</span>
-                        </div>
-                    </div>
                     <div class="theme-actions-row">
                         <button type="button" class="btn-secondary-ghost" id="theme-reset-btn">Сбросить до стандартных</button>
                     </div>
@@ -2186,12 +2209,6 @@
                         </div>
                         <p class="auth-error" id="theme-bg-color-error" style="display:none"></p>
                     </div>
-                    <div class="control-group">
-                        <label>Предпросмотр</label>
-                        <div class="theme-preview-card" id="theme-bg-preview-card">
-                            <span class="theme-preview-text">Так будет выглядеть фон окна, карточек и панелей</span>
-                        </div>
-                    </div>
                     <div class="theme-actions-row">
                         <button type="button" class="btn-secondary-ghost" id="theme-bg-reset-btn">Сбросить цвет окна</button>
                     </div>
@@ -2205,6 +2222,19 @@
                     <div class="control-group">
                         <label>Основной цвет текста в приложении</label>
                         <button type="button" class="btn-secondary-ghost" id="theme-text-toggle-btn" style="width:100%;">Сделать текст чёрным</button>
+                    </div>
+                </div>
+
+                <div class="settings-section">
+                    <div class="settings-section-title">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+                        Список участников
+                    </div>
+                    <div class="control-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="show-offcall-members-check"> Показывать всех участников сервера
+                        </label>
+                        <span class="profile-hint">Участники, которых нет в звонке, отображаются под теми, кто в звонке, с отметкой «в сети» или «не в сети».</span>
                     </div>
                 </div>
             </div>

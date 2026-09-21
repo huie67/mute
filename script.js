@@ -265,11 +265,22 @@ function showToast(text, ms = 4500) {
     }, ms);
 }
 
+// Настройка «показывать всех участников сервера» (Кастомизация → Список участников), хранится на устройстве.
+const SHOW_OFFCALL_KEY = 'mute_show_offcall_members';
+let showOffCallMembers = false;
+try { showOffCallMembers = localStorage.getItem(SHOW_OFFCALL_KEY) === '1'; } catch (e) { /* ignore */ }
+let lastRenderedVoiceUsers = {};
+
 // Кэш участников серверов для автодополнения @упоминаний в чате — обновляется
 // при каждом приходе списка участников, независимо от того, открыта ли вкладка
 // "Участники" в окне сервера (см. mentionMembersCache ниже).
 socket.on('server members list', ({ code, members } = {}) => {
     if (code) mentionMembersCache[code] = members || [];
+
+    // Обновился список участников (кто-то зашёл/вышел в сеть) — перерисовываем боковой список.
+    if (showOffCallMembers && code && code === customCodeFromRoomName(selectedRoom)) {
+        updateVoiceUsersList(lastRenderedVoiceUsers);
+    }
 
     if (!currentServerInfo || currentServerInfo.code !== code) return;
     // Свои права берём из свежего списка — так, если нас повысили/разжаловали,
@@ -628,11 +639,9 @@ function applyTheme(theme) {
     // Обновляем элементы настроек кастомизации, если панель уже отрисована.
     const picker = document.getElementById('theme-color-picker');
     const hexInput = document.getElementById('theme-color-hex');
-    const previewDot = document.getElementById('theme-preview-dot');
     const textToggleBtn = document.getElementById('theme-text-toggle-btn');
     if (picker) picker.value = accent;
     if (hexInput) hexInput.value = accent;
-    if (previewDot) previewDot.style.background = accent;
     if (textToggleBtn) textToggleBtn.innerText = isDark ? 'Сделать текст белым' : 'Сделать текст чёрным';
     document.querySelectorAll('.theme-preset-btn').forEach(btn => {
         btn.classList.toggle('active', (btn.dataset.color || '').toLowerCase() === accent.toLowerCase());
@@ -2828,7 +2837,41 @@ const DEAFEN_OFF_ICON_SVG = `<svg viewBox="0 0 24 24" width="9" height="9" fill=
 const ROOM_IN_ICON_SVG = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>`;
 const ROOM_OUT_ICON_SVG = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>`;
 
+// Настройка «показывать всех участников сервера» (Кастомизация → Список участников).
+// Хранится на этом устройстве.
+
+function buildOffCallRows(users) {
+    const code = customCodeFromRoomName(selectedRoom);
+    if (!code) return [];
+    const members = mentionMembersCache[code];
+    if (!members || !members.length) return [];
+
+    const inCall = new Set(Object.values(users || {})
+        .map(u => String(u && u.username || '').toLowerCase())
+        .filter(Boolean));
+    const rest = members.filter(m => m && m.username && !inCall.has(m.username.toLowerCase()));
+    rest.sort((a, b) => {
+        if (!!a.online !== !!b.online) return a.online ? -1 : 1;
+        return a.username.localeCompare(b.username, 'ru');
+    });
+
+    return rest.map(m => {
+        const row = document.createElement('div');
+        row.className = 'voice-user-row offcall' + (m.online ? '' : ' offline');
+        row.innerHTML = `
+            <div class="user-avatar-wrap">
+                <img src="${m.avatar || `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(m.username)}`}" class="user-avatar" alt="">
+                <span class="presence-dot${m.online ? ' online' : ''}" title="${m.online ? 'В сети' : 'Не в сети'}"></span>
+            </div>
+            <span style="color:${getUserColor(m.username)}">${escapeHtml(m.username)}</span>
+            <span class="offcall-sub">${m.online ? 'в сети' : 'не в сети'}</span>
+        `;
+        return row;
+    });
+}
+
 function updateVoiceUsersList(users = connectedUsers) {
+    lastRenderedVoiceUsers = users;
     voiceUsersContainer.innerHTML = '';
     for (let id in users) {
         let user = users[id];
@@ -2852,7 +2895,33 @@ function updateVoiceUsersList(users = connectedUsers) {
         }
         voiceUsersContainer.appendChild(row);
     }
+
+    // Остальные участники сервера — в том же списке, ниже тех, кто в звонке.
+    if (showOffCallMembers) {
+        const offRows = buildOffCallRows(users);
+        if (offRows.length) {
+            const divider = document.createElement('div');
+            divider.className = 'voice-offcall-divider';
+            divider.textContent = `Не в звонке — ${offRows.length}`;
+            voiceUsersContainer.appendChild(divider);
+            offRows.forEach(r => voiceUsersContainer.appendChild(r));
+        }
+    }
 }
+
+// Переключатель в настройках кастомизации
+(function initOffCallMembersSetting() {
+    const check = document.getElementById('show-offcall-members-check');
+    if (!check) return;
+    check.checked = showOffCallMembers;
+    check.addEventListener('change', () => {
+        showOffCallMembers = check.checked;
+        try { localStorage.setItem(SHOW_OFFCALL_KEY, showOffCallMembers ? '1' : '0'); } catch (e) { /* ignore */ }
+        const code = customCodeFromRoomName(selectedRoom);
+        if (showOffCallMembers && code) socket.emit('get server members', { code });
+        updateVoiceUsersList(lastRenderedVoiceUsers);
+    });
+})();
 
 // ---------- Попап громкости конкретного собеседника (только локально, у себя) ----------
 function closeUserVolumePopover() {
