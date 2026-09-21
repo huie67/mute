@@ -17,34 +17,45 @@ const io = new Server(server);
 app.use(express.static(__dirname)); // Клиентские файлы лежат в корне репозитория
 app.use(express.json());
 
-// ---------- ICE-серверы (STUN/TURN) для WebRTC — отдаём клиенту из .env, а не ----------
-// зашиваем в публичный JS-файл. Так креды можно поменять/отозвать в любой момент
-// без правки кода, и они не "утекают" всем желающим прямо из script.js.
-// TURN добавляется, только если в .env реально заданы TURN_USERNAME/TURN_CREDENTIAL —
-// без него отдаём только публичный Google STUN (этого достаточно для прямых P2P-звонков
-// между собеседниками без строгого NAT/firewall).
-app.get('/api/ice-servers', (req, res) => {
-    const iceServers = [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' }
-    ];
-    if (process.env.TURN_URL && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL) {
-        iceServers.push({
-            urls: process.env.TURN_URL,
-            username: process.env.TURN_USERNAME,
-            credential: process.env.TURN_CREDENTIAL
-        });
-        // Тот же хост на 443/tcp — запасной путь для сетей, где режут UDP или порт 80.
-        const tcpUrl = process.env.TURN_URL.replace(/:80(\D|$)/, ':443$1');
-        if (tcpUrl !== process.env.TURN_URL) {
-            iceServers.push({
-                urls: `${tcpUrl}?transport=tcp`,
-                username: process.env.TURN_USERNAME,
-                credential: process.env.TURN_CREDENTIAL
-            });
-        }
+// ---------- TURN/STUN-серверы: dashboard.metered.ca ----------
+// Раньше клиент был зашит на бесплатные общие TURN-креды openrelayproject —
+// они часто перегружены и могут просто не работать. Теперь, если задан свой
+// аккаунт Metered (APP NAME + TURN Credential API Key из дашборда), сервер
+// сам ходит в Metered TURN REST API и отдаёт клиенту актуальный список
+// iceServers. Ключ Metered остаётся на сервере и не попадает в браузер.
+// Короткий кэш (60 сек) — чтобы не дёргать Metered на каждый вход в звонок.
+let meteredIceCache = { data: null, fetchedAt: 0 };
+const METERED_ICE_CACHE_MS = 60 * 1000;
+
+async function fetchMeteredIceServers() {
+    const appName = process.env.METERED_APP_NAME;
+    const apiKey = process.env.METERED_API_KEY;
+    if (!appName || !apiKey) return null; // свой аккаунт не настроен
+
+    const now = Date.now();
+    if (meteredIceCache.data && (now - meteredIceCache.fetchedAt) < METERED_ICE_CACHE_MS) {
+        return meteredIceCache.data;
     }
-    res.json({ iceServers });
+
+    const url = `https://${appName}.metered.live/api/v1/turn/credentials?apiKey=${encodeURIComponent(apiKey)}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Metered TURN API ответил ${res.status}`);
+    const iceServers = await res.json();
+    meteredIceCache = { data: iceServers, fetchedAt: now };
+    return iceServers;
+}
+
+app.get('/api/ice-servers', async (req, res) => {
+    try {
+        const iceServers = await fetchMeteredIceServers();
+        if (!iceServers) {
+            return res.json({ configured: false, iceServers: [] });
+        }
+        res.json({ configured: true, iceServers });
+    } catch (err) {
+        console.error('❌ Ошибка получения ICE-серверов от Metered:', err.message);
+        res.json({ configured: false, iceServers: [] });
+    }
 });
 
 // ---------- База данных: Postgres (Neon) — общий чат хранится тут, не на диске сервера ----------
