@@ -42,6 +42,8 @@ async function initDb() {
     // Чат стал отдельным для каждой комнаты/сервера — старые общие сообщения (room = NULL)
     // просто перестают попадать в выборку конкретной комнаты, ничего удалять не нужно.
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS room TEXT;`);
+    // Шёпот (wh@ник): JSON-массив ников, кому видно сообщение. NULL — обычное сообщение для всех.
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS whisper_to TEXT;`);
     await pool.query(`CREATE INDEX IF NOT EXISTS messages_room_idx ON messages (room, id);`);
 
     // Аккаунты: вход по паролю.
@@ -106,32 +108,46 @@ async function initDb() {
     `);
 }
 
-async function insertMessage({ username, avatar, text, imageUrl, room, createdAt }) {
+async function insertMessage({ username, avatar, text, imageUrl, room, createdAt, whisperTo = null }) {
     const result = await pool.query(
-        `INSERT INTO messages (username, avatar, text, image_url, room, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO messages (username, avatar, text, image_url, room, created_at, whisper_to)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING id`,
-        [username, avatar, text, imageUrl, room, createdAt]
+        [username, avatar, text, imageUrl, room, createdAt, whisperTo && whisperTo.length ? JSON.stringify(whisperTo) : null]
     );
     return result.rows[0].id;
 }
 
-async function getRecentMessages(room, limit = 100) {
+function parseWhisperList(raw) {
+    if (!raw) return null;
+    try {
+        const arr = JSON.parse(raw);
+        return Array.isArray(arr) && arr.length ? arr : null;
+    } catch (e) { return null; }
+}
+
+// viewerName — кто запрашивает историю: чужие шёпоты (wh@) ему не отдаём.
+async function getRecentMessages(room, limit = 100, viewerName = '') {
     const result = await pool.query(
         `SELECT * FROM messages WHERE room = $1 ORDER BY id DESC LIMIT $2`,
         [room, limit]
     );
+    const viewer = String(viewerName || '').toLowerCase();
     // pg возвращает колонки BIGINT (created_at) не числом, а строкой — так драйвер
     // защищается от потери точности у значений больше Number.MAX_SAFE_INTEGER.
     // На клиенте `new Date("1758214528000")` (строка) — это Invalid Date, а
-    // `new Date(1758214528000)` (число) — нормальная дата. Из-за этого у сообщений,
-    // подгруженных из истории, дата отправки "слетала", хотя у свежих, только что
-    // отправленных сообщений (created_at приходит как обычное число через socket.io
-    // сразу из памяти, без похода в БД) всё было в порядке.
-    return result.rows.reverse().map(row => ({
-        ...row,
-        created_at: Number(row.created_at)
-    }));
+    // `new Date(1758214528000)` (число) — нормальная дата.
+    return result.rows.reverse()
+        .map(row => {
+            const whisperTo = parseWhisperList(row.whisper_to);
+            return { ...row, whisper_to: whisperTo, created_at: Number(row.created_at) };
+        })
+        .filter(row => {
+            if (!row.whisper_to) return true;
+            if (!viewer) return false;
+            if (String(row.username || '').toLowerCase() === viewer) return true;
+            return row.whisper_to.some(n => String(n).toLowerCase() === viewer);
+        });
 }
 
 // ---------- Загрузка фото в чат: Cloudinary (не диск сервера — тот эфемерный на бесплатном хостинге) ----------
@@ -691,7 +707,7 @@ io.on('connection', (socket) => {
         socket.join(`chat:${cleanRoom}`);
 
         try {
-            const history = await getRecentMessages(cleanRoom);
+            const history = await getRecentMessages(cleanRoom, 100, socket.data && socket.data.username);
             socket.emit('chat history', { room: cleanRoom, messages: history });
         } catch (err) {
             console.error('❌ Ошибка чтения истории чата:', err);
@@ -1222,20 +1238,69 @@ io.on('connection', (socket) => {
         const avatar = socket.data.avatar || '';
         const createdAt = Date.now();
         const room = currentChatRoom;
+        const cleanText = text.trim();
+
+        // Шёпот: "wh@ник" — сообщение получают только отмеченные (через wh@ник или @ник) и автор.
+        // Проверяем ДО сохранения: если адресатов найти не удалось, ничего не отправляем —
+        // иначе личный текст ушёл бы всей комнате как обычное сообщение.
+        let whisperTo = null;
+        if (/(^|[^\wа-яА-ЯёЁ@])wh@/iu.test(cleanText)) {
+            const code = customCodeFromRoom(room);
+            let members = [];
+            if (code && customRooms[code]) {
+                try { members = await getServerMembers(code); } catch (e) { members = []; }
+            }
+            const names = [...new Set(members.map(m => m && m.username).filter(Boolean))]
+                .sort((a, b) => b.length - a.length)
+                .map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+            const targets = new Map();
+            let hasWhisperTag = false;
+            if (names.length) {
+                const re = new RegExp(`(^|[^\\wа-яА-ЯёЁ@])(wh)?@(${names.join('|')})(?![\\wа-яА-ЯёЁ])`, 'giu');
+                let m;
+                while ((m = re.exec(cleanText))) {
+                    if (m[2]) hasWhisperTag = true;
+                    const real = members.find(x => x.username.toLowerCase() === m[3].toLowerCase());
+                    if (real) targets.set(real.username.toLowerCase(), real.username);
+                    if (m.index === re.lastIndex) re.lastIndex++;
+                }
+            }
+            if (!hasWhisperTag || !targets.size) {
+                socket.emit('chat notice', code
+                    ? 'Шёпот не отправлен: после wh@ укажите ник участника этого сервера.'
+                    : 'Шёпот (wh@) работает только на серверах с кодом.');
+                return;
+            }
+            targets.set(username.toLowerCase(), username); // автор тоже видит свой шёпот
+            whisperTo = [...targets.values()];
+        }
 
         try {
-            const id = await insertMessage({ username, avatar, text: text.trim(), imageUrl, room, createdAt });
+            const id = await insertMessage({ username, avatar, text: cleanText, imageUrl, room, createdAt, whisperTo });
 
-            // Рассылаем только тем, у кого сейчас открыт этот же сервер в чате.
-            io.to(`chat:${room}`).emit('chat message', {
+            const outgoing = {
                 id,
                 username,
                 avatar,
-                text: text.trim(),
+                text: cleanText,
                 image_url: imageUrl,
                 room,
-                created_at: createdAt
-            });
+                created_at: createdAt,
+                whisper_to: whisperTo
+            };
+
+            if (!whisperTo) {
+                // Рассылаем только тем, у кого сейчас открыт этот же сервер в чате.
+                io.to(`chat:${room}`).emit('chat message', outgoing);
+            } else {
+                const allowed = new Set(whisperTo.map(n => n.toLowerCase()));
+                const socketIds = io.sockets.adapter.rooms.get(`chat:${room}`) || new Set();
+                for (const sid of socketIds) {
+                    const sock = io.sockets.sockets.get(sid);
+                    const uname = sock && sock.data && sock.data.username;
+                    if (uname && allowed.has(uname.toLowerCase())) sock.emit('chat message', outgoing);
+                }
+            }
         } catch (err) {
             console.error('❌ Ошибка сохранения сообщения:', err);
         }

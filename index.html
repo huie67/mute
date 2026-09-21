@@ -408,6 +408,49 @@
         }
         .keybind-clear:hover { background: var(--bg-elevated); color: var(--text); }
 
+        .chat-cmd-list { display: flex; flex-direction: column; }
+        .chat-cmd-row {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            padding: 10px 0;
+            border-bottom: 1px solid var(--border-soft);
+        }
+        .chat-cmd-row:last-child { border-bottom: none; }
+        .chat-cmd-code {
+            flex-shrink: 0;
+            min-width: 84px;
+            padding: 3px 8px;
+            border-radius: 6px;
+            background: var(--accent-soft);
+            color: var(--accent);
+            font-family: inherit;
+            font-size: 12px;
+            font-weight: 700;
+            text-align: center;
+        }
+        .chat-cmd-desc { font-size: 13px; color: var(--text-muted); line-height: 1.4; }
+        .chat-cmd-desc code, .profile-hint code {
+            font-family: inherit;
+            font-weight: 600;
+            color: var(--accent);
+        }
+        .msg-text .mention-all { background: var(--accent); color: #fff; }
+        .msg-text .mention-whisper { font-style: italic; }
+        .chat-message.chat-whisper {
+            font-style: italic;
+            background: var(--accent-soft);
+            border-left: 3px solid var(--accent);
+            border-radius: 6px;
+            padding-left: 8px;
+        }
+        .whisper-tag {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--accent);
+            font-style: normal;
+        }
+
         .voice-offcall-divider {
             font-size: 11px;
             color: var(--text-faint);
@@ -2289,6 +2332,21 @@
                         <span class="profile-hint">Участники, которых нет в звонке, отображаются под теми, кто в звонке, с отметкой «в сети» или «не в сети».</span>
                     </div>
                 </div>
+
+                <div class="settings-section">
+                    <div class="settings-section-title">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
+                        Язык интерфейса
+                    </div>
+                    <div class="control-group">
+                        <label for="ui-language-select">Язык</label>
+                        <select id="ui-language-select">
+                            <option value="ru">Русский</option>
+                            <option value="en">English</option>
+                        </select>
+                        <span class="profile-hint">Переводы пока не подключены — выбор сохраняется на будущее, интерфейс остаётся на русском.</span>
+                    </div>
+                </div>
             </div>
 
             <div class="settings-tab-panel" data-tab-panel="accessibility">
@@ -2305,6 +2363,28 @@
                         </label>
                     </div>
                     <span class="profile-hint" id="keybind-hint">Нажмите на кнопку справа от действия, затем — нужную комбинацию клавиш. Esc — отмена.</span>
+                </div>
+
+                <div class="settings-section">
+                    <div class="settings-section-title">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+                        Команды в чате
+                    </div>
+                    <div class="chat-cmd-list">
+                        <div class="chat-cmd-row">
+                            <code class="chat-cmd-code">@ник</code>
+                            <span class="chat-cmd-desc">Отметить человека — он получит уведомление о вашем сообщении.</span>
+                        </div>
+                        <div class="chat-cmd-row">
+                            <code class="chat-cmd-code">wh@ник</code>
+                            <span class="chat-cmd-desc">Прошептать: сообщение увидят только отмеченные вами участники и вы. Можно добавить ещё людей через <code>@ник</code>.</span>
+                        </div>
+                        <div class="chat-cmd-row">
+                            <code class="chat-cmd-code">f@</code>
+                            <span class="chat-cmd-desc">Отметить всех участников сервера.</span>
+                        </div>
+                    </div>
+                    <span class="profile-hint">Ники подсказываются при вводе <code>@</code> или <code>wh@</code>. Шёпот и отметки работают на серверах с кодом.</span>
                 </div>
             </div>
 

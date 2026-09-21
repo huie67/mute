@@ -3367,6 +3367,45 @@ deafenBtn.addEventListener('click', () => {
     broadcastMuteState();
 });
 
+// ---------- Язык интерфейса (подготовка под будущие переводы) ----------
+// Сейчас переводов нет: выбор просто сохраняется, а интерфейс остаётся на русском.
+// Чтобы добавить язык — заполнить словарь I18N и помечать элементы атрибутом data-i18n="ключ"
+// (applyI18n подставит перевод, а если ключа нет — оставит исходный русский текст).
+const LANGUAGE_KEY = 'mute_ui_language';
+const SUPPORTED_LANGUAGES = ['ru', 'en'];
+const I18N = { ru: {}, en: {} };
+let uiLanguage = 'ru';
+try {
+    const saved = localStorage.getItem(LANGUAGE_KEY);
+    if (SUPPORTED_LANGUAGES.includes(saved)) uiLanguage = saved;
+} catch (e) { /* ignore */ }
+
+function t(key, fallback) {
+    const dict = I18N[uiLanguage] || {};
+    return dict[key] !== undefined ? dict[key] : (fallback !== undefined ? fallback : key);
+}
+
+function applyI18n() {
+    document.documentElement.lang = uiLanguage;
+    document.querySelectorAll('[data-i18n]').forEach(el => {
+        const dict = I18N[uiLanguage] || {};
+        const key = el.dataset.i18n;
+        if (dict[key] !== undefined) el.textContent = dict[key];
+    });
+}
+
+(function initLanguageSetting() {
+    applyI18n();
+    const select = document.getElementById('ui-language-select');
+    if (!select) return;
+    select.value = uiLanguage;
+    select.addEventListener('change', () => {
+        uiLanguage = SUPPORTED_LANGUAGES.includes(select.value) ? select.value : 'ru';
+        try { localStorage.setItem(LANGUAGE_KEY, uiLanguage); } catch (e) { /* ignore */ }
+        applyI18n();
+    });
+})();
+
 // ---------- Спец. возможности: горячие клавиши ----------
 // Комбинации хранятся на устройстве. В приложении (Tauri) они регистрируются глобально —
 // работают и при свёрнутом окне; в браузере — только пока вкладка в фокусе.
@@ -3750,39 +3789,65 @@ function findMentionMatches(text, members) {
         .map(escapeRegExp);
     if (!names.length) return [];
 
-    // Перед "@" не должно быть буквы/цифры/другого "@" (чтобы не путать с email),
+    // Перед "@" (или перед "wh@") не должно быть буквы/цифры/другого "@" (чтобы не путать с email),
     // а после ника не должно идти продолжение слова (иначе "@huie" не должен
     // матчиться как "@hu" из-за более раннего варианта в списке).
-    const pattern = new RegExp(`(^|[^\\wа-яА-ЯёЁ@])@(${names.join('|')})(?![\\wа-яА-ЯёЁ])`, 'giu');
+    // Необязательный префикс "wh" — шёпот: wh@ник.
+    const pattern = new RegExp(`(^|[^\\wа-яА-ЯёЁ@])(wh)?@(${names.join('|')})(?![\\wа-яА-ЯёЁ])`, 'giu');
     const matches = [];
     let m;
     while ((m = pattern.exec(text))) {
-        matches.push({ index: m.index + m[1].length, length: m[2].length + 1, username: m[2] });
+        const whisper = !!m[2];
+        matches.push({
+            index: m.index + m[1].length,
+            length: (whisper ? 2 : 0) + 1 + m[3].length,
+            username: m[3],
+            whisper
+        });
         if (m.index === pattern.lastIndex) pattern.lastIndex++; // защита от зацикливания на пустом совпадении
     }
     return matches;
 }
 
+// "f@" — отметить всех участников сервера. Ищется отдельно от ников, поэтому работает
+// и когда список участников ещё не загружен.
+function findEveryoneMatches(text) {
+    if (!text) return [];
+    const pattern = /(^|[^\wа-яА-ЯёЁ@])f@(?![\wа-яА-ЯёЁ@])/giu;
+    const out = [];
+    let m;
+    while ((m = pattern.exec(text))) {
+        out.push({ index: m.index + m[1].length, length: 2, everyone: true });
+    }
+    return out;
+}
+
 // Собирает HTML текста сообщения с подсвеченными @упоминаниями. Текст всё
 // равно полностью экранируется — подсветка добавляется поверх escapeHtml.
 function renderMessageTextWithMentions(text, members, myUsername) {
-    const matches = findMentionMatches(text, members);
-    if (!matches.length) return escapeHtml(text);
+    const tokens = [...findMentionMatches(text, members), ...findEveryoneMatches(text)]
+        .sort((a, b) => a.index - b.index);
+    if (!tokens.length) return escapeHtml(text);
 
     const meLower = (myUsername || '').toLowerCase();
     let html = '';
     let lastIndex = 0;
-    matches.forEach(({ index, length, username }) => {
-        html += escapeHtml(text.slice(lastIndex, index));
-        const isMe = username.toLowerCase() === meLower;
-        html += `<span class="mention${isMe ? ' mention-me' : ''}">@${escapeHtml(username)}</span>`;
-        lastIndex = index + length;
+    tokens.forEach((tok) => {
+        if (tok.index < lastIndex) return; // токены не должны пересекаться
+        html += escapeHtml(text.slice(lastIndex, tok.index));
+        if (tok.everyone) {
+            html += `<span class="mention mention-all">f@</span>`;
+        } else {
+            const isMe = tok.username.toLowerCase() === meLower;
+            html += `<span class="mention${isMe ? ' mention-me' : ''}${tok.whisper ? ' mention-whisper' : ''}">${tok.whisper ? 'wh' : ''}@${escapeHtml(tok.username)}</span>`;
+        }
+        lastIndex = tok.index + tok.length;
     });
     html += escapeHtml(text.slice(lastIndex));
     return html;
 }
 
-function renderChatMessage({ username, user, avatar, text, image_url, created_at }) {
+function renderChatMessage({ username, user, avatar, text, image_url, created_at, whisper_to }) {
     const name = username || user || 'Участник';
     // created_at приходит с сервера как Date.now() (мс) — если вдруг отсутствует или же
     // после парсинга получилась невалидная дата (например, у старых записей в БД, ещё
@@ -3797,6 +3862,16 @@ function renderChatMessage({ username, user, avatar, text, image_url, created_at
     msg.className = 'chat-message fade-in';
 
     let html = `<strong class="msg-sender" style="color:${getUserColor(name)}">${escapeHtml(name)}:</strong> `;
+    if (Array.isArray(whisper_to) && whisper_to.length) {
+        msg.classList.add('chat-whisper');
+        const meLowerW = (currentUser.username || '').toLowerCase();
+        const iAmSender = name.toLowerCase() === meLowerW;
+        const others = whisper_to.filter(n => String(n).toLowerCase() !== name.toLowerCase());
+        const label = iAmSender
+            ? `шёпот → ${others.map(escapeHtml).join(', ')}`
+            : 'шепчет вам';
+        html += `<span class="whisper-tag" title="Это сообщение видят только отмеченные участники">${label}</span> `;
+    }
     if (text) html += `<span class="msg-text">${renderMessageTextWithMentions(text, getMentionCandidates(), currentUser.username)}</span>`;
     if (image_url) {
         html += `<div class="chat-image-wrap"><img src="${image_url}" class="chat-image" alt="Изображение" onclick="openImageLightbox('${image_url}')"></div>`;
@@ -3834,15 +3909,27 @@ socket.on('chat message', (payload) => {
         const mentions = findMentionMatches(payload.text || '', getMentionCandidates());
         const meLower = (currentUser.username || '').toLowerCase();
         const iAmMentioned = !!meLower && mentions.some(m => m.username.toLowerCase() === meLower);
+        const isWhisper = Array.isArray(payload.whisper_to) && payload.whisper_to.length > 0;
+        // "f@" отмечает всех, но не в шёпоте (шёпот видят только его адресаты)
+        const everyoneMentioned = !isWhisper && findEveryoneMatches(payload.text || '').length > 0;
 
-        if (iAmMentioned) {
+        if (isWhisper) {
+            playMentionSound();
+            showToast(`${senderName} прошептал(а) вам`);
+        } else if (iAmMentioned) {
             playMentionSound();
             showToast(`${senderName} упомянул(а) вас в чате`);
+        } else if (everyoneMentioned) {
+            playMentionSound();
+            showToast(`${senderName} отметил(а) всех участников`);
         } else {
             playMessageSound();
         }
     }
 });
+
+// Сервер сообщает, почему сообщение не ушло (например, неверный ник после wh@)
+socket.on('chat notice', (text) => { if (text) showToast(String(text)); });
 
 // ---------- Автодополнение @упоминаний в поле ввода чата ----------
 // (mentionAutocompleteEl, mentionState и closeMentionAutocomplete объявлены выше,
@@ -3894,10 +3981,12 @@ function updateMentionAutocomplete() {
     const beforeCursor = value.slice(0, cursor);
 
     // "@" в начале строки или после пробела/переноса, дальше — без пробелов до курсора.
-    const match = beforeCursor.match(/(^|\s)@([^\s@]{0,32})$/u);
+    // Допускается префикс "wh" (шёпот): wh@ник. "f@" — команда "отметить всех", подсказок ников для неё нет.
+    const match = beforeCursor.match(/(^|\s)(wh|f)?@([^\s@]{0,32})$/iu);
     if (!match) { closeMentionAutocomplete(); return; }
+    if ((match[2] || '').toLowerCase() === 'f') { closeMentionAutocomplete(); return; }
 
-    const query = match[2];
+    const query = match[3];
     const startIndex = cursor - query.length - 1; // позиция символа '@'
     const candidates = getMentionCandidates();
     if (!candidates.length) { closeMentionAutocomplete(); return; }
