@@ -64,6 +64,8 @@ async function initDb() {
     // поэтому переживают перезаход и синхронизируются между устройствами.
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS theme_color TEXT;`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS theme_text_mode TEXT;`);
+    // Цвет самого окна приложения (фон) — отдельно от акцентного цвета, тоже привязан к аккаунту.
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS theme_bg_color TEXT;`);
 
     // Пользовательские серверы/комнаты. Метаданные хранятся в Neon, поэтому
     // переживают перезапуск/деплой Render. owner_socket_id намеренно не хранится:
@@ -229,7 +231,8 @@ function validateThemeTextMode(mode) {
 function themeFromUserRow(user) {
     return {
         accent: user.theme_color || null,
-        textMode: user.theme_text_mode || null
+        textMode: user.theme_text_mode || null,
+        bgColor: user.theme_bg_color || null
     };
 }
 
@@ -277,7 +280,7 @@ app.post('/auth/register', async (req, res) => {
 
         const result = await pool.query(
             `INSERT INTO users (username, password_hash, avatar, created_at)
-             VALUES ($1, $2, $3, $4) RETURNING id, username, avatar, theme_color, theme_text_mode`,
+             VALUES ($1, $2, $3, $4) RETURNING id, username, avatar, theme_color, theme_text_mode, theme_bg_color`,
             [username, passwordHash, finalAvatar, Date.now()]
         );
         const user = result.rows[0];
@@ -344,7 +347,7 @@ app.put('/auth/profile', async (req, res) => {
         }
 
         const result = await pool.query(
-            `UPDATE users SET username = $1, avatar = COALESCE($2, avatar) WHERE id = $3 RETURNING id, username, avatar, theme_color, theme_text_mode`,
+            `UPDATE users SET username = $1, avatar = COALESCE($2, avatar) WHERE id = $3 RETURNING id, username, avatar, theme_color, theme_text_mode, theme_bg_color`,
             [username, avatar, decoded.uid]
         );
         const user = result.rows[0];
@@ -367,7 +370,7 @@ app.get('/auth/theme', async (req, res) => {
     if (!decoded) return res.status(401).json({ error: 'Не авторизован' });
 
     try {
-        const result = await pool.query('SELECT theme_color, theme_text_mode FROM users WHERE id = $1', [decoded.uid]);
+        const result = await pool.query('SELECT theme_color, theme_text_mode, theme_bg_color FROM users WHERE id = $1', [decoded.uid]);
         const user = result.rows[0];
         if (!user) return res.status(404).json({ error: 'Аккаунт не найден' });
         res.json({ theme: themeFromUserRow(user) });
@@ -385,19 +388,23 @@ app.put('/auth/theme', async (req, res) => {
 
     const accent = (req.body && 'accent' in req.body) ? req.body.accent : undefined;
     const textMode = (req.body && 'textMode' in req.body) ? req.body.textMode : undefined;
+    const bgColor = (req.body && 'bgColor' in req.body) ? req.body.bgColor : undefined;
 
     const accentError = accent !== undefined ? validateThemeColor(accent) : null;
     if (accentError) return res.status(400).json({ error: accentError });
     const textModeError = textMode !== undefined ? validateThemeTextMode(textMode) : null;
     if (textModeError) return res.status(400).json({ error: textModeError });
+    const bgColorError = bgColor !== undefined ? validateThemeColor(bgColor) : null;
+    if (bgColorError) return res.status(400).json({ error: bgColorError });
 
     try {
         const result = await pool.query(
             `UPDATE users SET
                 theme_color = CASE WHEN $1::boolean THEN $2 ELSE theme_color END,
-                theme_text_mode = CASE WHEN $3::boolean THEN $4 ELSE theme_text_mode END
-             WHERE id = $5 RETURNING theme_color, theme_text_mode`,
-            [accent !== undefined, accent || null, textMode !== undefined, textMode || null, decoded.uid]
+                theme_text_mode = CASE WHEN $3::boolean THEN $4 ELSE theme_text_mode END,
+                theme_bg_color = CASE WHEN $5::boolean THEN $6 ELSE theme_bg_color END
+             WHERE id = $7 RETURNING theme_color, theme_text_mode, theme_bg_color`,
+            [accent !== undefined, accent || null, textMode !== undefined, textMode || null, bgColor !== undefined, bgColor || null, decoded.uid]
         );
         const user = result.rows[0];
         if (!user) return res.status(404).json({ error: 'Аккаунт не найден' });

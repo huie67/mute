@@ -2085,6 +2085,34 @@
 
                 <div class="settings-section">
                     <div class="settings-section-title">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="18" rx="2"></rect><path d="M2 9h20"></path></svg>
+                        Цвет окна приложения
+                    </div>
+                    <div class="control-group">
+                        <label>Быстрый выбор</label>
+                        <div class="theme-actions-row">
+                            <button type="button" class="btn-secondary-ghost" id="theme-bg-dark-btn">Тёмная</button>
+                            <button type="button" class="btn-secondary-ghost" id="theme-bg-light-btn">Светлая</button>
+                        </div>
+                    </div>
+                    <div class="control-group">
+                        <label>Свой цвет фона окна</label>
+                        <div class="theme-color-row">
+                            <input type="color" id="theme-bg-color-picker" class="theme-color-swatch" value="#0f1117" title="Выбрать цвет окна">
+                            <input type="text" id="theme-bg-color-hex" class="theme-color-hex-input" placeholder="#0f1117 или rgb(15,17,23)">
+                        </div>
+                        <p class="auth-error" id="theme-bg-color-error" style="display:none"></p>
+                    </div>
+                    <div class="control-group">
+                        <label>Предпросмотр</label>
+                        <div class="theme-preview-card" id="theme-bg-preview-card">
+                            <span class="theme-preview-text">Так будет выглядеть фон окна, карточек и панелей</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="settings-section">
+                    <div class="settings-section-title">
                         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V4h16v3"></path><path d="M9 20h6"></path><path d="M12 4v16"></path></svg>
                         Цвет текста
                     </div>

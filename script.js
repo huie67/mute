@@ -483,7 +483,8 @@ let pendingAvatarFile = null; // выбранный файл аватарки, �
 // Хранится в localStorage (моментально, работает без аккаунта) и, если пользователь
 // вошёл в аккаунт, дублируется на сервере — чтобы тема была одинаковой на всех устройствах.
 const THEME_STORAGE_KEY = 'voicechat_theme';
-const DEFAULT_THEME = { accent: '#6366f1', textMode: 'light' }; // как в исходном :root
+const DEFAULT_THEME = { accent: '#6366f1', textMode: 'light', bgColor: '#0f1117' }; // как в исходном :root
+const LIGHT_BG_PRESET = '#f3f4f6';
 let currentTheme = { ...DEFAULT_THEME };
 let themeSaveServerTimer = null;
 
@@ -546,7 +547,8 @@ function loadThemeFromStorage() {
         const parsed = JSON.parse(raw);
         return {
             accent: parseColorInput(parsed.accent) || DEFAULT_THEME.accent,
-            textMode: parsed.textMode === 'dark' ? 'dark' : 'light'
+            textMode: parsed.textMode === 'dark' ? 'dark' : 'light',
+            bgColor: parseColorInput(parsed.bgColor) || DEFAULT_THEME.bgColor
         };
     } catch (e) { return null; }
 }
@@ -571,6 +573,24 @@ function applyTheme(theme) {
     root.setProperty('--text-muted', hexToRgbaString(isDark ? '#0f1117' : '#f3f4f6', 0.65));
     root.setProperty('--text-faint', hexToRgbaString(isDark ? '#0f1117' : '#f3f4f6', 0.45));
 
+    // Цвет окна: сам фон — это выбранный цвет, а карточки/панели/поля — его оттенки
+    // (немного светлее для поднятых панелей, немного темнее для полей ввода),
+    // чтобы вся иерархия поверхностей приложения оставалась читаемой при любом цвете.
+    const bg = currentTheme.bgColor;
+    const bgParts = hexToRgbParts(bg) || hexToRgbParts(DEFAULT_THEME.bgColor);
+    const isLightBg = (bgParts.r * 299 + bgParts.g * 587 + bgParts.b * 114) / 1000 > 128;
+    const raisedShift = isLightBg ? -4 : 4;
+    const cardShift = isLightBg ? -7 : 7;
+    const inputShift = isLightBg ? 4 : -3;
+    const borderShift = isLightBg ? -14 : 14;
+    const borderSoftShift = isLightBg ? -9 : 8;
+    root.setProperty('--bg-app', bg);
+    root.setProperty('--bg-raised', shadeHex(bg, raisedShift));
+    root.setProperty('--bg-card', shadeHex(bg, cardShift));
+    root.setProperty('--bg-input', shadeHex(bg, inputShift));
+    root.setProperty('--border', shadeHex(bg, borderShift));
+    root.setProperty('--border-soft', shadeHex(bg, borderSoftShift));
+
     // Обновляем элементы настроек кастомизации, если панель уже отрисована.
     const picker = document.getElementById('theme-color-picker');
     const hexInput = document.getElementById('theme-color-hex');
@@ -583,6 +603,11 @@ function applyTheme(theme) {
     document.querySelectorAll('.theme-preset-btn').forEach(btn => {
         btn.classList.toggle('active', (btn.dataset.color || '').toLowerCase() === accent.toLowerCase());
     });
+
+    const bgPicker = document.getElementById('theme-bg-color-picker');
+    const bgHexInput = document.getElementById('theme-bg-color-hex');
+    if (bgPicker) bgPicker.value = bg;
+    if (bgHexInput) bgHexInput.value = bg;
 }
 
 // Сохраняет локально всегда, и на сервере — если пользователь вошёл в аккаунт
@@ -599,7 +624,7 @@ function persistTheme(theme, { syncServer = true } = {}) {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${currentUser.token}`
                 },
-                body: JSON.stringify({ accent: theme.accent, textMode: theme.textMode })
+                body: JSON.stringify({ accent: theme.accent, textMode: theme.textMode, bgColor: theme.bgColor })
             });
         } catch (e) {
             console.warn('[Внимание] Не удалось синхронизировать тему с сервером:', e);
@@ -617,6 +642,11 @@ function setThemeTextMode(mode) {
     applyTheme({ ...currentTheme, textMode: mode });
 }
 
+function setThemeBg(hex) {
+    persistTheme({ ...currentTheme, bgColor: hex });
+    applyTheme({ ...currentTheme, bgColor: hex });
+}
+
 function resetTheme() {
     persistTheme({ ...DEFAULT_THEME });
     applyTheme({ ...DEFAULT_THEME });
@@ -632,10 +662,11 @@ async function syncThemeFromServer() {
         });
         if (!res.ok) return;
         const data = await res.json();
-        if (data && data.theme && (data.theme.accent || data.theme.textMode)) {
+        if (data && data.theme && (data.theme.accent || data.theme.textMode || data.theme.bgColor)) {
             const merged = {
                 accent: parseColorInput(data.theme.accent) || currentTheme.accent,
-                textMode: data.theme.textMode === 'dark' ? 'dark' : (data.theme.textMode === 'light' ? 'light' : currentTheme.textMode)
+                textMode: data.theme.textMode === 'dark' ? 'dark' : (data.theme.textMode === 'light' ? 'light' : currentTheme.textMode),
+                bgColor: parseColorInput(data.theme.bgColor) || currentTheme.bgColor
             };
             saveThemeToStorage(merged);
             applyTheme(merged);
@@ -700,6 +731,37 @@ document.addEventListener('DOMContentLoaded', () => {
             setThemeTextMode(currentTheme.textMode === 'dark' ? 'light' : 'dark');
         });
     }
+
+    const bgPicker = document.getElementById('theme-bg-color-picker');
+    const bgHexInput = document.getElementById('theme-bg-color-hex');
+    const bgErrorEl = document.getElementById('theme-bg-color-error');
+    const bgDarkBtn = document.getElementById('theme-bg-dark-btn');
+    const bgLightBtn = document.getElementById('theme-bg-light-btn');
+
+    if (bgPicker) {
+        bgPicker.addEventListener('input', () => {
+            if (bgErrorEl) bgErrorEl.style.display = 'none';
+            setThemeBg(bgPicker.value);
+        });
+    }
+    if (bgHexInput) {
+        const tryApplyBgHex = () => {
+            const parsed = parseColorInput(bgHexInput.value);
+            if (!parsed) {
+                if (bgErrorEl) {
+                    bgErrorEl.textContent = 'Введите цвет в формате #RRGGBB или rgb(r, g, b)';
+                    bgErrorEl.style.display = 'block';
+                }
+                return;
+            }
+            if (bgErrorEl) bgErrorEl.style.display = 'none';
+            setThemeBg(parsed);
+        };
+        bgHexInput.addEventListener('change', tryApplyBgHex);
+        bgHexInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') tryApplyBgHex(); });
+    }
+    if (bgDarkBtn) bgDarkBtn.addEventListener('click', () => setThemeBg(DEFAULT_THEME.bgColor));
+    if (bgLightBtn) bgLightBtn.addEventListener('click', () => setThemeBg(LIGHT_BG_PRESET));
 });
 let selectedRoom = null; 
 
@@ -1347,10 +1409,11 @@ async function applyAuthSuccess(data) {
 
     // Тема с сервера (если уже сохранялась под этим аккаунтом) главнее локальной —
     // это то, что синхронизирует цвет между устройствами при входе в тот же аккаунт.
-    if (data.theme && (data.theme.accent || data.theme.textMode)) {
+    if (data.theme && (data.theme.accent || data.theme.textMode || data.theme.bgColor)) {
         const merged = {
             accent: parseColorInput(data.theme.accent) || currentTheme.accent,
-            textMode: data.theme.textMode === 'dark' ? 'dark' : (data.theme.textMode === 'light' ? 'light' : currentTheme.textMode)
+            textMode: data.theme.textMode === 'dark' ? 'dark' : (data.theme.textMode === 'light' ? 'light' : currentTheme.textMode),
+            bgColor: parseColorInput(data.theme.bgColor) || currentTheme.bgColor
         };
         saveThemeToStorage(merged);
         applyTheme(merged);
