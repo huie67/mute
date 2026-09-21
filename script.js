@@ -58,6 +58,52 @@ const createdServerName = document.getElementById('created-server-name');
 const createdServerCode = document.getElementById('created-server-code');
 let lastCreatedServer = null;
 
+// ---------- Загрузка изображений (аватарки, чат) ----------
+// В WebView2 (десктопное приложение) file.type у выбранного файла бывает ПУСТЫМ, если в
+// Windows не зарегистрирован MIME для расширения — тогда проверка "это картинка?" ложно
+// отклоняла любой файл. Поэтому тип определяем ещё и по расширению.
+const IMAGE_EXT_TYPES = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', jfif: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
+const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
+
+function normalizeImageFile(file) {
+    if (!file) return file;
+    if (file.type && file.type.startsWith('image/')) return file;
+    const ext = (String(file.name || '').split('.').pop() || '').toLowerCase();
+    const type = IMAGE_EXT_TYPES[ext];
+    if (!type) return file; // не картинка — вызывающий код покажет своё сообщение
+    try { return new File([file], file.name || `image.${ext}`, { type }); } catch (e) { return file; }
+}
+
+// Единая загрузка на сервер: понятные тексты ошибок вместо немого "не удалось", таймаут
+// (бесплатный Render после простоя просыпается долго) и безопасный разбор ответа.
+async function uploadImageFile(file) {
+    const f = normalizeImageFile(file);
+    if (!f || !f.type || !f.type.startsWith('image/')) throw new Error('Можно загружать только изображения (PNG, JPG, GIF, WEBP).');
+    if (f.size > MAX_UPLOAD_BYTES) throw new Error('Файл слишком большой (максимум 8 МБ).');
+
+    const formData = new FormData();
+    formData.append('image', f, f.name || 'image');
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 60000);
+    let res;
+    try {
+        res = await fetch('/upload', { method: 'POST', body: formData, signal: controller.signal });
+    } catch (e) {
+        if (e && e.name === 'AbortError') throw new Error('Сервер не ответил за 60 секунд. Попробуйте ещё раз.');
+        throw new Error('Нет соединения с сервером.');
+    } finally {
+        clearTimeout(timer);
+    }
+
+    let data = null;
+    try { data = await res.json(); } catch (e) { /* ответ не JSON */ }
+    if (!res.ok || !data || !data.url) {
+        throw new Error((data && data.error) || `Ошибка сервера (${res.status}).`);
+    }
+    return data.url;
+}
+
 // ---------- Аватарка создаваемого сервера (ссылка или файл) ----------
 const createServerAvatarPreview = document.getElementById('create-server-avatar-preview');
 const createServerAvatarUrl = document.getElementById('create-server-avatar-url');
@@ -71,7 +117,7 @@ createServerAvatarUrl?.addEventListener('input', () => {
 });
 
 createServerAvatarFile?.addEventListener('change', () => {
-    const file = createServerAvatarFile.files[0];
+    const file = normalizeImageFile(createServerAvatarFile.files[0]);
     if (!file) return;
     if (!file.type.startsWith('image/')) {
         alert('Можно загружать только изображения');
@@ -90,14 +136,7 @@ createServerAvatarFile?.addEventListener('change', () => {
 });
 
 async function resolveServerAvatarUpload(pendingFile, urlInputValue) {
-    if (pendingFile) {
-        const formData = new FormData();
-        formData.append('image', pendingFile);
-        const res = await fetch('/upload', { method: 'POST', body: formData });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Ошибка загрузки файла');
-        return data.url;
-    }
+    if (pendingFile) return await uploadImageFile(pendingFile);
     return urlInputValue.trim();
 }
 
@@ -327,7 +366,7 @@ serverInfoAvatarUrl?.addEventListener('input', () => {
 });
 
 serverInfoAvatarFile?.addEventListener('change', () => {
-    const file = serverInfoAvatarFile.files[0];
+    const file = normalizeImageFile(serverInfoAvatarFile.files[0]);
     if (!file) return;
     if (!file.type.startsWith('image/')) {
         alert('Можно загружать только изображения');
@@ -595,6 +634,55 @@ function saveThemeToStorage(theme) {
     try { localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify(theme)); } catch (e) { /* ignore */ }
 }
 
+// ---------- Иконка окна приложения (Tauri) в цвет темы ----------
+// В браузере ничего не делает. В приложении рисует тот же микрофон, что и стандартная иконка,
+// но цветом акцента темы, и ставит его как иконку окна (значок на панели задач, Alt+Tab).
+// Ярлык на рабочем столе и файл .exe — статические, их иконку во время работы менять нельзя.
+let appIconTimer = null;
+let lastAppIconColor = null;
+
+function drawMicIconPng(color) {
+    return new Promise((resolve) => {
+        const size = 256;
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        const scale = 10.5;
+        const offset = (size - 24 * scale) / 2;
+        ctx.translate(offset, offset);
+        ctx.scale(scale, scale);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.stroke(new Path2D('M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z')); // капсула микрофона
+        ctx.stroke(new Path2D('M5 10a7 7 0 0 0 14 0'));                                   // дуга подставки
+        ctx.stroke(new Path2D('M12 17v5M8 22h8'));                                        // ножка и основание
+        canvas.toBlob(async (blob) => {
+            if (!blob) return resolve(null);
+            resolve(new Uint8Array(await blob.arrayBuffer()));
+        }, 'image/png');
+    });
+}
+
+function updateAppIcon(color) {
+    const tw = window.__TAURI__ && window.__TAURI__.window;
+    if (!tw || !color || color === lastAppIconColor) return;
+    clearTimeout(appIconTimer);
+    // Цветовой пикер шлёт события непрерывно — перерисовываем иконку, когда человек остановился.
+    appIconTimer = setTimeout(async () => {
+        try {
+            const bytes = await drawMicIconPng(color);
+            if (!bytes) return;
+            await tw.getCurrentWindow().setIcon(bytes);
+            lastAppIconColor = color;
+        } catch (e) {
+            console.warn('[Иконка] Не удалось сменить иконку окна:', e);
+        }
+    }, 300);
+}
+
 // Красит всё приложение: --accent используется во всех кнопках, ссылках, акцентах,
 // подсветке активных элементов и т.д. по всему index.html через CSS-переменные.
 function applyTheme(theme) {
@@ -602,6 +690,7 @@ function applyTheme(theme) {
     const root = document.documentElement.style;
     const accent = currentTheme.accent;
     root.setProperty('--accent', accent);
+    updateAppIcon(accent);
     root.setProperty('--accent-hover', shadeHex(accent, -15));
     root.setProperty('--accent-soft', hexToRgbaString(accent, 0.15));
 
@@ -4078,39 +4167,61 @@ messageInput.addEventListener('keydown', (e) => {
 const attachBtn = document.getElementById('attach-image-btn');
 const attachInput = document.getElementById('attach-image-input');
 
+// Отправка картинки в чат — общая для кнопки-скрепки, вставки из буфера (Ctrl+V) и перетаскивания.
+async function sendImageToChat(rawFile) {
+    const file = normalizeImageFile(rawFile);
+    if (!file) return;
+    if (!selectedRoom || messageInput.disabled) {
+        alert('Сначала выберите сервер, чтобы отправить изображение в чат.');
+        return;
+    }
+    if (attachBtn) attachBtn.disabled = true;
+    try {
+        const url = await uploadImageFile(file);
+        socket.emit('chat message', { text: '', imageUrl: url });
+    } catch (err) {
+        console.error('[Ошибка] Загрузка изображения:', err);
+        alert(err.message || 'Не удалось загрузить изображение');
+    } finally {
+        if (attachBtn && !messageInput.disabled) attachBtn.disabled = false;
+    }
+}
+
 if (attachBtn && attachInput) {
     attachBtn.addEventListener('click', () => attachInput.click());
 
     attachInput.addEventListener('change', async () => {
-        const file = attachInput.files[0];
+        const file = normalizeImageFile(attachInput.files[0]);
         attachInput.value = '';
         if (!file) return;
-
-        if (!file.type.startsWith('image/')) {
-            alert('Можно прикреплять только изображения');
-            return;
-        }
-        if (file.size > 8 * 1024 * 1024) {
-            alert('Файл слишком большой (максимум 8 МБ)');
-            return;
-        }
-
-        attachBtn.disabled = true;
-        try {
-            const formData = new FormData();
-            formData.append('image', file);
-            const res = await fetch('/upload', { method: 'POST', body: formData });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || 'Ошибка загрузки');
-            socket.emit('chat message', { text: '', imageUrl: data.url });
-        } catch (err) {
-            console.error('[Ошибка] Загрузка изображения:', err);
-            alert('Не удалось загрузить изображение');
-        } finally {
-            attachBtn.disabled = false;
-        }
+        await sendImageToChat(file);
     });
 }
+
+// Вставка скриншота/картинки из буфера обмена прямо в поле чата
+messageInput.addEventListener('paste', (e) => {
+    const items = (e.clipboardData && e.clipboardData.items) || [];
+    for (const item of items) {
+        if (item.kind === 'file' && item.type.startsWith('image/')) {
+            const file = item.getAsFile();
+            if (file) { e.preventDefault(); sendImageToChat(file); return; }
+        }
+    }
+});
+
+// Перетаскивание картинки в окно чата (в приложении для этого отключён dragDropEnabled в tauri.conf.json)
+['dragenter', 'dragover'].forEach(evt => document.addEventListener(evt, (e) => {
+    if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) e.preventDefault();
+}));
+document.addEventListener('drop', (e) => {
+    const files = e.dataTransfer && e.dataTransfer.files;
+    if (!files || !files.length) return;
+    e.preventDefault(); // иначе окно попыталось бы открыть файл само
+    // Отправляем только если бросили на панель чата — случайный дроп в другом месте ничего не шлёт.
+    if (!e.target.closest || !e.target.closest('#chat-panel')) return;
+    const file = normalizeImageFile(files[0]);
+    if (file && file.type && file.type.startsWith('image/')) sendImageToChat(file);
+});
 
 // Полноэкранный просмотр фото из чата
 window.openImageLightbox = function(url) {
@@ -4184,7 +4295,7 @@ profileAvatarUrlInput.addEventListener('input', () => {
 });
 
 profileAvatarFileInput.addEventListener('change', () => {
-    const file = profileAvatarFileInput.files[0];
+    const file = normalizeImageFile(profileAvatarFileInput.files[0]);
     if (!file) return;
 
     if (!file.type.startsWith('image/')) {
@@ -4217,12 +4328,7 @@ saveProfileBtn.addEventListener('click', async () => {
         let newAvatar = currentUser.avatar;
 
         if (pendingAvatarFile) {
-            const formData = new FormData();
-            formData.append('image', pendingAvatarFile);
-            const res = await fetch('/upload', { method: 'POST', body: formData });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || 'Ошибка загрузки файла');
-            newAvatar = data.url;
+            newAvatar = await uploadImageFile(pendingAvatarFile);
         } else if (profileAvatarUrlInput.value.trim()) {
             newAvatar = profileAvatarUrlInput.value.trim();
         }

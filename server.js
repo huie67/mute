@@ -164,12 +164,20 @@ cloudinary.config({
 
 const ALLOWED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 
+const IMAGE_EXT_TYPES = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', jfif: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
+
 const upload = multer({
     storage: multer.memoryStorage(), // файл не пишем на диск — сразу в буфер и в Cloudinary
     limits: { fileSize: 8 * 1024 * 1024 }, // 8 МБ
     fileFilter: (req, file, cb) => {
-        if (!ALLOWED_IMAGE_TYPES.includes(file.mimetype)) {
-            return cb(new Error('Недопустимый формат файла'));
+        // Некоторые клиенты (WebView2 в десктопном приложении) шлют пустой или
+        // application/octet-stream — тогда доверяем расширению файла.
+        const ext = (String(file.originalname || '').split('.').pop() || '').toLowerCase();
+        const byExt = IMAGE_EXT_TYPES[ext];
+        const okByMime = ALLOWED_IMAGE_TYPES.includes(file.mimetype);
+        const genericMime = !file.mimetype || file.mimetype === 'application/octet-stream';
+        if (!okByMime && !(genericMime && byExt)) {
+            return cb(new Error('Недопустимый формат файла (нужны PNG, JPG, GIF или WEBP)'));
         }
         cb(null, true);
     }
@@ -190,7 +198,10 @@ function uploadBufferToCloudinary(buffer) {
 
 app.post('/upload', (req, res) => {
     upload.single('image')(req, res, async (err) => {
-        if (err) return res.status(400).json({ error: err.message });
+        if (err) {
+            const msg = err.code === 'LIMIT_FILE_SIZE' ? 'Файл слишком большой (максимум 8 МБ)' : err.message;
+            return res.status(400).json({ error: msg });
+        }
         if (!req.file) return res.status(400).json({ error: 'Файл не получен' });
 
         try {
@@ -198,7 +209,8 @@ app.post('/upload', (req, res) => {
             res.json({ url: result.secure_url });
         } catch (uploadErr) {
             console.error('❌ Ошибка загрузки в Cloudinary:', uploadErr);
-            res.status(500).json({ error: 'Не удалось загрузить изображение' });
+            const reason = uploadErr && (uploadErr.message || (uploadErr.error && uploadErr.error.message));
+            res.status(500).json({ error: reason ? `Не удалось загрузить изображение: ${reason}` : 'Не удалось загрузить изображение' });
         }
     });
 });
