@@ -60,6 +60,10 @@ async function initDb() {
     await pool.query(`
         CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower_idx ON users (LOWER(username));
     `);
+    // Кастомизация: цвет темы и режим текста (чёрный/белый) — привязаны к аккаунту,
+    // поэтому переживают перезаход и синхронизируются между устройствами.
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS theme_color TEXT;`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS theme_text_mode TEXT;`);
 
     // Пользовательские серверы/комнаты. Метаданные хранятся в Neon, поэтому
     // переживают перезапуск/деплой Render. owner_socket_id намеренно не хранится:
@@ -208,6 +212,27 @@ function verifyToken(token) {
     }
 }
 
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+
+function validateThemeColor(color) {
+    if (color === null || color === undefined) return null; // сброс к стандартному — допустим
+    if (typeof color !== 'string' || !HEX_COLOR_RE.test(color)) return 'Некорректный цвет';
+    return null;
+}
+
+function validateThemeTextMode(mode) {
+    if (mode === null || mode === undefined) return null;
+    if (mode !== 'light' && mode !== 'dark') return 'Некорректный режим текста';
+    return null;
+}
+
+function themeFromUserRow(user) {
+    return {
+        accent: user.theme_color || null,
+        textMode: user.theme_text_mode || null
+    };
+}
+
 function validateUsername(username) {
     if (typeof username !== 'string') return 'Введите ник';
     const trimmed = username.trim();
@@ -252,12 +277,12 @@ app.post('/auth/register', async (req, res) => {
 
         const result = await pool.query(
             `INSERT INTO users (username, password_hash, avatar, created_at)
-             VALUES ($1, $2, $3, $4) RETURNING id, username, avatar`,
+             VALUES ($1, $2, $3, $4) RETURNING id, username, avatar, theme_color, theme_text_mode`,
             [username, passwordHash, finalAvatar, Date.now()]
         );
         const user = result.rows[0];
 
-        res.json({ token: signToken(user), username: user.username, avatar: user.avatar });
+        res.json({ token: signToken(user), username: user.username, avatar: user.avatar, theme: themeFromUserRow(user) });
     } catch (err) {
         console.error('❌ Ошибка регистрации:', err);
         res.status(500).json({ error: 'Не удалось зарегистрироваться' });
@@ -286,7 +311,7 @@ app.post('/auth/login', async (req, res) => {
             return res.status(401).json({ error: 'Неверный ник или пароль' });
         }
 
-        res.json({ token: signToken(user), username: user.username, avatar: user.avatar });
+        res.json({ token: signToken(user), username: user.username, avatar: user.avatar, theme: themeFromUserRow(user) });
     } catch (err) {
         console.error('❌ Ошибка входа:', err);
         res.status(500).json({ error: 'Не удалось войти' });
@@ -319,17 +344,67 @@ app.put('/auth/profile', async (req, res) => {
         }
 
         const result = await pool.query(
-            `UPDATE users SET username = $1, avatar = COALESCE($2, avatar) WHERE id = $3 RETURNING id, username, avatar`,
+            `UPDATE users SET username = $1, avatar = COALESCE($2, avatar) WHERE id = $3 RETURNING id, username, avatar, theme_color, theme_text_mode`,
             [username, avatar, decoded.uid]
         );
         const user = result.rows[0];
         if (!user) return res.status(404).json({ error: 'Аккаунт не найден' });
 
         // Ник мог измениться — перевыпускаем токен с актуальным username.
-        res.json({ token: signToken(user), username: user.username, avatar: user.avatar });
+        res.json({ token: signToken(user), username: user.username, avatar: user.avatar, theme: themeFromUserRow(user) });
     } catch (err) {
         console.error('❌ Ошибка обновления профиля:', err);
         res.status(500).json({ error: 'Не удалось сохранить профиль' });
+    }
+});
+
+// Кастомизация темы: цвет приложения + режим текста (чёрный/белый), привязаны к аккаунту,
+// чтобы синхронизироваться между устройствами при входе под одним и тем же логином.
+app.get('/auth/theme', async (req, res) => {
+    const authHeader = req.headers.authorization || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    const decoded = token && verifyToken(token);
+    if (!decoded) return res.status(401).json({ error: 'Не авторизован' });
+
+    try {
+        const result = await pool.query('SELECT theme_color, theme_text_mode FROM users WHERE id = $1', [decoded.uid]);
+        const user = result.rows[0];
+        if (!user) return res.status(404).json({ error: 'Аккаунт не найден' });
+        res.json({ theme: themeFromUserRow(user) });
+    } catch (err) {
+        console.error('❌ Ошибка получения темы:', err);
+        res.status(500).json({ error: 'Не удалось загрузить тему' });
+    }
+});
+
+app.put('/auth/theme', async (req, res) => {
+    const authHeader = req.headers.authorization || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    const decoded = token && verifyToken(token);
+    if (!decoded) return res.status(401).json({ error: 'Не авторизован' });
+
+    const accent = (req.body && 'accent' in req.body) ? req.body.accent : undefined;
+    const textMode = (req.body && 'textMode' in req.body) ? req.body.textMode : undefined;
+
+    const accentError = accent !== undefined ? validateThemeColor(accent) : null;
+    if (accentError) return res.status(400).json({ error: accentError });
+    const textModeError = textMode !== undefined ? validateThemeTextMode(textMode) : null;
+    if (textModeError) return res.status(400).json({ error: textModeError });
+
+    try {
+        const result = await pool.query(
+            `UPDATE users SET
+                theme_color = CASE WHEN $1::boolean THEN $2 ELSE theme_color END,
+                theme_text_mode = CASE WHEN $3::boolean THEN $4 ELSE theme_text_mode END
+             WHERE id = $5 RETURNING theme_color, theme_text_mode`,
+            [accent !== undefined, accent || null, textMode !== undefined, textMode || null, decoded.uid]
+        );
+        const user = result.rows[0];
+        if (!user) return res.status(404).json({ error: 'Аккаунт не найден' });
+        res.json({ theme: themeFromUserRow(user) });
+    } catch (err) {
+        console.error('❌ Ошибка сохранения темы:', err);
+        res.status(500).json({ error: 'Не удалось сохранить тему' });
     }
 });
 

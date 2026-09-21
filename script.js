@@ -478,6 +478,229 @@ let myPeer = null;
 let myPeerId = null;
 let currentUser = { username: '', avatar: '', room: null, token: null };
 let pendingAvatarFile = null; // выбранный файл аватарки, ещё не загруженный на сервер
+
+// ---------- Кастомизация: цвет темы + чёрный/белый текст ----------
+// Хранится в localStorage (моментально, работает без аккаунта) и, если пользователь
+// вошёл в аккаунт, дублируется на сервере — чтобы тема была одинаковой на всех устройствах.
+const THEME_STORAGE_KEY = 'voicechat_theme';
+const DEFAULT_THEME = { accent: '#6366f1', textMode: 'light' }; // как в исходном :root
+let currentTheme = { ...DEFAULT_THEME };
+let themeSaveServerTimer = null;
+
+function clamp255(n) { return Math.max(0, Math.min(255, n)); }
+
+function hexToRgbParts(hex) {
+    const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+    if (!m) return null;
+    const int = parseInt(m[1], 16);
+    return { r: (int >> 16) & 255, g: (int >> 8) & 255, b: int & 255 };
+}
+
+function rgbPartsToHex({ r, g, b }) {
+    const toHex = (n) => clamp255(Math.round(n)).toString(16).padStart(2, '0');
+    return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+// Принимает "#RRGGBB", "RRGGBB", "rgb(r,g,b)" или "r, g, b" — то, что реально вводят люди.
+function parseColorInput(raw) {
+    if (typeof raw !== 'string') return null;
+    const value = raw.trim();
+    if (!value) return null;
+
+    const hexParts = hexToRgbParts(value);
+    if (hexParts) return rgbPartsToHex(hexParts);
+
+    const rgbMatch = /^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*(?:,\s*[\d.]+\s*)?\)$/i.exec(value)
+        || /^(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})$/.exec(value);
+    if (rgbMatch) {
+        const [, r, g, b] = rgbMatch;
+        if ([r, g, b].every(n => Number(n) <= 255)) {
+            return rgbPartsToHex({ r: Number(r), g: Number(g), b: Number(b) });
+        }
+    }
+    return null;
+}
+
+// percent > 0 — светлее, percent < 0 — темнее (как в редакторах тем).
+function shadeHex(hex, percent) {
+    const parts = hexToRgbParts(hex);
+    if (!parts) return hex;
+    const t = percent < 0 ? 0 : 255;
+    const p = Math.abs(percent) / 100;
+    return rgbPartsToHex({
+        r: parts.r + (t - parts.r) * p,
+        g: parts.g + (t - parts.g) * p,
+        b: parts.b + (t - parts.b) * p
+    });
+}
+
+function hexToRgbaString(hex, alpha) {
+    const parts = hexToRgbParts(hex) || hexToRgbParts(DEFAULT_THEME.accent);
+    return `rgba(${parts.r}, ${parts.g}, ${parts.b}, ${alpha})`;
+}
+
+function loadThemeFromStorage() {
+    try {
+        const raw = localStorage.getItem(THEME_STORAGE_KEY);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        return {
+            accent: parseColorInput(parsed.accent) || DEFAULT_THEME.accent,
+            textMode: parsed.textMode === 'dark' ? 'dark' : 'light'
+        };
+    } catch (e) { return null; }
+}
+
+function saveThemeToStorage(theme) {
+    try { localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify(theme)); } catch (e) { /* ignore */ }
+}
+
+// Красит всё приложение: --accent используется во всех кнопках, ссылках, акцентах,
+// подсветке активных элементов и т.д. по всему index.html через CSS-переменные.
+function applyTheme(theme) {
+    currentTheme = { ...DEFAULT_THEME, ...theme };
+    const root = document.documentElement.style;
+    const accent = currentTheme.accent;
+    root.setProperty('--accent', accent);
+    root.setProperty('--accent-hover', shadeHex(accent, -15));
+    root.setProperty('--accent-soft', hexToRgbaString(accent, 0.15));
+
+    const isDark = currentTheme.textMode === 'dark';
+    const textColor = isDark ? '#0f1117' : '#f3f4f6';
+    root.setProperty('--text', textColor);
+    root.setProperty('--text-muted', hexToRgbaString(isDark ? '#0f1117' : '#f3f4f6', 0.65));
+    root.setProperty('--text-faint', hexToRgbaString(isDark ? '#0f1117' : '#f3f4f6', 0.45));
+
+    // Обновляем элементы настроек кастомизации, если панель уже отрисована.
+    const picker = document.getElementById('theme-color-picker');
+    const hexInput = document.getElementById('theme-color-hex');
+    const previewDot = document.getElementById('theme-preview-dot');
+    const textToggleBtn = document.getElementById('theme-text-toggle-btn');
+    if (picker) picker.value = accent;
+    if (hexInput) hexInput.value = accent;
+    if (previewDot) previewDot.style.background = accent;
+    if (textToggleBtn) textToggleBtn.innerText = isDark ? 'Сделать текст белым' : 'Сделать текст чёрным';
+    document.querySelectorAll('.theme-preset-btn').forEach(btn => {
+        btn.classList.toggle('active', (btn.dataset.color || '').toLowerCase() === accent.toLowerCase());
+    });
+}
+
+// Сохраняет локально всегда, и на сервере — если пользователь вошёл в аккаунт
+// (с небольшим дебаунсом, чтобы не долбить сервер на каждое движение цветового пикера).
+function persistTheme(theme, { syncServer = true } = {}) {
+    saveThemeToStorage(theme);
+    if (!syncServer || !currentUser.token) return;
+    if (themeSaveServerTimer) clearTimeout(themeSaveServerTimer);
+    themeSaveServerTimer = setTimeout(async () => {
+        try {
+            await fetch('/auth/theme', {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${currentUser.token}`
+                },
+                body: JSON.stringify({ accent: theme.accent, textMode: theme.textMode })
+            });
+        } catch (e) {
+            console.warn('[Внимание] Не удалось синхронизировать тему с сервером:', e);
+        }
+    }, 400);
+}
+
+function setThemeAccent(hex) {
+    persistTheme({ ...currentTheme, accent: hex });
+    applyTheme({ ...currentTheme, accent: hex });
+}
+
+function setThemeTextMode(mode) {
+    persistTheme({ ...currentTheme, textMode: mode });
+    applyTheme({ ...currentTheme, textMode: mode });
+}
+
+function resetTheme() {
+    persistTheme({ ...DEFAULT_THEME });
+    applyTheme({ ...DEFAULT_THEME });
+}
+
+// Подтягивает актуальную тему с сервера (например, при входе на новом устройстве) и
+// перезаписывает локальную копию, если на сервере что-то сохранено.
+async function syncThemeFromServer() {
+    if (!currentUser.token) return;
+    try {
+        const res = await fetch('/auth/theme', {
+            headers: { 'Authorization': `Bearer ${currentUser.token}` }
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data && data.theme && (data.theme.accent || data.theme.textMode)) {
+            const merged = {
+                accent: parseColorInput(data.theme.accent) || currentTheme.accent,
+                textMode: data.theme.textMode === 'dark' ? 'dark' : (data.theme.textMode === 'light' ? 'light' : currentTheme.textMode)
+            };
+            saveThemeToStorage(merged);
+            applyTheme(merged);
+        }
+    } catch (e) { /* нет сети — остаёмся с локальной темой */ }
+}
+
+// Применяем сохранённую тему сразу же, до входа в приложение, чтобы не было "мигания" стандартной темой.
+applyTheme(loadThemeFromStorage() || DEFAULT_THEME);
+
+const THEME_PRESETS = ['#6366f1', '#22c55e', '#ef4444', '#f59e0b', '#06b6d4', '#ec4899', '#8b5cf6', '#f3f4f6'];
+function renderThemePresets() {
+    const container = document.getElementById('theme-presets');
+    if (!container || container.childElementCount) return;
+    THEME_PRESETS.forEach(color => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'theme-preset-btn';
+        btn.style.background = color;
+        btn.dataset.color = color;
+        btn.title = color;
+        btn.addEventListener('click', () => setThemeAccent(color));
+        container.appendChild(btn);
+    });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    renderThemePresets();
+    applyTheme(currentTheme); // подсветить активный пресет/поля актуальным значением
+
+    const picker = document.getElementById('theme-color-picker');
+    const hexInput = document.getElementById('theme-color-hex');
+    const errorEl = document.getElementById('theme-color-error');
+    const resetBtn = document.getElementById('theme-reset-btn');
+    const textToggleBtn = document.getElementById('theme-text-toggle-btn');
+
+    if (picker) {
+        picker.addEventListener('input', () => {
+            if (errorEl) errorEl.style.display = 'none';
+            setThemeAccent(picker.value);
+        });
+    }
+    if (hexInput) {
+        const tryApplyHex = () => {
+            const parsed = parseColorInput(hexInput.value);
+            if (!parsed) {
+                if (errorEl) {
+                    errorEl.textContent = 'Введите цвет в формате #RRGGBB или rgb(r, g, b)';
+                    errorEl.style.display = 'block';
+                }
+                return;
+            }
+            if (errorEl) errorEl.style.display = 'none';
+            setThemeAccent(parsed);
+        };
+        hexInput.addEventListener('change', tryApplyHex);
+        hexInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') tryApplyHex(); });
+    }
+    if (resetBtn) resetBtn.addEventListener('click', resetTheme);
+    if (textToggleBtn) {
+        textToggleBtn.addEventListener('click', () => {
+            setThemeTextMode(currentTheme.textMode === 'dark' ? 'light' : 'dark');
+        });
+    }
+});
 let selectedRoom = null; 
 
 let localMediaStream = null; 
@@ -1121,6 +1344,18 @@ async function applyAuthSuccess(data) {
     avatarInput.value = currentUser.avatar;
 
     saveProfileToStorage();
+
+    // Тема с сервера (если уже сохранялась под этим аккаунтом) главнее локальной —
+    // это то, что синхронизирует цвет между устройствами при входе в тот же аккаунт.
+    if (data.theme && (data.theme.accent || data.theme.textMode)) {
+        const merged = {
+            accent: parseColorInput(data.theme.accent) || currentTheme.accent,
+            textMode: data.theme.textMode === 'dark' ? 'dark' : (data.theme.textMode === 'light' ? 'light' : currentTheme.textMode)
+        };
+        saveThemeToStorage(merged);
+        applyTheme(merged);
+    }
+
     await completeLogin();
 }
 
@@ -3424,6 +3659,7 @@ logoutConfirmBtn.addEventListener('click', () => {
         usernameInput.value = currentUser.username;
         avatarInput.value = currentUser.avatar;
         await completeLogin();
+        syncThemeFromServer(); // подтягиваем тему, если её поменяли на другом устройстве
     }
 })();
 
