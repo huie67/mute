@@ -2565,7 +2565,7 @@ function leaveVoiceChannel() {
     playLeaveSound();
     currentUser.room = null;
     roomTitle.innerText = `Канал: ${selectedRoom} (Просмотр)`;
-    roomNameDisplay.innerHTML = `${ROOM_OUT_ICON_SVG}<span>Вы не в ГС</span>`;
+    roomNameDisplay.innerHTML = `${ROOM_OUT_ICON_SVG}<span>Вы не в звонке</span>`;
     connectRoomBtn.innerText = 'Подключиться';
     connectRoomBtn.className = 'btn-primary';
     screenBtn.disabled = true;
@@ -2863,7 +2863,7 @@ function buildOffCallRows(users) {
                 <img src="${m.avatar || `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(m.username)}`}" class="user-avatar" alt="">
                 <span class="presence-dot${m.online ? ' online' : ''}" title="${m.online ? 'В сети' : 'Не в сети'}"></span>
             </div>
-            <span style="color:${getUserColor(m.username)}">${escapeHtml(m.username)}</span>
+            <span class="voice-user-name" title="${escapeHtml(m.username)}" style="color:${getUserColor(m.username)}">${escapeHtml(m.username)}</span>
             <span class="offcall-sub">${m.online ? 'в сети' : 'не в сети'}</span>
         `;
         return row;
@@ -2883,7 +2883,7 @@ function updateVoiceUsersList(users = connectedUsers) {
                 <span class="status-badge mic-mute-badge${(user.micMuted || user.deafened) ? ' visible' : ''}" id="mic-badge-${id}" title="Микрофон выключен">${MIC_OFF_ICON_SVG}</span>
                 <span class="status-badge deafen-badge${user.deafened ? ' visible' : ''}" id="deafen-badge-${id}" title="Наушники выключены">${DEAFEN_OFF_ICON_SVG}</span>
             </div>
-            <span style="color:${getUserColor(user.username)}">${escapeHtml(user.username || 'Участник')}</span>
+            <span class="voice-user-name" title="${escapeHtml(user.username || 'Участник')}" style="color:${getUserColor(user.username)}">${escapeHtml(user.username || 'Участник')}</span>
         `;
         // Громкость каждого собеседника можно менять только у себя — по клику на его
         // строку в списке. На себя самого это не вешаем (собственную громкость менять

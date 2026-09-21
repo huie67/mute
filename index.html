@@ -392,6 +392,7 @@
             margin-left: auto;
             padding-left: 6px;
             white-space: nowrap;
+            flex-shrink: 0;
         }
         .presence-dot {
             position: absolute;
@@ -410,6 +411,23 @@
             align-items: center;
             gap: 10px;
             font-size: 13px;
+            min-width: 0;
+        }
+        /* Длинные ники обрезаются многоточием, а не вылезают за рамки панели */
+        .voice-user-row .voice-user-name {
+            flex: 1 1 auto;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .voice-users-list { min-width: 0; overflow: hidden; }
+        .sidebar-section, .sidebar-list { min-width: 0; }
+        .sidebar-item > span {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
         .voice-user-row.clickable {
             cursor: pointer;
@@ -1696,7 +1714,7 @@
                 <div class="sidebar-list">
                     <div class="sidebar-item" id="room-name-display">
                         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>
-                        <span>Вы не в ГС</span>
+                        <span>Вы не в звонке</span>
                     </div>
                     <div class="voice-users-list" id="voice-users-container"></div>
                 </div>
