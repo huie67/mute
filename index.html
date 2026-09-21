@@ -852,6 +852,16 @@
 
         .modal-card h3 { font-size: 18px; }
 
+        /* Шапка модалки с крестиком закрытия справа — вместо отдельной кнопки
+           «Закрыть»/«Отмена» внизу карточки. */
+        .modal-card-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+        .modal-card-head h3 { margin: 0; }
+
         .modal-section-divider {
             border: none;
             border-top: 1px solid var(--border-soft);
@@ -1575,7 +1585,10 @@
     <!-- Добавить сервер: вкладки «Создать» / «Войти по коду» (как в настройках и при входе) -->
     <div id="server-add-modal" class="modal-overlay">
         <div class="modal-card modal-card-fixed fade-in" style="width: 400px; height: min(590px, 90vh);">
-            <h3>Добавить сервер</h3>
+            <div class="modal-card-head">
+                <h3>Добавить сервер</h3>
+                <button type="button" class="settings-close" id="close-server-add" title="Закрыть" aria-label="Закрыть"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
+            </div>
 
             <div class="settings-tabs" id="server-add-tabs">
                 <button type="button" class="settings-tab active" data-add-tab="create">Создать</button>
@@ -1606,15 +1619,16 @@
                 <p class="auth-error" id="join-server-error" style="display:none"></p>
                 <button class="btn-primary panel-bottom-btn" id="join-server-submit">Войти</button>
             </div>
-
-            <button class="action-btn" id="close-server-add" style="background:#262a35; padding:10px;">Отмена</button>
         </div>
     </div>
 
     <!-- Окно сервера: для владельца — редактирование, для остальных — просмотр кода входа -->
     <div id="server-info-modal" class="modal-overlay">
         <div class="modal-card modal-card-fixed fade-in" style="width: 400px; height: min(660px, 90vh);">
-            <h3 id="server-info-title">Сервер</h3>
+            <div class="modal-card-head">
+                <h3 id="server-info-title">Сервер</h3>
+                <button type="button" class="settings-close" id="close-server-info" title="Закрыть" aria-label="Закрыть"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
+            </div>
 
             <div class="settings-tabs" id="server-info-tabs" style="display:none;">
                 <button type="button" class="settings-tab active" data-server-tab="general">Настройки</button>
@@ -1674,32 +1688,35 @@
                 <p class="auth-error" id="server-members-error" style="display:none"></p>
             </div>
 
-            <!-- Единый нижний ряд кнопок: «Закрыть» слева, главное действие справа -->
+            <!-- Главное действие внизу; закрытие — крестиком в шапке -->
             <div class="modal-footer">
-                <button class="action-btn" id="close-server-info" style="background:#262a35; padding:12px;">Закрыть</button>
-                <button class="btn-primary" id="server-info-save" style="display:none">Сохранить</button>
+                <button class="btn-primary" id="server-info-save" style="display:none; flex:1;">Сохранить</button>
             </div>
         </div>
     </div>
 
     <div id="server-created-modal" class="modal-overlay">
         <div class="modal-card fade-in" style="width: 380px;">
-            <h3>Сервер создан</h3>
+            <div class="modal-card-head">
+                <h3>Сервер создан</h3>
+                <button type="button" class="settings-close" id="close-created-server" title="Закрыть" aria-label="Закрыть"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
+            </div>
             <div id="created-server-name" style="font-weight:700;text-align:center"></div>
             <div id="created-server-code" class="room-code-box" title="Нажмите, чтобы скопировать"></div>
             <div class="room-code-hint">Нажмите на код — он автоматически скопируется</div>
             <button class="btn-primary" id="join-created-server">Войти на сервер</button>
-            <button class="action-btn" id="close-created-server" style="background:#262a35; padding:10px;">Закрыть</button>
         </div>
     </div>
 
     <!-- Модалка выбора типа трансляции (Экран или Вебкамера) -->
     <div id="stream-select-modal" class="modal-overlay">
         <div class="modal-card fade-in">
-            <h3>Выберите источник трансляции</h3>
+            <div class="modal-card-head">
+                <h3>Выберите источник трансляции</h3>
+                <button type="button" class="settings-close" id="close-stream-modal" title="Закрыть" aria-label="Закрыть"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
+            </div>
             <button class="btn-primary" id="share-screen-choice">Демонстрация экрана</button>
             <button class="btn-primary" id="share-cam-choice">Веб-камера</button>
-            <button class="action-btn" id="close-stream-modal" style="background:#262a35; padding: 10px;">Отмена</button>
         </div>
     </div>
 
