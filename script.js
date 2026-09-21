@@ -2680,6 +2680,11 @@ socket.on('video state', ({ peerId, sharing }) => {
 });
 
 function cleanupRemoteAudio(peerId) {
+    const keepAlive = remoteAudioKeepAlive[peerId];
+    if (keepAlive) {
+        try { keepAlive.pause(); keepAlive.srcObject = null; keepAlive.remove(); } catch (e) {}
+        delete remoteAudioKeepAlive[peerId];
+    }
     const source = remoteAudioSources[peerId];
     if (source) { try { source.disconnect(); } catch (e) {} }
     delete remoteAudioSources[peerId];
@@ -2704,17 +2709,51 @@ function cleanupRemoteAudio(peerId) {
     delete remoteVoiceGainNodes[peerId];
 }
 
+// Скрытые <audio>-элементы для входящих потоков. Chromium/WebView2 отдаёт в Web Audio
+// (createMediaStreamSource) ТИШИНУ для удалённого WebRTC-потока, пока этот поток не
+// подключён к какому-нибудь медиа-элементу. Из-за этого собеседника не было слышно, а
+// индикатор "говорит" (он считается по тому же аудиографу) не загорался. Элемент заглушён
+// (muted) — реальный звук по-прежнему идёт через gain-узлы, чтобы работали громкость и дефен.
+const remoteAudioKeepAlive = {};
+
+function attachRemoteStream(stream, peerId) {
+    let el = remoteAudioKeepAlive[peerId];
+    if (!el) {
+        el = document.createElement('audio');
+        el.autoplay = true;
+        el.muted = true;
+        el.setAttribute('playsinline', '');
+        el.style.display = 'none';
+        document.body.appendChild(el);
+        remoteAudioKeepAlive[peerId] = el;
+    }
+    if (el.srcObject !== stream) el.srcObject = stream;
+    el.play().catch(() => { /* автозапуск заглушённого элемента обычно разрешён */ });
+
+    if (audioContext && audioContext.state === 'suspended') audioContext.resume().catch(() => {});
+
+    // Событие 'stream' PeerJS может прийти несколько раз (по разу на трек), поэтому
+    // каждый узел создаём только один раз — иначе звук удваивался бы.
+    const tracks = stream.getAudioTracks();
+    if (tracks[0] && !remoteAudioSources[peerId]) setupRemoteAudioAnalyzer(stream, peerId);
+    if (tracks[1] && !remoteDemoAudioSources[peerId]) setupRemoteDemoAudio(stream, peerId);
+}
+
 function handleIncomingCall(call) {
     if (call.peer === myPeerId) return;
     activeCalls[call.peer] = call;
 
     call.on('stream', (remoteStream) => {
-        if (remoteStream.getAudioTracks().length > 0) {
-            setupRemoteAudioAnalyzer(remoteStream, call.peer);
-            setupRemoteDemoAudio(remoteStream, call.peer);
-        }
-
+        const prev = remoteStreamsByPeer[call.peer];
+        if (prev && prev !== remoteStream) cleanupRemoteAudio(call.peer);
         remoteStreamsByPeer[call.peer] = remoteStream;
+
+        attachRemoteStream(remoteStream, call.peer);
+        // Второй аудиотрек (звук демонстрации) может добавиться позже первого события.
+        if (!remoteStream.__muteTrackWatch) {
+            remoteStream.__muteTrackWatch = true;
+            remoteStream.addEventListener('addtrack', () => attachRemoteStream(remoteStream, call.peer));
+        }
         renderRemoteVideoState(call.peer);
     });
 
@@ -3327,6 +3366,194 @@ deafenBtn.addEventListener('click', () => {
     playDeafenSound();
     broadcastMuteState();
 });
+
+// ---------- Спец. возможности: горячие клавиши ----------
+// Комбинации хранятся на устройстве. В приложении (Tauri) они регистрируются глобально —
+// работают и при свёрнутом окне; в браузере — только пока вкладка в фокусе.
+const KEYBINDS_KEY = 'mute_keybinds_v1';
+const KEYBIND_ACTIONS = [
+    { id: 'mute', label: 'Включить / выключить микрофон' },
+    { id: 'deafen', label: 'Включить / выключить наушники' },
+    { id: 'leave', label: 'Покинуть звонок' }
+];
+let keybinds = { mute: '', deafen: '', leave: '', global: true };
+try {
+    const raw = localStorage.getItem(KEYBINDS_KEY);
+    if (raw) keybinds = { ...keybinds, ...JSON.parse(raw) };
+} catch (e) { /* ignore */ }
+const keybindGlobalOk = {};   // какие действия реально зарегистрированы глобально
+let keybindRecording = null;  // id действия, для которого сейчас ждём комбинацию
+
+function saveKeybinds() {
+    try { localStorage.setItem(KEYBINDS_KEY, JSON.stringify(keybinds)); } catch (e) { /* ignore */ }
+}
+
+function runKeybindAction(id) {
+    if (id === 'mute') { if (!muteBtn.disabled) muteBtn.click(); }
+    else if (id === 'deafen') deafenBtn.click();
+    else if (id === 'leave') { if (currentUser.room) leaveVoiceChannel(); }
+}
+
+function keyEventToCombo(e) {
+    if (/^(Control|Shift|Alt|Meta)(Left|Right)$/.test(e.code)) return null; // только модификатор
+    const mods = [];
+    if (e.ctrlKey) mods.push('Control');
+    if (e.altKey) mods.push('Alt');
+    if (e.shiftKey) mods.push('Shift');
+    if (e.metaKey) mods.push('Super');
+    const key = e.code.replace(/^Key/, '').replace(/^Digit/, '');
+    return [...mods, key].join('+');
+}
+
+function prettyCombo(combo) {
+    return combo.replace('Control', 'Ctrl').replace('Super', 'Win').replace(/\+Arrow/, '+');
+}
+
+function showKeybindError(text) {
+    const el = document.getElementById('keybind-error');
+    if (!el) return;
+    el.textContent = text || '';
+    el.style.display = text ? 'block' : 'none';
+}
+
+function renderKeybindList() {
+    const list = document.getElementById('keybind-list');
+    if (!list) return;
+    list.innerHTML = '';
+    KEYBIND_ACTIONS.forEach(a => {
+        const row = document.createElement('div');
+        row.className = 'keybind-row';
+        const label = document.createElement('span');
+        label.className = 'keybind-label';
+        label.textContent = a.label;
+
+        const controls = document.createElement('div');
+        controls.className = 'keybind-controls';
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        const combo = keybinds[a.id];
+        const recording = keybindRecording === a.id;
+        btn.className = 'keybind-btn' + (combo ? '' : ' empty') + (recording ? ' recording' : '');
+        btn.textContent = recording ? 'Нажмите комбинацию…' : (combo ? prettyCombo(combo) : 'Не задано');
+        btn.addEventListener('click', () => startKeybindRecording(a.id));
+        controls.appendChild(btn);
+
+        if (combo && !recording) {
+            const clear = document.createElement('button');
+            clear.type = 'button';
+            clear.className = 'keybind-clear';
+            clear.title = 'Убрать';
+            clear.textContent = '✕';
+            clear.addEventListener('click', () => {
+                keybinds[a.id] = '';
+                saveKeybinds();
+                showKeybindError('');
+                renderKeybindList();
+                syncGlobalShortcuts();
+            });
+            controls.appendChild(clear);
+        }
+        row.appendChild(label);
+        row.appendChild(controls);
+        list.appendChild(row);
+    });
+}
+
+function stopKeybindRecording() {
+    keybindRecording = null;
+    renderKeybindList();
+    syncGlobalShortcuts();
+}
+
+async function startKeybindRecording(id) {
+    showKeybindError('');
+    keybindRecording = id;
+    renderKeybindList();
+    // Пока ждём комбинацию, снимаем глобальные привязки — чтобы нажатие не сработало как действие.
+    const gs = window.__TAURI__ && window.__TAURI__.globalShortcut;
+    if (gs) { try { await gs.unregisterAll(); } catch (e) { /* ignore */ } }
+    KEYBIND_ACTIONS.forEach(a => { keybindGlobalOk[a.id] = false; });
+}
+
+// capture-фаза: перехватываем нажатие раньше остальных обработчиков (в т.ч. Esc, закрывающего настройки)
+document.addEventListener('keydown', (e) => {
+    if (!keybindRecording) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    if (e.code === 'Escape') { stopKeybindRecording(); return; }
+    const combo = keyEventToCombo(e);
+    if (!combo) return; // пока зажат только Ctrl/Shift/Alt — ждём основную клавишу
+
+    // Без Ctrl/Alt/Win допускаем только клавиши, которые ничего не печатают (F1–F24, Insert, Home и т.п.),
+    // иначе обычная буква перестала бы вводиться в чате.
+    const hasMainMod = e.ctrlKey || e.altKey || e.metaKey;
+    const nonPrinting = /^(F\d{1,2}|Insert|Home|End|PageUp|PageDown|Pause|ScrollLock|PrintScreen|Numpad\w+)$/.test(e.code);
+    if (!hasMainMod && !nonPrinting) {
+        showKeybindError('Добавьте Ctrl или Alt (или выберите F-клавишу), иначе клавиша перестанет печататься.');
+        return;
+    }
+
+    KEYBIND_ACTIONS.forEach(a => { if (keybinds[a.id] === combo) keybinds[a.id] = ''; }); // без дублей
+    keybinds[keybindRecording] = combo;
+    saveKeybinds();
+    showKeybindError('');
+    stopKeybindRecording();
+}, true);
+
+// Обычный (в пределах окна) обработчик — для браузера и как запасной вариант.
+document.addEventListener('keydown', (e) => {
+    if (keybindRecording || e.repeat) return;
+    const combo = keyEventToCombo(e);
+    if (!combo) return;
+    const action = KEYBIND_ACTIONS.find(a => keybinds[a.id] && keybinds[a.id] === combo && !keybindGlobalOk[a.id]);
+    if (!action) return;
+    e.preventDefault();
+    runKeybindAction(action.id);
+});
+
+// Глобальные комбинации (только в приложении Tauri, плагин global-shortcut).
+async function syncGlobalShortcuts() {
+    const gs = window.__TAURI__ && window.__TAURI__.globalShortcut;
+    KEYBIND_ACTIONS.forEach(a => { keybindGlobalOk[a.id] = false; });
+    if (!gs) return;
+    try { await gs.unregisterAll(); } catch (e) { /* ignore */ }
+    if (!keybinds.global || keybindRecording) return;
+    const failed = [];
+    for (const a of KEYBIND_ACTIONS) {
+        const combo = keybinds[a.id];
+        if (!combo) continue;
+        try {
+            await gs.register(combo, (ev) => {
+                if (!ev || ev.state === 'Pressed') runKeybindAction(a.id);
+            });
+            keybindGlobalOk[a.id] = true;
+        } catch (e) {
+            console.warn('[Горячие клавиши] Не удалось зарегистрировать', combo, e);
+            failed.push(prettyCombo(combo));
+        }
+    }
+    showKeybindError(failed.length ? `Не удалось занять глобально: ${failed.join(', ')}. Работает только при открытом окне.` : '');
+}
+
+(function initKeybindsUI() {
+    renderKeybindList();
+    const isTauri = !!(window.__TAURI__ && window.__TAURI__.globalShortcut);
+    const group = document.getElementById('keybind-global-group');
+    const check = document.getElementById('keybind-global-check');
+    const hint = document.getElementById('keybind-hint');
+    if (isTauri && group && check) {
+        group.style.display = 'block';
+        check.checked = !!keybinds.global;
+        check.addEventListener('change', () => {
+            keybinds.global = check.checked;
+            saveKeybinds();
+            syncGlobalShortcuts();
+        });
+    } else if (hint) {
+        hint.textContent += ' В браузере комбинации работают, пока вкладка открыта и в фокусе.';
+    }
+    syncGlobalShortcuts();
+})();
 
 async function loadMicrophones() {
     try {
