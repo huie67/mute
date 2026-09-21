@@ -479,6 +479,34 @@ let myPeerId = null;
 let currentUser = { username: '', avatar: '', room: null, token: null };
 let pendingAvatarFile = null; // выбранный файл аватарки, ещё не загруженный на сервер
 
+// ---------- Своя шапка окна десктоп-приложения (Tauri) ----------
+// Страница открывается и в обычном браузере, и внутри Tauri (окно без системной рамки —
+// decorations:false в tauri.conf.json), поэтому шапку показываем только когда точно
+// понятно, что мы внутри Tauri (появляется window.__TAURI__, т.к. в конфиге включён
+// withGlobalTauri). В браузере #app-titlebar остаётся скрытым через CSS.
+(function initDesktopTitlebar() {
+    if (!window.__TAURI__ || !window.__TAURI__.window) return; // обычный браузер — ничего не делаем
+    document.documentElement.classList.add('tauri-app');
+
+    const tauriWindow = window.__TAURI__.window.getCurrentWindow();
+    const minimizeBtn = document.getElementById('titlebar-minimize');
+    const maximizeBtn = document.getElementById('titlebar-maximize');
+    const closeBtn = document.getElementById('titlebar-close');
+
+    if (minimizeBtn) minimizeBtn.addEventListener('click', () => tauriWindow.minimize());
+    if (closeBtn) closeBtn.addEventListener('click', () => tauriWindow.close());
+    if (maximizeBtn) maximizeBtn.addEventListener('click', () => tauriWindow.toggleMaximize());
+
+    // Двойной клик по шапке — тоже разворачивает/восстанавливает окно (привычное поведение).
+    const titlebar = document.getElementById('app-titlebar');
+    if (titlebar) {
+        titlebar.addEventListener('dblclick', (e) => {
+            if (e.target.closest('.titlebar-btn')) return;
+            tauriWindow.toggleMaximize();
+        });
+    }
+})();
+
 // ---------- Кастомизация: цвет темы + чёрный/белый текст ----------
 // Хранится в localStorage (моментально, работает без аккаунта) и, если пользователь
 // вошёл в аккаунт, дублируется на сервере — чтобы тема была одинаковой на всех устройствах.
@@ -618,13 +646,26 @@ function applyTheme(theme) {
 
 // Сохраняет локально всегда, и на сервере — если пользователь вошёл в аккаунт
 // (с небольшим дебаунсом, чтобы не долбить сервер на каждое движение цветового пикера).
+// Показывает, реально ли сохранилось на аккаунте — раньше ошибка сохранения на сервере
+// "проглатывалась" молча (только console.warn), и было не видно, что цвет не привязался
+// к аккаунту, пока не перезайдёшь с другого устройства.
+function setThemeSyncStatus(text, isError) {
+    const hint = document.getElementById('theme-sync-hint');
+    if (!hint) return;
+    hint.textContent = text;
+    hint.style.color = isError ? 'var(--danger)' : 'var(--text-faint)';
+}
+
+const THEME_SYNC_DEFAULT_HINT = 'Цвет темы сохраняется на этом устройстве и синхронизируется между устройствами, если вы вошли в аккаунт.';
+
 function persistTheme(theme, { syncServer = true } = {}) {
     saveThemeToStorage(theme);
     if (!syncServer || !currentUser.token) return;
     if (themeSaveServerTimer) clearTimeout(themeSaveServerTimer);
+    setThemeSyncStatus('Сохранение на аккаунте…', false);
     themeSaveServerTimer = setTimeout(async () => {
         try {
-            await fetch('/auth/theme', {
+            const res = await fetch('/auth/theme', {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json',
@@ -632,8 +673,22 @@ function persistTheme(theme, { syncServer = true } = {}) {
                 },
                 body: JSON.stringify({ accent: theme.accent, textMode: theme.textMode, bgColor: theme.bgColor })
             });
+            if (!res.ok) {
+                let message = 'Не удалось сохранить тему на аккаунте';
+                try {
+                    const data = await res.json();
+                    if (data && data.error) message = data.error;
+                } catch (e) { /* тело ответа не JSON — оставляем сообщение по умолчанию */ }
+                if (res.status === 401) message = 'Сессия истекла — войдите заново, чтобы тема сохранялась на аккаунте';
+                console.warn('[Внимание] Сервер отклонил сохранение темы:', message);
+                setThemeSyncStatus(message, true);
+                return;
+            }
+            setThemeSyncStatus('Сохранено на аккаунте ✓', false);
+            setTimeout(() => setThemeSyncStatus(THEME_SYNC_DEFAULT_HINT, false), 2500);
         } catch (e) {
-            console.warn('[Внимание] Не удалось синхронизировать тему с сервером:', e);
+            console.warn('[Внимание] Не удалось синхронизировать тему с сервером (нет сети?):', e);
+            setThemeSyncStatus('Нет соединения с сервером — тема сохранена только на этом устройстве', true);
         }
     }, 400);
 }
