@@ -701,6 +701,47 @@ io.on('connection', (socket) => {
         const cleanRoom = String(room || '').trim().slice(0, 80);
         if (!cleanRoom) return;
 
+        // Пользовательские серверы (custom:КОД): проверяем, что человек ДЕЙСТВИТЕЛЬНО
+        // всё ещё состоит в сервере, прежде чем впускать его в комнату чата.
+        // Раньше этой проверки не было — сокет подключали к любой запрошенной комнате
+        // без вопросов. Из-за этого кик не был окончательным: у исключённого клиент
+        // локально помнил, какой чат был открыт (selectedRoom), и при следующем же
+        // переподключении сокета (сон ноутбука, обрыв сети, сворачивание приложения —
+        // см. restoreSubscriptions() на клиенте) клиент сам заново отправлял
+        // 'select chat room' для того же сервера. Сокет тихо возвращался в комнату
+        // чата БЕЗ повторного ввода пароля, а getServerMembers(), увидев его снова
+        // в этой комнате, сама дописывала его обратно в постоянный список участников
+        // (см. "подстраховку" там же). Со стороны это выглядело так, будто кик
+        // не срабатывает по-настоящему: человек "всё равно остаётся, просто
+        // не показывается".
+        const kickCheckCode = customCodeFromRoom(cleanRoom);
+        if (kickCheckCode) {
+            const custom = customRooms[kickCheckCode];
+            if (!custom) return; // сервера больше не существует — впускать некуда
+            const username = socket.data && socket.data.username;
+            if (!isRoomOwner(custom, username)) {
+                let isMember = false;
+                if (username) {
+                    try {
+                        const memberCheck = await pool.query(
+                            `SELECT 1 FROM custom_room_members WHERE code = $1 AND LOWER(username) = LOWER($2)`,
+                            [kickCheckCode, username]
+                        );
+                        isMember = memberCheck.rowCount > 0;
+                    } catch (err) {
+                        console.error('❌ Ошибка проверки членства в сервере:', err);
+                    }
+                }
+                if (!isMember) {
+                    // Не состоит в сервере (исключён или никогда не входил по коду
+                    // и паролю через 'join custom room') — не пускаем в чат и просим
+                    // клиента убрать сервер из своего списка, а не пытаться
+                    // переподключаться к нему заново.
+                    return socket.emit('kicked from server', { code: kickCheckCode, name: custom.name });
+                }
+            }
+        }
+
         const previousChatRoom = currentChatRoom;
         if (currentChatRoom) socket.leave(`chat:${currentChatRoom}`);
         currentChatRoom = cleanRoom;

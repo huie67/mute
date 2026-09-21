@@ -308,15 +308,39 @@ socket.on('server role changed', ({ code, name, isAdmin } = {}) => {
     }
 });
 
-// Пришло, когда нас выгнал создатель или модератор сервера.
+// Пришло, когда нас выгнал создатель или модератор сервера — ИЛИ когда сервер
+// отказался пустить в чат при переподключении, потому что нас там больше нет
+// (см. проверку членства в 'select chat room' на сервере).
 socket.on('kicked from server', ({ code, name } = {}) => {
     if (!code) return;
-    const btn = customServersList.querySelector(`[data-room="custom:${code}"]`);
+    const roomName = `custom:${code}`;
+    const btn = customServersList.querySelector(`[data-room="${roomName}"]`);
     if (btn) btn.remove();
     removeMyServerCode(code);
     if (currentServerInfo && currentServerInfo.code === code) {
         closeModal(serverInfoModal);
     }
+
+    // ВАЖНО: если этот сервер был сейчас открыт (в чате и/или в голосовом канале),
+    // сбрасываем это состояние локально. Раньше selectedRoom/currentUser.room
+    // просто оставались указывать на удалённый сервер — при следующем
+    // переподключении сокета клиент сам заново запрашивал 'select chat room'
+    // для того же roomName, из-за чего кик "не держался" (см. серверную часть).
+    if (selectedRoom === roomName) {
+        selectedRoom = null;
+        setChatEnabled(false);
+        roomTitle.innerText = 'Выберите канал';
+        connectRoomBtn.style.display = 'none';
+        document.querySelectorAll('.custom-room-btn').forEach(b => b.classList.remove('active'));
+    }
+    if (currentUser.room === roomName) {
+        socket.emit('leave voice');
+        currentUser.room = null;
+        cleanupCalls();
+        connectedUsers = {};
+        updateVoiceUsersList();
+    }
+
     alert(`Вас исключили с сервера «${name || code}».`);
 });
 
@@ -2784,14 +2808,36 @@ const MAX_CALL_RETRIES = 3;
 function watchCallConnection(call, peerId) {
     const pc = call.peerConnection;
     if (!pc) return;
+
+    // Диагностика: показывает, КАКОЙ именно сервер (STUN/TURN) не ответил и почему —
+    // без этого из одних только "failed"/"disconnected" непонятно, сама сеть
+    // блокирует WebRTC-трафик, или конкретно наши TURN-сервера сейчас недоступны/
+    // отклоняют логин (например, если бесплатные креды перестали работать).
+    pc.addEventListener('icecandidateerror', (e) => {
+        console.warn(`[ICE candidate error] с ${peerId}: url=${e.url} код=${e.errorCode} текст="${e.errorText}"`);
+    });
+
     pc.addEventListener('iceconnectionstatechange', () => {
         const state = pc.iceConnectionState;
         console.log(`[ICE] Состояние соединения с ${peerId}:`, state);
         if (state === 'failed' || state === 'disconnected') {
             // Даём немного времени на самовосстановление (ICE restart браузера) —
             // прежде чем считать связь окончательно потерянной.
-            setTimeout(() => {
+            setTimeout(async () => {
                 if (!pc || pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') return;
+                // Перед закрытием звонка — печатаем, какие кандидаты вообще удалось
+                // собрать (host/srflx/relay), чтобы видеть, дошло ли дело до TURN-relay
+                // вообще, или соединение не проходит даже STUN.
+                try {
+                    const stats = await pc.getStats();
+                    const cands = [];
+                    stats.forEach(r => {
+                        if (r.type === 'local-candidate' || r.type === 'remote-candidate') {
+                            cands.push(`${r.type}:${r.candidateType}${r.protocol ? '/' + r.protocol : ''}`);
+                        }
+                    });
+                    console.warn(`[ICE] Кандидаты для ${peerId}:`, cands.join(', ') || '(нет ни одного)');
+                } catch (e) { /* ignore */ }
                 console.warn(`[ICE] Соединение с ${peerId} не восстановилось, переустанавливаем звонок`);
                 try { call.close(); } catch (e) {}
                 delete activeCalls[peerId];
