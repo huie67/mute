@@ -4324,12 +4324,31 @@ function updateAppActivity() {
     if (active === appIsActive) return;
     appIsActive = active;
     document.body.classList.toggle('app-inactive', !active);
+    document.dispatchEvent(new CustomEvent('app-activity-change', { detail: { active } }));
 }
 
 window.addEventListener('focus', updateAppActivity);
 window.addEventListener('blur', updateAppActivity);
 document.addEventListener('visibilitychange', updateAppActivity);
 updateAppActivity();
+
+// ---- ВРЕМЕННЫЙ debug-индикатор, чтобы проверить сам механизм отдельно от
+// анимации говорящего (её не видно, если никто не в звонке). Можно удалить
+// после проверки — просто вырезать этот блок. ----
+(function initActivityDebugBadge() {
+    const badge = document.createElement('div');
+    badge.id = 'activity-debug-badge';
+    badge.style.cssText = 'position:fixed;bottom:10px;right:10px;z-index:999999;' +
+        'padding:6px 12px;border-radius:6px;font:600 12px/1.4 sans-serif;' +
+        'color:#fff;pointer-events:none;transition:background-color .15s;';
+    document.body.appendChild(badge);
+    function render() {
+        badge.textContent = appIsActive ? '🟢 окно активно' : '⏸ окно неактивно (анимации на паузе)';
+        badge.style.backgroundColor = appIsActive ? '#16a34a' : '#dc2626';
+    }
+    document.addEventListener('app-activity-change', render);
+    render();
+})();
 
 // Сообщает остальным участникам комнаты раздельный статус: выключен ли у нас
 // микрофон (мьют) и выключены ли у нас наушники (дефен) — это два разных значка.
