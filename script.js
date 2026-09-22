@@ -371,6 +371,17 @@ serverInfoAvatarFile?.addEventListener('change', () => {
 
 const muteBtn = document.getElementById('mute-btn');
 const deafenBtn = document.getElementById('deafen-btn');
+
+const playlistWidget = document.getElementById('playlist-widget');
+const playlistWidgetInfo = document.getElementById('playlist-widget-info');
+const playlistTrackNameEl = document.getElementById('playlist-track-name');
+const playlistTrackSubEl = document.getElementById('playlist-track-sub');
+const playlistPrevBtn = document.getElementById('playlist-prev-btn');
+const playlistPlayPauseBtn = document.getElementById('playlist-playpause-btn');
+const playlistNextBtn = document.getElementById('playlist-next-btn');
+const playlistFileInput = document.getElementById('playlist-file-input');
+const playlistSettingsList = document.getElementById('playlist-settings-list');
+const playlistEmptyHint = document.getElementById('playlist-empty-hint');
 const settingsBtn = document.getElementById('settings-btn');
 const settingsModal = document.getElementById('settings-modal');
 const logoutConfirmModal = document.getElementById('logout-confirm-modal');
@@ -1400,6 +1411,230 @@ setupCustomSoundControls('mention', {
     fileInput: mentionSoundFileInput,
     resetBtn: mentionSoundResetBtn
 });
+
+// ---------- Свой плейлист ----------
+// Личный, локальный (не синхронизируется между устройствами/участниками) плейлист:
+// виджет с названием трека и управлением — над кнопками мьюта/наушников/настроек,
+// а добавление и удаление треков — в настройках, вкладка "Плейлист".
+// Сами аудиофайлы (могут весить по несколько МБ) хранятся в IndexedDB — localStorage
+// для этого не годится (лимит браузера обычно ~5 МБ на весь домен). В localStorage
+// лежат только лёгкие метаданные (id/название/порядок), чтобы список треков и
+// текущий трек мгновенно восстанавливались при перезагрузке страницы.
+const PLAYLIST_DB_NAME = 'mutePlaylistDB';
+const PLAYLIST_DB_STORE = 'tracks';
+const PLAYLIST_META_KEY = 'mute:playlistMeta';
+const PLAYLIST_MAX_TRACK_SIZE = 20 * 1024 * 1024; // 20 МБ на трек
+
+let playlistDbPromise = null;
+function openPlaylistDb() {
+    if (!window.indexedDB) return Promise.reject(new Error('IndexedDB недоступен'));
+    if (playlistDbPromise) return playlistDbPromise;
+    playlistDbPromise = new Promise((resolve, reject) => {
+        const req = indexedDB.open(PLAYLIST_DB_NAME, 1);
+        req.onupgradeneeded = () => {
+            const db = req.result;
+            if (!db.objectStoreNames.contains(PLAYLIST_DB_STORE)) {
+                db.createObjectStore(PLAYLIST_DB_STORE, { keyPath: 'id' });
+            }
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+    });
+    return playlistDbPromise;
+}
+async function playlistDbPut(id, blob) {
+    const db = await openPlaylistDb();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(PLAYLIST_DB_STORE, 'readwrite');
+        tx.objectStore(PLAYLIST_DB_STORE).put({ id, blob });
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+    });
+}
+async function playlistDbGet(id) {
+    const db = await openPlaylistDb();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(PLAYLIST_DB_STORE, 'readonly');
+        const req = tx.objectStore(PLAYLIST_DB_STORE).get(id);
+        req.onsuccess = () => resolve(req.result ? req.result.blob : null);
+        req.onerror = () => reject(req.error);
+    });
+}
+async function playlistDbDelete(id) {
+    const db = await openPlaylistDb();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(PLAYLIST_DB_STORE, 'readwrite');
+        tx.objectStore(PLAYLIST_DB_STORE).delete(id);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+    });
+}
+
+function loadPlaylistMeta() {
+    try {
+        const raw = localStorage.getItem(PLAYLIST_META_KEY);
+        const arr = raw ? JSON.parse(raw) : [];
+        return Array.isArray(arr) ? arr : [];
+    } catch (e) { return []; }
+}
+function savePlaylistMeta(list) {
+    try { localStorage.setItem(PLAYLIST_META_KEY, JSON.stringify(list)); } catch (e) { /* ignore */ }
+}
+
+let playlistTracks = loadPlaylistMeta(); // [{id, name, addedAt}]
+let playlistCurrentIndex = -1;
+const playlistAudio = new Audio();
+playlistAudio.volume = 0.7;
+let playlistCurrentObjectUrl = null;
+
+function stripExt(name) {
+    const idx = String(name || '').lastIndexOf('.');
+    return idx > 0 ? name.slice(0, idx) : name;
+}
+
+function updatePlaylistWidget() {
+    const hasTracks = playlistTracks.length > 0;
+    playlistWidget.classList.toggle('has-tracks', hasTracks);
+    const current = playlistTracks[playlistCurrentIndex];
+    if (current) {
+        playlistTrackNameEl.textContent = stripExt(current.name);
+        playlistTrackSubEl.textContent = `Трек ${playlistCurrentIndex + 1} из ${playlistTracks.length}`;
+    } else {
+        playlistTrackNameEl.textContent = 'Нет трека';
+        playlistTrackSubEl.textContent = hasTracks ? 'Выберите трек' : 'Плейлист пуст';
+    }
+    const isPlaying = !playlistAudio.paused && !!current;
+    playlistPlayPauseBtn.classList.toggle('is-playing', isPlaying);
+    const noTracks = !hasTracks;
+    playlistPrevBtn.disabled = noTracks;
+    playlistNextBtn.disabled = noTracks;
+    playlistPlayPauseBtn.disabled = noTracks;
+}
+
+function renderPlaylistSettingsList() {
+    playlistSettingsList.querySelectorAll('.playlist-track-row').forEach(el => el.remove());
+    playlistEmptyHint.style.display = playlistTracks.length ? 'none' : '';
+    playlistTracks.forEach((track, index) => {
+        const row = document.createElement('div');
+        row.className = 'playlist-track-row' + (index === playlistCurrentIndex ? ' is-current' : '');
+        row.innerHTML = `
+            <button class="playlist-track-row-play" type="button" title="Играть"><svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg></button>
+            <span class="playlist-track-row-name">${escapeHtml(stripExt(track.name))}</span>
+            <button class="playlist-track-row-remove" type="button" title="Удалить"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg></button>
+        `;
+        row.querySelector('.playlist-track-row-play').addEventListener('click', () => playPlaylistTrack(index));
+        row.querySelector('.playlist-track-row-remove').addEventListener('click', () => removePlaylistTrack(track.id));
+        playlistSettingsList.appendChild(row);
+    });
+}
+
+function refreshPlaylistUi() {
+    updatePlaylistWidget();
+    renderPlaylistSettingsList();
+}
+
+async function playPlaylistTrack(index) {
+    if (index < 0 || index >= playlistTracks.length) return;
+    const track = playlistTracks[index];
+    try {
+        const blob = await playlistDbGet(track.id);
+        if (!blob) {
+            alert('Не удалось загрузить этот трек — возможно, он был удалён в другом окне.');
+            return;
+        }
+        if (playlistCurrentObjectUrl) URL.revokeObjectURL(playlistCurrentObjectUrl);
+        playlistCurrentObjectUrl = URL.createObjectURL(blob);
+        playlistAudio.src = playlistCurrentObjectUrl;
+        playlistCurrentIndex = index;
+        await playlistAudio.play();
+    } catch (e) {
+        console.warn('[Плейлист] Не удалось воспроизвести трек:', e);
+    }
+    refreshPlaylistUi();
+}
+
+function togglePlaylistPlayPause() {
+    if (!playlistTracks.length) return;
+    if (playlistCurrentIndex === -1) {
+        playPlaylistTrack(0);
+        return;
+    }
+    if (playlistAudio.paused) {
+        playlistAudio.play().catch(() => {});
+    } else {
+        playlistAudio.pause();
+    }
+    refreshPlaylistUi();
+}
+
+function playlistPrevTrack() {
+    if (!playlistTracks.length) return;
+    const idx = playlistCurrentIndex <= 0 ? playlistTracks.length - 1 : playlistCurrentIndex - 1;
+    playPlaylistTrack(idx);
+}
+function playlistNextTrack() {
+    if (!playlistTracks.length) return;
+    const idx = playlistCurrentIndex === -1 || playlistCurrentIndex >= playlistTracks.length - 1 ? 0 : playlistCurrentIndex + 1;
+    playPlaylistTrack(idx);
+}
+
+playlistAudio.addEventListener('play', refreshPlaylistUi);
+playlistAudio.addEventListener('pause', refreshPlaylistUi);
+playlistAudio.addEventListener('ended', () => playlistNextTrack());
+
+playlistPlayPauseBtn.addEventListener('click', togglePlaylistPlayPause);
+playlistPrevBtn.addEventListener('click', playlistPrevTrack);
+playlistNextBtn.addEventListener('click', playlistNextTrack);
+playlistWidgetInfo.addEventListener('click', () => {
+    switchSettingsTab('playlist');
+    settingsModal.style.display = 'flex';
+});
+
+async function addPlaylistTracks(files) {
+    for (const file of Array.from(files || [])) {
+        if (file.size > PLAYLIST_MAX_TRACK_SIZE) {
+            alert(`Файл «${file.name}» слишком большой (максимум 20 МБ).`);
+            continue;
+        }
+        const id = `t_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+        try {
+            await playlistDbPut(id, file);
+            playlistTracks.push({ id, name: file.name, addedAt: Date.now() });
+            savePlaylistMeta(playlistTracks);
+        } catch (e) {
+            console.warn('[Плейлист] Не удалось сохранить трек:', e);
+            alert(`Не удалось сохранить трек «${file.name}».`);
+        }
+    }
+    refreshPlaylistUi();
+}
+
+async function removePlaylistTrack(id) {
+    const index = playlistTracks.findIndex(t => t.id === id);
+    if (index === -1) return;
+    const isCurrent = index === playlistCurrentIndex;
+    if (isCurrent) {
+        playlistAudio.pause();
+        playlistAudio.removeAttribute('src');
+        if (playlistCurrentObjectUrl) { URL.revokeObjectURL(playlistCurrentObjectUrl); playlistCurrentObjectUrl = null; }
+        playlistCurrentIndex = -1;
+    } else if (index < playlistCurrentIndex) {
+        playlistCurrentIndex -= 1;
+    }
+    playlistTracks.splice(index, 1);
+    savePlaylistMeta(playlistTracks);
+    try { await playlistDbDelete(id); } catch (e) { /* ignore */ }
+    refreshPlaylistUi();
+}
+
+playlistFileInput.addEventListener('change', () => {
+    if (playlistFileInput.files && playlistFileInput.files.length) {
+        addPlaylistTracks(playlistFileInput.files);
+    }
+    playlistFileInput.value = '';
+});
+
+refreshPlaylistUi();
 
 // "Заглушка" видеотрека: добавляется в каждый звонок с самого начала (вместе с аудио),
 // чтобы видео-канал в WebRTC-соединении уже существовал у всех участников.
@@ -4090,7 +4325,7 @@ function renderMessageTextWithMentions(text, members, myUsername) {
     return html;
 }
 
-function renderChatMessage({ username, user, avatar, text, image_url, created_at, whisper_to }) {
+function renderChatMessage({ id, username, user, avatar, text, image_url, created_at, whisper_to }) {
     const name = username || user || 'Участник';
     // created_at приходит с сервера как Date.now() (мс) — если вдруг отсутствует или же
     // после парсинга получилась невалидная дата (например, у старых записей в БД, ещё
@@ -4103,6 +4338,14 @@ function renderChatMessage({ username, user, avatar, text, image_url, created_at
 
     const msg = document.createElement('div');
     msg.className = 'chat-message fade-in';
+    if (id != null) msg.dataset.id = id;
+
+    // Сравниваем без учёта регистра/пробелов, как и в остальных местах, где мы
+    // определяем "это моё сообщение" — иначе из-за малейшего расхождения регистра
+    // кнопка удаления могла бы не появиться у собственного же сообщения.
+    const normNameForDelete = (n) => String(n || '').trim().toLowerCase();
+    const isMine = id != null && !!normNameForDelete(currentUser.username) && normNameForDelete(name) === normNameForDelete(currentUser.username);
+    if (isMine) msg.classList.add('own-message');
 
     let html = `<strong class="msg-sender" style="color:${getUserColor(name)}">${escapeHtml(name)}:</strong> `;
     if (Array.isArray(whisper_to) && whisper_to.length) {
@@ -4120,11 +4363,35 @@ function renderChatMessage({ username, user, avatar, text, image_url, created_at
         html += `<div class="chat-image-wrap"><img src="${image_url}" class="chat-image" alt="Изображение" onclick="openImageLightbox('${image_url}')"></div>`;
     }
     html += `<span class="msg-time">${formatMessageTime(date)}</span>`;
+    if (isMine) {
+        html += `<button type="button" class="msg-delete-btn" title="Удалить сообщение" onclick="deleteMyMessage(${JSON.stringify(id)})"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg></button>`;
+    }
     msg.innerHTML = html;
     messagesDiv.appendChild(msg);
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
     trimRenderedMessages();
 }
+
+// Удаление собственного сообщения: сервер сам проверяет владение по нику (ID сокета
+// не хватило бы — после перезахода/другого устройства id меняется), поэтому здесь
+// достаточно отправить id и дождаться подтверждающего события 'delete message'.
+window.deleteMyMessage = function(id) {
+    if (id == null) return;
+    if (!confirm('Удалить это сообщение?')) return;
+    socket.emit('delete message', { id, room: selectedRoom });
+};
+
+socket.on('delete message', ({ id, room }) => {
+    if (room && room !== selectedRoom) return;
+    if (id == null) return;
+    const el = messagesDiv.querySelector(`.chat-message[data-id="${CSS.escape(String(id))}"]`);
+    if (el) {
+        // Если удалённое сообщение было единственным под своим разделителем даты —
+        // trimRenderedMessages() сам подчистит осиротевший разделитель сверху при
+        // следующем рендере; здесь просто убираем само сообщение.
+        el.remove();
+    }
+});
 
 socket.on('chat history', (data) => {
     // Пришла история чата другой комнаты, чем та, что сейчас открыта (например,

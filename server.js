@@ -168,6 +168,19 @@ async function insertMessage({ username, avatar, text, imageUrl, room, createdAt
     return result.rows[0].id;
 }
 
+// Удаление своего сообщения. Владение проверяем на сервере по нику (без учёта
+// регистра) — id сообщения от клиента доверять для авторизации нельзя, но сам факт
+// совпадения ника с автором строки в БД достаточен, т.к. ник уникален (users_username_lower_idx).
+// RETURNING room нужен, чтобы разослать удаление именно в ту комнату, где было
+// сообщение, не полагаясь на комнату, которую мог прислать клиент.
+async function deleteOwnMessage(id, username) {
+    const result = await pool.query(
+        `DELETE FROM messages WHERE id = $1 AND LOWER(username) = LOWER($2) RETURNING room`,
+        [id, username]
+    );
+    return result.rows[0] || null;
+}
+
 function parseWhisperList(raw) {
     if (!raw) return null;
     try {
@@ -1394,6 +1407,25 @@ io.on('connection', (socket) => {
             }
         } catch (err) {
             console.error('❌ Ошибка сохранения сообщения:', err);
+        }
+    });
+
+    // Удаление собственного сообщения из чата. Разрешено удалять только свои —
+    // проверка владения (по нику) целиком на сервере, см. deleteOwnMessage().
+    socket.on('delete message', async (payload) => {
+        if (!socket.data || !socket.data.username) return;
+        const id = payload && Number(payload.id);
+        if (!id || !Number.isFinite(id)) return;
+
+        try {
+            const deleted = await deleteOwnMessage(id, socket.data.username);
+            if (deleted && deleted.room) {
+                // Рассылаем всем, у кого сейчас открыт этот чат — включая самого автора
+                // (на случай, если сообщение открыто в нескольких вкладках/устройствах).
+                io.to(`chat:${deleted.room}`).emit('delete message', { id, room: deleted.room });
+            }
+        } catch (err) {
+            console.error('❌ Ошибка удаления сообщения:', err);
         }
     });
 
