@@ -2771,10 +2771,7 @@ function processAudioLevelFallback(node) {
         }
         let volumeDb = getRmsDb(localAnalyser, dataArray);
         tickCount++;
-        // Пока окно неактивно (свёрнуто/перекрыто/в фоне), никто эту перерисовку
-        // всё равно не видит — пропускаем её, чтобы не грузить лишний раз DOM/layout.
-        // Сам гейт (открыт/закрыт микрофон) считается ниже вне зависимости от этого.
-        const shouldRedraw = appIsActive && (tickCount % 2 === 0);
+        const shouldRedraw = (tickCount % 2 === 0);
 
         if (shouldRedraw) {
             let meterPercent = Math.max(0, Math.min(100, ((volumeDb + 70) / 60) * 100));
@@ -4301,64 +4298,6 @@ try {
 document.addEventListener('fullscreenchange', () => {
     refreshDemoAudioGains();
 });
-
-// ============================================================================
-// Активность окна: сворачивание/скрытая вкладка (document.hidden) детектится
-// браузером сам, а вот "окно перекрыто другим окном" в вебе отдельного события
-// не имеет — ближайший надёжный и кросс-браузерный сигнал для этого случая —
-// потеря фокуса (window blur), т.к. чтобы перекрыть окно, по перекрывающему
-// обычно и кликают, а значит наше окно теряет фокус. Поэтому считаем окно
-// неактивным при ЛЮБОМ из двух: document.hidden ИЛИ !document.hasFocus().
-//
-// При неактивном окне гасим (body.app-inactive, см. CSS) только то, что чисто
-// визуально и не влияет на работу: CSS-анимации (pulseGlow у говорящих) и
-// частую перерисовку индикатора уровня микрофона/debug-текста гейта в
-// processAudioLevelFallback(). Звук, WebSocket, WebRTC-звонки, голосовой гейт,
-// прослушивание плейлиста вместе — как отправляли/принимали данные, так и
-// продолжают, вне зависимости от видимости окна.
-// ============================================================================
-let appIsActive = !document.hidden && document.hasFocus();
-
-function updateAppActivity() {
-    const active = !document.hidden && document.hasFocus();
-    document.body.classList.toggle('app-hidden', document.hidden);
-    document.body.classList.toggle('app-inactive', !active);
-    if (active === appIsActive) return;
-    appIsActive = active;
-    document.dispatchEvent(new CustomEvent('app-activity-change', { detail: { active } }));
-}
-
-window.addEventListener('focus', updateAppActivity);
-window.addEventListener('blur', updateAppActivity);
-document.addEventListener('visibilitychange', updateAppActivity);
-updateAppActivity();
-
-// ---- ВРЕМЕННЫЙ debug-индикатор, чтобы проверить сам механизм отдельно от
-// анимации говорящего (её не видно, если никто не в звонке). Можно удалить
-// после проверки — просто вырезать этот блок. ----
-(function initActivityDebugBadge() {
-    const badge = document.createElement('div');
-    badge.id = 'activity-debug-badge';
-    badge.style.cssText = 'position:fixed;bottom:10px;right:10px;z-index:999999;' +
-        'padding:6px 12px;border-radius:6px;font:600 12px/1.4 sans-serif;' +
-        'color:#fff;pointer-events:none;transition:background-color .15s;';
-    document.body.appendChild(badge);
-    function render() {
-        if (document.hidden) {
-            badge.textContent = '⛔ окно скрыто (рендер полностью выключен)';
-            badge.style.backgroundColor = '#7f1d1d';
-        } else if (!appIsActive) {
-            badge.textContent = '⏸ окно не в фокусе (анимации/клики на паузе)';
-            badge.style.backgroundColor = '#dc2626';
-        } else {
-            badge.textContent = '🟢 окно активно';
-            badge.style.backgroundColor = '#16a34a';
-        }
-    }
-    document.addEventListener('app-activity-change', render);
-    document.addEventListener('visibilitychange', render);
-    render();
-})();
 
 // Сообщает остальным участникам комнаты раздельный статус: выключен ли у нас
 // микрофон (мьют) и выключены ли у нас наушники (дефен) — это два разных значка.
