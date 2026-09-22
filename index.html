@@ -607,17 +607,27 @@
         /* Индикатор активной сессии совместного прослушивания */
         .listen-session-bar {
             display: none;
-            align-items: center;
-            gap: 7px;
-            padding: 6px 8px;
+            flex-direction: column;
+            gap: 6px;
+            padding: 7px 8px;
             background: var(--bg-elevated);
             border-radius: var(--radius-sm);
             font-size: 11.5px;
             color: var(--text-muted);
         }
         .listen-session-bar.active { display: flex; }
-        .listen-session-bar svg { flex-shrink: 0; color: var(--accent); }
-        .listen-session-bar-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .listen-session-row-top { display: flex; align-items: center; gap: 7px; }
+        .listen-session-row-top > svg { flex-shrink: 0; color: var(--accent); }
+        .listen-session-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+        .listen-session-track-name {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .listen-session-bar-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .listen-session-bar-text b { color: var(--text); font-weight: 600; }
         .listen-session-bar-stop {
             flex-shrink: 0;
@@ -630,6 +640,16 @@
             border-radius: 5px;
         }
         .listen-session-bar-stop:hover { background: var(--bg-elevated-hover); color: var(--danger); }
+        .listen-session-seek-row, .listen-session-volume-row {
+            display: none;
+            align-items: center;
+            gap: 7px;
+        }
+        .listen-session-seek-row.visible, .listen-session-volume-row.visible { display: flex; }
+        .listen-session-time { flex-shrink: 0; font-size: 10px; color: var(--text-faint); width: 30px; text-align: center; }
+        .listen-session-seek-row svg, .listen-session-volume-row svg { flex-shrink: 0; color: var(--text-faint); }
+        .listen-session-seek, .listen-session-volume-row input[type="range"] { flex: 1; padding: 0; }
+        .listen-session-seek:disabled { opacity: 0.7; cursor: default; }
 
         .user-avatar {
             width: 28px;
@@ -1804,13 +1824,25 @@
         /* ---------- Виджет плейлиста — чуть выше кнопок мьюта/наушников/настроек ---------- */
         .playlist-widget {
             display: none; /* показывается через JS, когда в плейлисте есть хотя бы один трек */
-            align-items: center;
-            gap: 8px;
+            flex-direction: column;
+            gap: 5px;
             padding: 7px 8px;
             background: var(--bg-elevated);
             border-radius: var(--radius-sm);
         }
         .playlist-widget.has-tracks { display: flex; }
+        .playlist-widget-top {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .playlist-seek-row {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+        }
+        .playlist-time { flex-shrink: 0; font-size: 10px; color: var(--text-faint); width: 30px; text-align: center; }
+        .playlist-seek { flex: 1; padding: 0; }
         .playlist-widget-icon {
             flex-shrink: 0;
             width: 22px;
@@ -2045,29 +2077,53 @@
             
             <div class="bottom-actions">
                 <div class="listen-session-bar" id="listen-session-bar">
-                    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
-                    <span class="listen-session-bar-text" id="listen-session-bar-text">Слушаете вместе</span>
-                    <button class="listen-session-bar-stop" id="listen-session-bar-stop" type="button" title="Завершить совместное прослушивание">Завершить</button>
+                    <div class="listen-session-row-top">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
+                        <div class="listen-session-info">
+                            <span class="listen-session-track-name" id="listen-session-track-name">Нет трека</span>
+                            <span class="listen-session-bar-text" id="listen-session-bar-text">Слушаете вместе</span>
+                        </div>
+                        <button class="listen-session-bar-stop" id="listen-session-bar-stop" type="button" title="Завершить совместное прослушивание">Завершить</button>
+                    </div>
+                    <div class="listen-session-seek-row" id="listen-session-seek-row">
+                        <span class="listen-session-time" id="listen-session-time-current">0:00</span>
+                        <input type="range" id="listen-session-seek" class="listen-session-seek" min="0" max="1000" value="0" step="1" disabled>
+                        <span class="listen-session-time" id="listen-session-time-duration">0:00</span>
+                    </div>
+                    <div class="listen-session-volume-row" id="listen-session-volume-row">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
+                        <input type="range" id="listen-session-volume" min="0" max="150" step="5" value="70">
+                    </div>
                 </div>
                 <div class="playlist-widget" id="playlist-widget">
-                    <div class="playlist-widget-icon">
-                        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
+                    <div class="playlist-widget-top">
+                        <div class="playlist-widget-icon">
+                            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
+                        </div>
+                        <div class="playlist-widget-info" id="playlist-widget-info" title="Открыть настройки плейлиста">
+                            <span class="playlist-track-name" id="playlist-track-name">Нет трека</span>
+                            <span class="playlist-track-sub" id="playlist-track-sub">Плейлист пуст</span>
+                        </div>
+                        <div class="playlist-widget-controls">
+                            <button class="playlist-ctrl-btn" id="playlist-prev-btn" type="button" title="Предыдущий трек">
+                                <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><polygon points="19 20 9 12 19 4 19 20"></polygon><rect x="5" y="4" width="2" height="16"></rect></svg>
+                            </button>
+                            <button class="playlist-ctrl-btn playlist-play-btn" id="playlist-playpause-btn" type="button" title="Пуск/Пауза">
+                                <svg class="icon-play" viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                                <svg class="icon-pause" viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
+                            </button>
+                            <button class="playlist-ctrl-btn" id="playlist-next-btn" type="button" title="Следующий трек">
+                                <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><polygon points="5 4 15 12 5 20 5 4"></polygon><rect x="17" y="4" width="2" height="16"></rect></svg>
+                            </button>
+                            <button class="playlist-ctrl-btn" id="playlist-volume-btn" type="button" title="Громкость плейлиста (только у вас)">
+                                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
+                            </button>
+                        </div>
                     </div>
-                    <div class="playlist-widget-info" id="playlist-widget-info" title="Открыть настройки плейлиста">
-                        <span class="playlist-track-name" id="playlist-track-name">Нет трека</span>
-                        <span class="playlist-track-sub" id="playlist-track-sub">Плейлист пуст</span>
-                    </div>
-                    <div class="playlist-widget-controls">
-                        <button class="playlist-ctrl-btn" id="playlist-prev-btn" type="button" title="Предыдущий трек">
-                            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><polygon points="19 20 9 12 19 4 19 20"></polygon><rect x="5" y="4" width="2" height="16"></rect></svg>
-                        </button>
-                        <button class="playlist-ctrl-btn playlist-play-btn" id="playlist-playpause-btn" type="button" title="Пуск/Пауза">
-                            <svg class="icon-play" viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-                            <svg class="icon-pause" viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
-                        </button>
-                        <button class="playlist-ctrl-btn" id="playlist-next-btn" type="button" title="Следующий трек">
-                            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><polygon points="5 4 15 12 5 20 5 4"></polygon><rect x="17" y="4" width="2" height="16"></rect></svg>
-                        </button>
+                    <div class="playlist-seek-row" id="playlist-seek-row">
+                        <span class="playlist-time" id="playlist-time-current">0:00</span>
+                        <input type="range" id="playlist-seek" class="playlist-seek" min="0" max="1000" value="0" step="1">
+                        <span class="playlist-time" id="playlist-time-duration">0:00</span>
                     </div>
                 </div>
                 <div class="action-row">

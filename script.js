@@ -385,6 +385,26 @@ const playlistEmptyHint = document.getElementById('playlist-empty-hint');
 const listenSessionBar = document.getElementById('listen-session-bar');
 const listenSessionBarText = document.getElementById('listen-session-bar-text');
 const listenSessionBarStop = document.getElementById('listen-session-bar-stop');
+const listenSessionTrackName = document.getElementById('listen-session-track-name');
+const listenSessionSeekRow = document.getElementById('listen-session-seek-row');
+const listenSessionSeek = document.getElementById('listen-session-seek');
+const listenSessionTimeCurrent = document.getElementById('listen-session-time-current');
+const listenSessionTimeDuration = document.getElementById('listen-session-time-duration');
+const listenSessionVolumeRow = document.getElementById('listen-session-volume-row');
+const listenSessionVolume = document.getElementById('listen-session-volume');
+const playlistSeekRow = document.getElementById('playlist-seek-row');
+const playlistSeek = document.getElementById('playlist-seek');
+const playlistTimeCurrent = document.getElementById('playlist-time-current');
+const playlistTimeDuration = document.getElementById('playlist-time-duration');
+const playlistVolumeBtn = document.getElementById('playlist-volume-btn');
+
+// Форматирует секунды в "м:сс" для меток времени плейлиста
+function formatPlaylistTime(seconds) {
+    if (!isFinite(seconds) || seconds < 0) return '0:00';
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${String(s).padStart(2, '0')}`;
+}
 const settingsBtn = document.getElementById('settings-btn');
 const settingsModal = document.getElementById('settings-modal');
 const logoutConfirmModal = document.getElementById('logout-confirm-modal');
@@ -1487,8 +1507,35 @@ function savePlaylistMeta(list) {
 let playlistTracks = loadPlaylistMeta(); // [{id, name, addedAt}]
 let playlistCurrentIndex = -1;
 const playlistAudio = new Audio();
-playlistAudio.volume = 0.7;
 let playlistCurrentObjectUrl = null;
+
+// Личная громкость музыки (плейлиста и совместного прослушивания) — у каждого своя,
+// хранится только на этом устройстве и никогда не передаётся собеседнику.
+const PLAYLIST_VOLUME_KEY = 'mute_playlist_volume';
+function loadPlaylistVolumePercent() {
+    try {
+        const raw = localStorage.getItem(PLAYLIST_VOLUME_KEY);
+        const n = raw === null ? 70 : parseInt(raw, 10);
+        return Number.isFinite(n) ? Math.min(200, Math.max(0, n)) : 70;
+    } catch (e) { return 70; }
+}
+function setPlaylistVolumePercent(percent) {
+    const clamped = Math.min(200, Math.max(0, percent));
+    playlistAudio.volume = Math.min(1, clamped / 100);
+    listenGuestAudioVolumeSafeSet(clamped);
+    try { localStorage.setItem(PLAYLIST_VOLUME_KEY, String(clamped)); } catch (e) { /* ignore */ }
+    if (playlistVolumeRangeEl) playlistVolumeRangeEl.value = clamped;
+    if (listenSessionVolume) listenSessionVolume.value = clamped;
+}
+// listenGuestAudio объявлен чуть ниже по файлу — обёртка на случай вызова раньше инициализации
+function listenGuestAudioVolumeSafeSet(percent) {
+    if (typeof listenGuestAudio !== 'undefined' && listenGuestAudio) {
+        listenGuestAudio.volume = Math.min(1, Math.max(0, percent) / 100);
+    }
+}
+let playlistVolumePercent = loadPlaylistVolumePercent();
+playlistAudio.volume = Math.min(1, playlistVolumePercent / 100);
+let playlistVolumeRangeEl = null; // ссылка на ползунок внутри попапа громкости плейлиста, пока он открыт
 
 function stripExt(name) {
     const idx = String(name || '').lastIndexOf('.');
@@ -1595,6 +1642,72 @@ playlistAudio.addEventListener('seeked', () => { if (listenSession && listenSess
 playlistPlayPauseBtn.addEventListener('click', togglePlaylistPlayPause);
 playlistPrevBtn.addEventListener('click', playlistPrevTrack);
 playlistNextBtn.addEventListener('click', playlistNextTrack);
+
+// ---------- Перемотка своего плейлиста (владелец плейлиста всегда может перематывать;
+// если сейчас идёт совместное прослушивание и мы хост — перемотка сама уедет
+// собеседнику через событие 'seeked' на playlistAudio, см. блок совместного прослушивания) ----------
+playlistAudio.addEventListener('loadedmetadata', () => {
+    playlistSeek.max = String(Math.max(1, Math.floor(playlistAudio.duration * 10) || 1));
+    playlistTimeDuration.textContent = formatPlaylistTime(playlistAudio.duration);
+});
+playlistAudio.addEventListener('timeupdate', () => {
+    if (isDraggingListenerSeek) return;
+    playlistSeek.value = String(Math.floor((playlistAudio.currentTime || 0) * 10));
+    playlistTimeCurrent.textContent = formatPlaylistTime(playlistAudio.currentTime);
+});
+playlistSeek.addEventListener('mousedown', () => { isDraggingListenerSeek = true; });
+playlistSeek.addEventListener('touchstart', () => { isDraggingListenerSeek = true; }, { passive: true });
+playlistSeek.addEventListener('input', () => {
+    const t = parseInt(playlistSeek.value, 10) / 10;
+    playlistTimeCurrent.textContent = formatPlaylistTime(t);
+    if (playlistCurrentIndex !== -1 && isFinite(playlistAudio.duration)) {
+        playlistAudio.currentTime = t;
+    }
+});
+function stopDraggingPlaylistSeek() { isDraggingListenerSeek = false; }
+playlistSeek.addEventListener('mouseup', stopDraggingPlaylistSeek);
+playlistSeek.addEventListener('touchend', stopDraggingPlaylistSeek);
+playlistSeek.addEventListener('change', stopDraggingPlaylistSeek);
+
+// ---------- Громкость своей музыки (плейлист + совместное прослушивание) — попап, как у собеседников ----------
+function closePlaylistVolumePopover() {
+    const existing = document.getElementById('playlist-volume-popover');
+    if (existing) existing.remove();
+    playlistVolumeRangeEl = null;
+    document.removeEventListener('mousedown', onDocMouseDownForPlaylistVolumePopover, true);
+}
+function onDocMouseDownForPlaylistVolumePopover(e) {
+    const pop = document.getElementById('playlist-volume-popover');
+    if (pop && !pop.contains(e.target) && e.target !== playlistVolumeBtn) closePlaylistVolumePopover();
+}
+playlistVolumeBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (document.getElementById('playlist-volume-popover')) { closePlaylistVolumePopover(); return; }
+    const pop = document.createElement('div');
+    pop.id = 'playlist-volume-popover';
+    pop.className = 'user-volume-popover fade-in';
+    pop.innerHTML = `
+        <div class="user-volume-popover-title">Громкость музыки</div>
+        <input type="range" id="playlist-volume-range" min="0" max="150" step="5" value="${playlistVolumePercent}">
+        <div class="user-volume-popover-value">${playlistVolumePercent}%</div>
+        <span class="profile-hint">Только у вас — на плейлист и совместное прослушивание</span>
+    `;
+    document.body.appendChild(pop);
+    const anchorRect = playlistVolumeBtn.getBoundingClientRect();
+    const popWidth = 220;
+    pop.style.left = `${Math.max(8, Math.min(anchorRect.left, window.innerWidth - popWidth - 8))}px`;
+    pop.style.bottom = `${window.innerHeight - anchorRect.top + 8}px`;
+    playlistVolumeRangeEl = pop.querySelector('#playlist-volume-range');
+    const valueLabel = pop.querySelector('.user-volume-popover-value');
+    playlistVolumeRangeEl.addEventListener('input', (ev) => {
+        const val = parseInt(ev.target.value, 10);
+        valueLabel.textContent = `${val}%`;
+        playlistVolumePercent = val;
+        setPlaylistVolumePercent(val);
+    });
+    playlistVolumeRangeEl.addEventListener('click', (ev) => ev.stopPropagation());
+    setTimeout(() => document.addEventListener('mousedown', onDocMouseDownForPlaylistVolumePopover, true), 0);
+});
 playlistWidgetInfo.addEventListener('click', () => {
     switchSettingsTab('playlist');
     settingsModal.style.display = 'flex';
@@ -1660,9 +1773,10 @@ let pendingOutgoingListenInviteTo = null; // peerId, кому только чт�
 let listenInviteTimeoutId = null;
 let listenSyncIntervalId = null;
 const listenGuestAudio = new Audio(); // отдельный аудио-элемент гостя, не трогает свой плейлист
-listenGuestAudio.volume = 0.7;
+listenGuestAudio.volume = Math.min(1, playlistVolumePercent / 100);
 let listenGuestObjectUrl = null;
 let listenGuestTrackMeta = null; // ждём бинарные данные трека после метаданных
+let isDraggingListenerSeek = false; // хост сейчас тянет ползунок перемотки — не перетираем его значение
 
 function closeListenInviteBanner() {
     const el = document.getElementById('listen-invite-banner');
@@ -1758,13 +1872,22 @@ function handleIncomingListenDataConnection(conn) {
 function refreshListenSessionUi() {
     if (!listenSession) {
         listenSessionBar.classList.remove('active');
+        listenSessionSeekRow.classList.remove('visible');
+        listenSessionVolumeRow.classList.remove('visible');
         return;
     }
     listenSessionBar.classList.add('active');
-    const roleLabel = listenSession.role === 'host' ? 'Слушаете вместе с' : 'Слушаете вместе с (ведёт';
     listenSessionBarText.innerHTML = listenSession.role === 'host'
-        ? `Слушаете вместе с <b style="color:${getUserColor(listenSession.username)}">${escapeHtml(listenSession.username)}</b>`
-        : `Слушаете вместе с <b style="color:${getUserColor(listenSession.username)}">${escapeHtml(listenSession.username)}</b> (ведёт собеседник)`;
+        ? `с <b style="color:${getUserColor(listenSession.username)}">${escapeHtml(listenSession.username)}</b> — перематываете вы`
+        : `с <b style="color:${getUserColor(listenSession.username)}">${escapeHtml(listenSession.username)}</b> — перематывает собеседник`;
+
+    // Своя перемотка (у хоста) и своя громкость уже есть в обычном виджете плейлиста —
+    // гостю же нужен отдельный (только для чтения) прогресс и своя громкость здесь.
+    const isGuest = listenSession.role === 'guest';
+    listenSessionSeekRow.classList.toggle('visible', isGuest);
+    listenSessionVolumeRow.classList.toggle('visible', isGuest);
+    listenSessionTrackName.style.display = isGuest ? '' : 'none';
+    if (isGuest) listenSessionVolume.value = String(Math.min(150, playlistVolumePercent));
 }
 
 function setupListenSession(conn, role, peerId, username) {
@@ -1851,7 +1974,7 @@ function handleListenSyncMessage(msg) {
             };
             if (listenGuestAudio.readyState >= 1) applyState();
             else listenGuestAudio.addEventListener('loadedmetadata', applyState, { once: true });
-            listenSessionBarText.innerHTML = `Слушаете вместе с <b style="color:${getUserColor(listenSession.username)}">${escapeHtml(listenSession.username)}</b> — «${escapeHtml(stripExt(meta.name))}»`;
+            listenSessionTrackName.textContent = stripExt(meta.name);
         } catch (e) {
             console.warn('[Совместное прослушивание] Не удалось воспроизвести полученный трек:', e);
         }
@@ -1887,6 +2010,10 @@ function endListenSession(silent) {
     listenGuestAudio.pause();
     listenGuestAudio.removeAttribute('src');
     if (listenGuestObjectUrl) { URL.revokeObjectURL(listenGuestObjectUrl); listenGuestObjectUrl = null; }
+    listenSessionTrackName.textContent = 'Нет трека';
+    listenSessionSeek.value = '0';
+    listenSessionTimeCurrent.textContent = '0:00';
+    listenSessionTimeDuration.textContent = '0:00';
 
     refreshListenSessionUi();
 
@@ -1899,6 +2026,23 @@ function endListenSession(silent) {
 }
 
 listenSessionBarStop.addEventListener('click', () => endListenSession(false));
+
+// Прогресс воспроизведения у гостя — только для чтения (перематывает исключительно хост)
+listenGuestAudio.addEventListener('loadedmetadata', () => {
+    listenSessionSeek.max = String(Math.max(1, Math.floor(listenGuestAudio.duration * 10) || 1));
+    listenSessionTimeDuration.textContent = formatPlaylistTime(listenGuestAudio.duration);
+});
+listenGuestAudio.addEventListener('timeupdate', () => {
+    listenSessionSeek.value = String(Math.floor((listenGuestAudio.currentTime || 0) * 10));
+    listenSessionTimeCurrent.textContent = formatPlaylistTime(listenGuestAudio.currentTime);
+});
+
+// Громкость гостя у себя — своя, не влияет на хоста и наоборот
+listenSessionVolume.addEventListener('input', () => {
+    const val = parseInt(listenSessionVolume.value, 10);
+    playlistVolumePercent = val;
+    setPlaylistVolumePercent(val);
+});
 
 socket.on('listen invite', ({ fromPeerId, fromUsername, toPeerId } = {}) => {
     if (toPeerId !== myPeerId) return;
