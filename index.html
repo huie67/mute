@@ -540,7 +540,13 @@
         }
         .user-volume-popover input[type="range"] {
             width: 100%;
+            min-width: 0;
             padding: 0;
+            margin: 0;
+            border: none;
+            background: transparent;
+            height: 18px;
+            accent-color: var(--accent);
         }
         .user-volume-popover-divider {
             height: 1px;
@@ -648,7 +654,16 @@
         .listen-session-seek-row.visible, .listen-session-volume-row.visible { display: flex; }
         .listen-session-time { flex-shrink: 0; font-size: 10px; color: var(--text-faint); width: 30px; text-align: center; }
         .listen-session-seek-row svg, .listen-session-volume-row svg { flex-shrink: 0; color: var(--text-faint); }
-        .listen-session-seek, .listen-session-volume-row input[type="range"] { flex: 1; padding: 0; }
+        .listen-session-seek, .listen-session-volume-row input[type="range"] {
+            flex: 1;
+            min-width: 0;
+            padding: 0;
+            margin: 0;
+            border: none;
+            background: transparent;
+            height: 18px;
+            accent-color: var(--accent);
+        }
         .listen-session-seek:disabled { opacity: 0.7; cursor: default; }
 
         .user-avatar {
@@ -1835,6 +1850,8 @@
             display: flex;
             align-items: center;
             gap: 8px;
+            flex-wrap: wrap;
+            row-gap: 4px;
         }
         .playlist-seek-row {
             display: flex;
@@ -1842,7 +1859,16 @@
             gap: 7px;
         }
         .playlist-time { flex-shrink: 0; font-size: 10px; color: var(--text-faint); width: 30px; text-align: center; }
-        .playlist-seek { flex: 1; padding: 0; }
+        .playlist-seek {
+            flex: 1;
+            min-width: 0;
+            padding: 0;
+            margin: 0;
+            border: none;
+            background: transparent;
+            height: 18px;
+            accent-color: var(--accent);
+        }
         .playlist-widget-icon {
             flex-shrink: 0;
             width: 22px;
@@ -1856,8 +1882,8 @@
         }
         .playlist-widget-icon svg { display: block; }
         .playlist-widget-info {
-            flex: 1;
-            min-width: 0;
+            flex: 1 1 64px;
+            min-width: 64px;
             display: flex;
             flex-direction: column;
             gap: 1px;
@@ -1883,6 +1909,7 @@
             align-items: center;
             gap: 2px;
             flex-shrink: 0;
+            margin-left: auto;
         }
         .playlist-ctrl-btn {
             width: 24px;
