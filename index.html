@@ -542,6 +542,94 @@
             width: 100%;
             padding: 0;
         }
+        .user-volume-popover-divider {
+            height: 1px;
+            background: var(--border-soft);
+            margin: 4px 0;
+        }
+        .listen-invite-btn {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            width: 100%;
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            color: var(--text);
+            border-radius: var(--radius-sm);
+            padding: 8px 10px;
+            font-size: 12.5px;
+            cursor: pointer;
+            text-align: left;
+            transition: background 0.15s, border-color 0.15s;
+        }
+        .listen-invite-btn:hover { background: var(--bg-elevated-hover); border-color: var(--accent); }
+        .listen-invite-btn.is-active { color: var(--danger); }
+        .listen-invite-btn svg { flex-shrink: 0; display: block; }
+
+        /* Приглашение на совместное прослушивание — плавающий баннер */
+        #listen-invite-banner {
+            position: fixed;
+            left: 50%;
+            top: 18px;
+            transform: translateX(-50%);
+            z-index: 6000;
+            width: 300px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-left: 3px solid var(--accent);
+            border-radius: var(--radius-sm);
+            box-shadow: var(--shadow-card);
+            padding: 12px 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 9px;
+        }
+        #listen-invite-banner .listen-invite-text {
+            font-size: 13px;
+            color: var(--text);
+            line-height: 1.4;
+        }
+        #listen-invite-banner .listen-invite-actions {
+            display: flex;
+            gap: 8px;
+        }
+        #listen-invite-banner .listen-invite-actions button {
+            flex: 1;
+            border: none;
+            border-radius: var(--radius-sm);
+            padding: 7px 0;
+            font-size: 12.5px;
+            cursor: pointer;
+        }
+        #listen-invite-banner .listen-invite-accept { background: var(--accent); color: #fff; }
+        #listen-invite-banner .listen-invite-decline { background: var(--bg-input); color: var(--text-muted); border: 1px solid var(--border) !important; }
+
+        /* Индикатор активной сессии совместного прослушивания */
+        .listen-session-bar {
+            display: none;
+            align-items: center;
+            gap: 7px;
+            padding: 6px 8px;
+            background: var(--bg-elevated);
+            border-radius: var(--radius-sm);
+            font-size: 11.5px;
+            color: var(--text-muted);
+        }
+        .listen-session-bar.active { display: flex; }
+        .listen-session-bar svg { flex-shrink: 0; color: var(--accent); }
+        .listen-session-bar-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .listen-session-bar-text b { color: var(--text); font-weight: 600; }
+        .listen-session-bar-stop {
+            flex-shrink: 0;
+            border: none;
+            background: transparent;
+            color: var(--text-faint);
+            cursor: pointer;
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 5px;
+        }
+        .listen-session-bar-stop:hover { background: var(--bg-elevated-hover); color: var(--danger); }
 
         .user-avatar {
             width: 28px;
@@ -1956,6 +2044,11 @@
             </div>
             
             <div class="bottom-actions">
+                <div class="listen-session-bar" id="listen-session-bar">
+                    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
+                    <span class="listen-session-bar-text" id="listen-session-bar-text">Слушаете вместе</span>
+                    <button class="listen-session-bar-stop" id="listen-session-bar-stop" type="button" title="Завершить совместное прослушивание">Завершить</button>
+                </div>
                 <div class="playlist-widget" id="playlist-widget">
                     <div class="playlist-widget-icon">
                         <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>

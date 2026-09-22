@@ -1288,6 +1288,41 @@ io.on('connection', (socket) => {
         leaveCurrentRoom(socket);
     });
 
+    // ---------- Совместное прослушивание плейлиста (только ретрансляция адресату) ----------
+    // Сам сервер ничего не хранит и не проверяет содержимое — только пересылает
+    // сообщение конкретному собеседнику внутри той же голосовой комнаты (по peerId),
+    // так же как это уже делается для 'video state' / 'mute state'. Реальные данные
+    // трека и синхронизация идут напрямую между клиентами через PeerJS DataConnection.
+    socket.on('listen invite', ({ toPeerId } = {}) => {
+        if (currentUserRoom && socket.data && socket.data.peerId && toPeerId) {
+            socket.to(currentUserRoom).emit('listen invite', {
+                fromPeerId: socket.data.peerId,
+                fromUsername: socket.data.username || 'Участник',
+                toPeerId
+            });
+        }
+    });
+
+    socket.on('listen invite response', ({ toPeerId, accepted } = {}) => {
+        if (currentUserRoom && socket.data && socket.data.peerId && toPeerId) {
+            socket.to(currentUserRoom).emit('listen invite response', {
+                fromPeerId: socket.data.peerId,
+                fromUsername: socket.data.username || 'Участник',
+                toPeerId,
+                accepted: !!accepted
+            });
+        }
+    });
+
+    socket.on('listen session end', ({ toPeerId } = {}) => {
+        if (currentUserRoom && socket.data && socket.data.peerId && toPeerId) {
+            socket.to(currentUserRoom).emit('listen session end', {
+                fromPeerId: socket.data.peerId,
+                toPeerId
+            });
+        }
+    });
+
     socket.on('video state', ({ sharing }) => {
         if (currentUserRoom && rooms[currentUserRoom] && rooms[currentUserRoom][socket.id]) {
             rooms[currentUserRoom][socket.id].sharing = !!sharing;

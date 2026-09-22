@@ -382,6 +382,9 @@ const playlistNextBtn = document.getElementById('playlist-next-btn');
 const playlistFileInput = document.getElementById('playlist-file-input');
 const playlistSettingsList = document.getElementById('playlist-settings-list');
 const playlistEmptyHint = document.getElementById('playlist-empty-hint');
+const listenSessionBar = document.getElementById('listen-session-bar');
+const listenSessionBarText = document.getElementById('listen-session-bar-text');
+const listenSessionBarStop = document.getElementById('listen-session-bar-stop');
 const settingsBtn = document.getElementById('settings-btn');
 const settingsModal = document.getElementById('settings-modal');
 const logoutConfirmModal = document.getElementById('logout-confirm-modal');
@@ -1547,6 +1550,7 @@ async function playPlaylistTrack(index) {
         playlistAudio.src = playlistCurrentObjectUrl;
         playlistCurrentIndex = index;
         await playlistAudio.play();
+        if (listenSession && listenSession.role === 'host') sendCurrentTrackToListenGuest();
     } catch (e) {
         console.warn('[Плейлист] Не удалось воспроизвести трек:', e);
     }
@@ -1581,6 +1585,12 @@ function playlistNextTrack() {
 playlistAudio.addEventListener('play', refreshPlaylistUi);
 playlistAudio.addEventListener('pause', refreshPlaylistUi);
 playlistAudio.addEventListener('ended', () => playlistNextTrack());
+
+// Если мы сейчас хост совместного прослушивания — держим собеседника в курсе
+// пуска/паузы своего плейлиста (смена самого трека шлётся отдельно, из playPlaylistTrack).
+playlistAudio.addEventListener('play', () => { if (listenSession && listenSession.role === 'host') sendListenStateToGuest(); });
+playlistAudio.addEventListener('pause', () => { if (listenSession && listenSession.role === 'host') sendListenStateToGuest(); });
+playlistAudio.addEventListener('seeked', () => { if (listenSession && listenSession.role === 'host') sendListenStateToGuest(); });
 
 playlistPlayPauseBtn.addEventListener('click', togglePlaylistPlayPause);
 playlistPrevBtn.addEventListener('click', playlistPrevTrack);
@@ -1635,6 +1645,288 @@ playlistFileInput.addEventListener('change', () => {
 });
 
 refreshPlaylistUi();
+
+// ==================== Совместное прослушивание плейлиста (2 человека) ====================
+// Идея: приглашение/ответ/завершение идут через сервер (ретрансляция по peerId внутри
+// голосовой комнаты — см. 'listen invite' и т.п. в server.js). А сама синхронизация
+// (какой трек, играет/пауза, текущее время) и передача самого файла трека — НАПРЯМУЮ
+// между двумя клиентами через отдельный PeerJS DataConnection, без участия сервера.
+// Инициатор приглашения становится "хостом" (его плейлист — источник истины),
+// принявший приглашение — "гостем" (просто зеркалит то, что играет у хоста).
+
+let listenSession = null; // { peerId, username, role: 'host' | 'guest', conn }
+let pendingIncomingListenInvite = null; // { peerId, username }
+let pendingOutgoingListenInviteTo = null; // peerId, кому только что отправили приглашение
+let listenInviteTimeoutId = null;
+let listenSyncIntervalId = null;
+const listenGuestAudio = new Audio(); // отдельный аудио-элемент гостя, не трогает свой плейлист
+listenGuestAudio.volume = 0.7;
+let listenGuestObjectUrl = null;
+let listenGuestTrackMeta = null; // ждём бинарные данные трека после метаданных
+
+function closeListenInviteBanner() {
+    const el = document.getElementById('listen-invite-banner');
+    if (el) el.remove();
+    if (listenInviteTimeoutId) { clearTimeout(listenInviteTimeoutId); listenInviteTimeoutId = null; }
+}
+
+function showListenInviteBanner(peerId, username) {
+    closeListenInviteBanner();
+    pendingIncomingListenInvite = { peerId, username };
+    const banner = document.createElement('div');
+    banner.id = 'listen-invite-banner';
+    banner.className = 'fade-in';
+    banner.innerHTML = `
+        <div class="listen-invite-text">🎧 <b style="color:${getUserColor(username)}">${escapeHtml(username)}</b> предлагает послушать музыку вместе</div>
+        <div class="listen-invite-actions">
+            <button class="listen-invite-decline" type="button">Отклонить</button>
+            <button class="listen-invite-accept" type="button">Принять</button>
+        </div>
+    `;
+    document.body.appendChild(banner);
+    banner.querySelector('.listen-invite-accept').addEventListener('click', () => acceptListenInvite());
+    banner.querySelector('.listen-invite-decline').addEventListener('click', () => declineListenInvite());
+
+    // Приглашение "протухает" через 30 секунд, если не ответили
+    listenInviteTimeoutId = setTimeout(() => {
+        if (pendingIncomingListenInvite && pendingIncomingListenInvite.peerId === peerId) {
+            declineListenInvite();
+        }
+    }, 30000);
+}
+
+function acceptListenInvite() {
+    if (!pendingIncomingListenInvite) return;
+    const { peerId, username } = pendingIncomingListenInvite;
+    pendingIncomingListenInvite = null;
+    closeListenInviteBanner();
+
+    socket.emit('listen invite response', { toPeerId: peerId, accepted: true });
+
+    // Свою локальную музыку на время сессии останавливаем, чтобы не играли две дорожки разом
+    if (!playlistAudio.paused) playlistAudio.pause();
+
+    if (!myPeer) return;
+    try {
+        const conn = myPeer.connect(peerId, { label: 'listen-sync', reliable: true, serialization: 'binary' });
+        conn.on('open', () => setupListenSession(conn, 'guest', peerId, username));
+        conn.on('error', (e) => {
+            console.warn('[Совместное прослушивание] Ошибка соединения:', e);
+            showToast('Не удалось подключиться к собеседнику для совместного прослушивания.');
+        });
+    } catch (e) {
+        console.warn('[Совместное прослушивание] Не удалось создать соединение:', e);
+    }
+}
+
+function declineListenInvite() {
+    if (!pendingIncomingListenInvite) { closeListenInviteBanner(); return; }
+    const { peerId } = pendingIncomingListenInvite;
+    pendingIncomingListenInvite = null;
+    closeListenInviteBanner();
+    socket.emit('listen invite response', { toPeerId: peerId, accepted: false });
+}
+
+function sendListenInvite(peerId, username) {
+    if (listenSession) {
+        showToast('Вы уже слушаете музыку вместе с кем-то — сначала завершите текущую сессию.');
+        return;
+    }
+    pendingOutgoingListenInviteTo = peerId;
+    socket.emit('listen invite', { toPeerId: peerId });
+    showToast(`Приглашение отправлено: ${username}`);
+    setTimeout(() => {
+        if (pendingOutgoingListenInviteTo === peerId) pendingOutgoingListenInviteTo = null;
+    }, 30000);
+}
+
+// Вызывается, когда PeerJS сообщает о входящем DataConnection — принимаем только
+// ожидаемое соединение для совместного прослушивания (остальное не трогаем).
+function handleIncomingListenDataConnection(conn) {
+    if (conn.label !== 'listen-sync') return;
+    if (pendingOutgoingListenInviteTo !== conn.peer) {
+        // Соединение не от того, кого мы приглашали (либо мы никого не приглашали) — не принимаем.
+        try { conn.close(); } catch (e) {}
+        return;
+    }
+    const peerId = conn.peer;
+    pendingOutgoingListenInviteTo = null;
+    const username = (connectedUsers[peerId] && connectedUsers[peerId].username) || 'Собеседник';
+    conn.on('open', () => setupListenSession(conn, 'host', peerId, username));
+}
+
+function refreshListenSessionUi() {
+    if (!listenSession) {
+        listenSessionBar.classList.remove('active');
+        return;
+    }
+    listenSessionBar.classList.add('active');
+    const roleLabel = listenSession.role === 'host' ? 'Слушаете вместе с' : 'Слушаете вместе с (ведёт';
+    listenSessionBarText.innerHTML = listenSession.role === 'host'
+        ? `Слушаете вместе с <b style="color:${getUserColor(listenSession.username)}">${escapeHtml(listenSession.username)}</b>`
+        : `Слушаете вместе с <b style="color:${getUserColor(listenSession.username)}">${escapeHtml(listenSession.username)}</b> (ведёт собеседник)`;
+}
+
+function setupListenSession(conn, role, peerId, username) {
+    if (listenSession) {
+        try { listenSession.conn.close(); } catch (e) {}
+    }
+    listenSession = { peerId, username, role, conn };
+    refreshListenSessionUi();
+    showToast(role === 'host'
+        ? `${username} присоединился к совместному прослушиванию`
+        : `Вы слушаете музыку вместе с ${username}`);
+
+    conn.on('data', (msg) => handleListenSyncMessage(msg));
+    conn.on('close', () => endListenSession(true));
+    conn.on('error', () => endListenSession(true));
+
+    if (role === 'host') {
+        // Гость только что подключился — сразу шлём ему текущий трек, если он есть
+        if (playlistCurrentIndex !== -1) {
+            sendCurrentTrackToListenGuest();
+        }
+        startListenHostSyncLoop();
+    }
+}
+
+async function sendCurrentTrackToListenGuest() {
+    if (!listenSession || listenSession.role !== 'host') return;
+    const track = playlistTracks[playlistCurrentIndex];
+    if (!track) return;
+    try {
+        const blob = await playlistDbGet(track.id);
+        if (!blob) return;
+        const buffer = await blob.arrayBuffer();
+        listenSession.conn.send({
+            type: 'track-meta',
+            name: track.name,
+            mime: blob.type || 'audio/mpeg',
+            currentTime: playlistAudio.currentTime || 0,
+            playing: !playlistAudio.paused
+        });
+        listenSession.conn.send(buffer);
+    } catch (e) {
+        console.warn('[Совместное прослушивание] Не удалось отправить трек собеседнику:', e);
+    }
+}
+
+function sendListenStateToGuest() {
+    if (!listenSession || listenSession.role !== 'host') return;
+    listenSession.conn.send({
+        type: 'state',
+        playing: !playlistAudio.paused,
+        currentTime: playlistAudio.currentTime || 0
+    });
+}
+
+function startListenHostSyncLoop() {
+    if (listenSyncIntervalId) clearInterval(listenSyncIntervalId);
+    // Раз в 4 секунды подстраховочно шлём текущее время — на случай рассинхрона у гостя
+    listenSyncIntervalId = setInterval(() => {
+        if (listenSession && listenSession.role === 'host' && !playlistAudio.paused) {
+            sendListenStateToGuest();
+        }
+    }, 4000);
+}
+
+function handleListenSyncMessage(msg) {
+    if (!listenSession || listenSession.role !== 'guest') return;
+
+    const isBinary = msg instanceof ArrayBuffer || msg instanceof Uint8Array
+        || (msg && msg.buffer instanceof ArrayBuffer) || msg instanceof Blob;
+    if (isBinary) {
+        if (!listenGuestTrackMeta) return;
+        const meta = listenGuestTrackMeta;
+        listenGuestTrackMeta = null;
+        try {
+            const blob = msg instanceof Blob ? msg : new Blob([msg], { type: meta.mime || 'audio/mpeg' });
+            if (listenGuestObjectUrl) URL.revokeObjectURL(listenGuestObjectUrl);
+            listenGuestObjectUrl = URL.createObjectURL(blob);
+            listenGuestAudio.src = listenGuestObjectUrl;
+            const applyState = () => {
+                listenGuestAudio.currentTime = meta.currentTime || 0;
+                if (meta.playing) listenGuestAudio.play().catch(() => {});
+                else listenGuestAudio.pause();
+            };
+            if (listenGuestAudio.readyState >= 1) applyState();
+            else listenGuestAudio.addEventListener('loadedmetadata', applyState, { once: true });
+            listenSessionBarText.innerHTML = `Слушаете вместе с <b style="color:${getUserColor(listenSession.username)}">${escapeHtml(listenSession.username)}</b> — «${escapeHtml(stripExt(meta.name))}»`;
+        } catch (e) {
+            console.warn('[Совместное прослушивание] Не удалось воспроизвести полученный трек:', e);
+        }
+        return;
+    }
+
+    if (!msg || typeof msg !== 'object') return;
+
+    if (msg.type === 'track-meta') {
+        listenGuestTrackMeta = msg;
+        return;
+    }
+
+    if (msg.type === 'state') {
+        if (msg.playing && listenGuestAudio.paused) listenGuestAudio.play().catch(() => {});
+        if (!msg.playing && !listenGuestAudio.paused) listenGuestAudio.pause();
+        if (typeof msg.currentTime === 'number' && Math.abs(listenGuestAudio.currentTime - msg.currentTime) > 1.5) {
+            listenGuestAudio.currentTime = msg.currentTime;
+        }
+        return;
+    }
+}
+
+function endListenSession(silent) {
+    if (!listenSession) return;
+    const wasHost = listenSession.role === 'host';
+    const peerId = listenSession.peerId;
+    try { listenSession.conn.close(); } catch (e) {}
+    listenSession = null;
+    listenGuestTrackMeta = null;
+    if (listenSyncIntervalId) { clearInterval(listenSyncIntervalId); listenSyncIntervalId = null; }
+
+    listenGuestAudio.pause();
+    listenGuestAudio.removeAttribute('src');
+    if (listenGuestObjectUrl) { URL.revokeObjectURL(listenGuestObjectUrl); listenGuestObjectUrl = null; }
+
+    refreshListenSessionUi();
+
+    if (!silent) {
+        socket.emit('listen session end', { toPeerId: peerId });
+        showToast('Совместное прослушивание завершено');
+    } else {
+        showToast('Собеседник вышел из совместного прослушивания');
+    }
+}
+
+listenSessionBarStop.addEventListener('click', () => endListenSession(false));
+
+socket.on('listen invite', ({ fromPeerId, fromUsername, toPeerId } = {}) => {
+    if (toPeerId !== myPeerId) return;
+    if (listenSession) {
+        // Уже в сессии — сразу вежливо отклоняем, не показывая баннер
+        socket.emit('listen invite response', { toPeerId: fromPeerId, accepted: false });
+        return;
+    }
+    showListenInviteBanner(fromPeerId, fromUsername || 'Участник');
+});
+
+socket.on('listen invite response', ({ fromPeerId, fromUsername, toPeerId, accepted } = {}) => {
+    if (toPeerId !== myPeerId) return;
+    if (pendingOutgoingListenInviteTo !== fromPeerId) return;
+    if (!accepted) {
+        pendingOutgoingListenInviteTo = null;
+        showToast(`${fromUsername || 'Собеседник'} отклонил приглашение`);
+    }
+    // Если accepted === true, ждём входящий PeerJS DataConnection
+    // (см. handleIncomingListenDataConnection) — именно он завершает установку сессии.
+});
+
+socket.on('listen session end', ({ fromPeerId, toPeerId } = {}) => {
+    if (toPeerId !== myPeerId) return;
+    if (listenSession && listenSession.peerId === fromPeerId) {
+        endListenSession(true);
+    }
+});
 
 // "Заглушка" видеотрека: добавляется в каждый звонок с самого начала (вместе с аудио),
 // чтобы видео-канал в WebRTC-соединении уже существовал у всех участников.
@@ -1986,6 +2278,12 @@ async function initPeer() {
             updateVoiceUsersList();
         }
         handleIncomingCall(call);
+    });
+
+    // Входящий DataConnection — используется только для совместного прослушивания
+    // плейлиста (см. handleIncomingListenDataConnection ниже).
+    myPeer.on('connection', (conn) => {
+        handleIncomingListenDataConnection(conn);
     });
 
     myPeer.on('error', (err) => {
@@ -2901,6 +3199,7 @@ function leaveVoiceChannel() {
     if (activeVideoStream) {
         stopVideoStream();
     }
+    if (listenSession) endListenSession(false);
     cleanupCalls();
     socket.emit('leave voice');
 
@@ -3317,6 +3616,7 @@ socket.on('user disconnected', (peerId) => {
     delete remoteStreamsByPeer[peerId];
     sharingPeers.delete(peerId);
     if (currentUser.room === selectedRoom) updateVoiceUsersList();
+    if (listenSession && listenSession.peerId === peerId) endListenSession(true);
 
     // Звук выхода — только если мы сами сейчас в голосовом канале
     if (wasPresent && peerId !== myPeerId && currentUser.room) {
@@ -3461,8 +3761,25 @@ function openUserVolumePopover(peerId, anchorEl, username) {
         <input type="range" id="user-volume-range" min="0" max="200" step="5" value="${percent}">
         <div class="user-volume-popover-value">${percent}%</div>
         <span class="profile-hint">Меняется только у вас — собеседник об этом не узнает</span>
+        <div class="user-volume-popover-divider"></div>
+        <button type="button" class="listen-invite-btn${listenSession && listenSession.peerId === peerId ? ' is-active' : ''}" id="listen-invite-popover-btn">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
+            <span>${listenSession && listenSession.peerId === peerId ? 'Завершить совместное прослушивание' : 'Слушать музыку вместе'}</span>
+        </button>
     `;
     document.body.appendChild(pop);
+
+    pop.querySelector('#listen-invite-popover-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeUserVolumePopover();
+        if (listenSession && listenSession.peerId === peerId) {
+            endListenSession(false);
+        } else if (!playlistTracks.length) {
+            alert('Сначала добавьте хотя бы один трек в свой плейлист (Настройки → Плейлист).');
+        } else {
+            sendListenInvite(peerId, username);
+        }
+    });
 
     const anchorRect = anchorEl.getBoundingClientRect();
     const popWidth = 220;
