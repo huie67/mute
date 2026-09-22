@@ -2771,7 +2771,10 @@ function processAudioLevelFallback(node) {
         }
         let volumeDb = getRmsDb(localAnalyser, dataArray);
         tickCount++;
-        const shouldRedraw = (tickCount % 2 === 0);
+        // Пока окно неактивно (свёрнуто/перекрыто/в фоне), никто эту перерисовку
+        // всё равно не видит — пропускаем её, чтобы не грузить лишний раз DOM/layout.
+        // Сам гейт (открыт/закрыт микрофон) считается ниже вне зависимости от этого.
+        const shouldRedraw = appIsActive && (tickCount % 2 === 0);
 
         if (shouldRedraw) {
             let meterPercent = Math.max(0, Math.min(100, ((volumeDb + 70) / 60) * 100));
@@ -4298,6 +4301,35 @@ try {
 document.addEventListener('fullscreenchange', () => {
     refreshDemoAudioGains();
 });
+
+// ============================================================================
+// Активность окна: сворачивание/скрытая вкладка (document.hidden) детектится
+// браузером сам, а вот "окно перекрыто другим окном" в вебе отдельного события
+// не имеет — ближайший надёжный и кросс-браузерный сигнал для этого случая —
+// потеря фокуса (window blur), т.к. чтобы перекрыть окно, по перекрывающему
+// обычно и кликают, а значит наше окно теряет фокус. Поэтому считаем окно
+// неактивным при ЛЮБОМ из двух: document.hidden ИЛИ !document.hasFocus().
+//
+// При неактивном окне гасим (body.app-inactive, см. CSS) только то, что чисто
+// визуально и не влияет на работу: CSS-анимации (pulseGlow у говорящих) и
+// частую перерисовку индикатора уровня микрофона/debug-текста гейта в
+// processAudioLevelFallback(). Звук, WebSocket, WebRTC-звонки, голосовой гейт,
+// прослушивание плейлиста вместе — как отправляли/принимали данные, так и
+// продолжают, вне зависимости от видимости окна.
+// ============================================================================
+let appIsActive = !document.hidden && document.hasFocus();
+
+function updateAppActivity() {
+    const active = !document.hidden && document.hasFocus();
+    if (active === appIsActive) return;
+    appIsActive = active;
+    document.body.classList.toggle('app-inactive', !active);
+}
+
+window.addEventListener('focus', updateAppActivity);
+window.addEventListener('blur', updateAppActivity);
+document.addEventListener('visibilitychange', updateAppActivity);
+updateAppActivity();
 
 // Сообщает остальным участникам комнаты раздельный статус: выключен ли у нас
 // микрофон (мьют) и выключены ли у нас наушники (дефен) — это два разных значка.

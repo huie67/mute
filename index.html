@@ -88,6 +88,15 @@
             animation: fadeIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
         }
 
+        /* Окно неактивно: свёрнуто, скрыто другой вкладкой ИЛИ потеряло фокус
+           (в т.ч. когда его перекрыло другое окно). Глушим все CSS-анимации —
+           они всё равно не видны, но без паузы продолжают грузить GPU-процесс
+           на каждом говорящем аватаре и т.п. Сам звук/сокет/гейт это не трогает,
+           см. app-inactive в script.js. */
+        body.app-inactive * {
+            animation-play-state: paused !important;
+        }
+
         #login-container {
             position: fixed;
             inset: 0;
