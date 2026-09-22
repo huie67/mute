@@ -71,10 +71,17 @@
             to { opacity: 1; transform: translateY(0); }
         }
 
+        /* Раньше здесь анимировался box-shadow (расширяющееся кольцо) — визуально красиво,
+           но box-shadow не композитится на GPU: каждый кадр анимации требует перерисовки
+           (repaint) области вокруг аватарки на CPU-стороне GPU-процесса, причём одновременно
+           для КАЖДОЙ говорящей аватарки — отсюда рост нагрузки на GPU-процесс с количеством
+           говорящих в канале. transform/opacity, в отличие от box-shadow, композитятся
+           браузером напрямую на GPU без перерисовки — визуально похожий эффект (лёгкое
+           "дыхание" аватарки), но практически бесплатный по нагрузке. */
         @keyframes pulseGlow {
-            0% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.6); }
-            70% { box-shadow: 0 0 0 10px rgba(34, 197, 94, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+            0%   { transform: scale(1);     opacity: 1; }
+            50%  { transform: scale(1.08);  opacity: 0.85; }
+            100% { transform: scale(1);     opacity: 1; }
         }
 
         .fade-in {
@@ -677,7 +684,14 @@
         }
         .user-avatar.speaking {
             border-color: var(--success) !important;
-            animation: pulseGlow 1.5s infinite;
+            /* Статичное кольцо-свечение — выставляется один раз при появлении класса
+               (не анимируется), поэтому не стоит ничего на каждый кадр. */
+            box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.35);
+            animation: pulseGlow 1.5s ease-in-out infinite;
+            /* Заранее просим браузер завести под аватарку отдельный композитный слой —
+               пока идёт анимация transform/opacity, дальше кадры GPU отрисовывает сам,
+               без обращения к CPU. */
+            will-change: transform, opacity;
         }
 
         .user-avatar-wrap {
