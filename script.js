@@ -4864,7 +4864,11 @@ function renderChatMessage({ id, username, user, avatar, text, image_url, create
     }
     if (text) html += `<span class="msg-text">${renderMessageTextWithMentions(text, getMentionCandidates(), currentUser.username)}</span>`;
     if (image_url) {
-        html += `<div class="chat-image-wrap"><img src="${image_url}" class="chat-image" alt="Изображение" onclick="openImageLightbox('${image_url}')"></div>`;
+        // loading="lazy" + decoding="async" — картинка декодируется (и попадает в GPU-текстуру)
+        // только когда реально прокручена в область видимости, а не сразу при рендере
+        // сообщения. В активном чате с историей фото это заметно снижает нагрузку на
+        // GPU-процесс — декодируются только те фото, что вы прямо сейчас видите.
+        html += `<div class="chat-image-wrap"><img src="${image_url}" class="chat-image" alt="Изображение" loading="lazy" decoding="async" onclick="openImageLightbox('${image_url}')"></div>`;
     }
     html += `<span class="msg-time">${formatMessageTime(date)}</span>`;
     if (isMine) {
