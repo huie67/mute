@@ -382,6 +382,7 @@ const playlistNextBtn = document.getElementById('playlist-next-btn');
 const playlistFileInput = document.getElementById('playlist-file-input');
 const playlistSettingsList = document.getElementById('playlist-settings-list');
 const playlistEmptyHint = document.getElementById('playlist-empty-hint');
+const playlistShuffleCheck = document.getElementById('playlist-shuffle-check');
 const listenSessionBar = document.getElementById('listen-session-bar');
 const listenSessionBarText = document.getElementById('listen-session-bar-text');
 const listenSessionBarStop = document.getElementById('listen-session-bar-stop');
@@ -1509,6 +1510,32 @@ let playlistCurrentIndex = -1;
 const playlistAudio = new Audio();
 let playlistCurrentObjectUrl = null;
 
+// Случайный порядок воспроизведения плейлиста — настройка хранится локально
+const PLAYLIST_SHUFFLE_KEY = 'mute_playlist_shuffle';
+function loadPlaylistShuffle() {
+    try { return localStorage.getItem(PLAYLIST_SHUFFLE_KEY) === '1'; } catch (e) { return false; }
+}
+function savePlaylistShuffle(value) {
+    try { localStorage.setItem(PLAYLIST_SHUFFLE_KEY, value ? '1' : '0'); } catch (e) { /* ignore */ }
+}
+let playlistShuffle = loadPlaylistShuffle();
+if (playlistShuffleCheck) playlistShuffleCheck.checked = playlistShuffle;
+if (playlistShuffleCheck) {
+    playlistShuffleCheck.addEventListener('change', () => {
+        playlistShuffle = playlistShuffleCheck.checked;
+        savePlaylistShuffle(playlistShuffle);
+    });
+}
+// Возвращает случайный индекс трека, отличный от текущего (если треков больше одного)
+function getRandomPlaylistIndex() {
+    if (playlistTracks.length <= 1) return 0;
+    let idx;
+    do {
+        idx = Math.floor(Math.random() * playlistTracks.length);
+    } while (idx === playlistCurrentIndex);
+    return idx;
+}
+
 // Личная громкость музыки (плейлиста и совместного прослушивания) — у каждого своя,
 // хранится только на этом устройстве и никогда не передаётся собеседнику.
 const PLAYLIST_VOLUME_KEY = 'mute_playlist_volume';
@@ -1594,7 +1621,15 @@ async function playPlaylistTrack(index) {
         }
         if (playlistCurrentObjectUrl) URL.revokeObjectURL(playlistCurrentObjectUrl);
         playlistCurrentObjectUrl = URL.createObjectURL(blob);
+        // Сбрасываем ползунок и таймер сразу, до загрузки метаданных нового трека,
+        // чтобы он не "застревал" на позиции предыдущего трека.
+        isDraggingListenerSeek = false;
+        playlistSeek.value = '0';
+        playlistSeek.max = '1000';
+        playlistTimeCurrent.textContent = formatPlaylistTime(0);
+        playlistTimeDuration.textContent = formatPlaylistTime(0);
         playlistAudio.src = playlistCurrentObjectUrl;
+        playlistAudio.currentTime = 0;
         playlistCurrentIndex = index;
         await playlistAudio.play();
         if (listenSession && listenSession.role === 'host') sendCurrentTrackToListenGuest();
@@ -1620,11 +1655,19 @@ function togglePlaylistPlayPause() {
 
 function playlistPrevTrack() {
     if (!playlistTracks.length) return;
+    if (playlistShuffle) {
+        playPlaylistTrack(getRandomPlaylistIndex());
+        return;
+    }
     const idx = playlistCurrentIndex <= 0 ? playlistTracks.length - 1 : playlistCurrentIndex - 1;
     playPlaylistTrack(idx);
 }
 function playlistNextTrack() {
     if (!playlistTracks.length) return;
+    if (playlistShuffle) {
+        playPlaylistTrack(getRandomPlaylistIndex());
+        return;
+    }
     const idx = playlistCurrentIndex === -1 || playlistCurrentIndex >= playlistTracks.length - 1 ? 0 : playlistCurrentIndex + 1;
     playPlaylistTrack(idx);
 }
