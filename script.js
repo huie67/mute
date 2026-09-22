@@ -4321,9 +4321,10 @@ let appIsActive = !document.hidden && document.hasFocus();
 
 function updateAppActivity() {
     const active = !document.hidden && document.hasFocus();
+    document.body.classList.toggle('app-hidden', document.hidden);
+    document.body.classList.toggle('app-inactive', !active);
     if (active === appIsActive) return;
     appIsActive = active;
-    document.body.classList.toggle('app-inactive', !active);
     document.dispatchEvent(new CustomEvent('app-activity-change', { detail: { active } }));
 }
 
@@ -4343,10 +4344,19 @@ updateAppActivity();
         'color:#fff;pointer-events:none;transition:background-color .15s;';
     document.body.appendChild(badge);
     function render() {
-        badge.textContent = appIsActive ? '🟢 окно активно' : '⏸ окно неактивно (анимации на паузе)';
-        badge.style.backgroundColor = appIsActive ? '#16a34a' : '#dc2626';
+        if (document.hidden) {
+            badge.textContent = '⛔ окно скрыто (рендер полностью выключен)';
+            badge.style.backgroundColor = '#7f1d1d';
+        } else if (!appIsActive) {
+            badge.textContent = '⏸ окно не в фокусе (анимации/клики на паузе)';
+            badge.style.backgroundColor = '#dc2626';
+        } else {
+            badge.textContent = '🟢 окно активно';
+            badge.style.backgroundColor = '#16a34a';
+        }
     }
     document.addEventListener('app-activity-change', render);
+    document.addEventListener('visibilitychange', render);
     render();
 })();
 
