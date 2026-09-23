@@ -3304,7 +3304,7 @@ function selectRoomButton(btn) {
         setConnectRoomButtonState(false);
         roomTitle.innerText = `Канал: ${displayName} (Просмотр)`;
     }
-    connectRoomBtn.style.display = 'inline-block';
+    connectRoomBtn.style.display = 'inline-flex';
     socket.emit('get room users', roomName);
 
     // Чат — свой для каждого сервера. Переключаем его только если реально сменили комнату,
