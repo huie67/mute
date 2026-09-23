@@ -1053,7 +1053,7 @@ function saveAudioSettings(patch) {
 
 // ---------- Настройки видео: качество демонстрации экрана и камеры ----------
 // По умолчанию 720p/30fps — компромисс между качеством картинки и нагрузкой на CPU при
-// кодировании видео. Более высокие пресеты (вплоть до 2K/30 и 1080p/60fps) доступны в настройках,
+// кодировании видео. Более высокие пресеты (вплоть до 4K/30 и 2K/60) доступны в настройках,
 // но выбираются осознанно, а не включены по умолчанию, чтобы не грузить процессор всем
 // без разбора.
 const VIDEO_QUALITY_PRESETS = {
@@ -1061,7 +1061,9 @@ const VIDEO_QUALITY_PRESETS = {
     '720p60': { width: 1280, height: 720, frameRate: 60 },
     '1080p30': { width: 1920, height: 1080, frameRate: 30 },
     '1080p60': { width: 1920, height: 1080, frameRate: 60 },
-    '1440p30': { width: 2560, height: 1440, frameRate: 30 }
+    '1440p30': { width: 2560, height: 1440, frameRate: 30 },
+    '1440p60': { width: 2560, height: 1440, frameRate: 60 },
+    '2160p30': { width: 3840, height: 2160, frameRate: 30 }
 };
 const VIDEO_SETTINGS_KEY = 'mute:videoSettings';
 function loadVideoSettings() {
@@ -3218,6 +3220,18 @@ function processRemoteAudioLevelFallback(peerId, node) {
     checkRemote();
 }
 
+const CONNECT_PHONE_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.9.33 1.78.62 2.63a2 2 0 0 1-.45 2.11L8 9.73a16 16 0 0 0 6 6l1.27-1.28a2 2 0 0 1 2.11-.45c.85.29 1.73.5 2.63.62A2 2 0 0 1 22 16.92z"></path></svg>`;
+const DISCONNECT_PHONE_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.9.33 1.78.62 2.63a2 2 0 0 1-.45 2.11L8 9.73a16 16 0 0 0 6 6l1.27-1.28a2 2 0 0 1 2.11-.45c.85.29 1.73.5 2.63.62A2 2 0 0 1 22 16.92z"></path><path d="M18.5 5.5l-5 5"></path><path d="M13.5 5.5l5 5"></path></svg>`;
+function setConnectRoomButtonState(connected) {
+    if (!connectRoomBtn) return;
+    connectRoomBtn.innerHTML = connected ? DISCONNECT_PHONE_SVG : CONNECT_PHONE_SVG;
+    connectRoomBtn.className = connected ? 'btn-primary btn-danger call-action-btn' : 'btn-primary call-action-btn';
+    connectRoomBtn.setAttribute('aria-label', connected ? 'Покинуть голосовой канал' : 'Подключиться к голосовому каналу');
+    connectRoomBtn.title = connected ? 'Покинуть голосовой канал' : 'Подключиться к голосовому каналу';
+}
+
+setConnectRoomButtonState(false);
+
 function selectRoomButton(btn) {
     const roomName = btn.getAttribute('data-room');
     const displayName = btn.getAttribute('data-display-name') || roomName;
@@ -3228,12 +3242,10 @@ function selectRoomButton(btn) {
     selectedRoom = roomName;
 
     if (currentUser.room === roomName) {
-        connectRoomBtn.innerText = 'Покинуть ГС';
-        connectRoomBtn.className = 'btn-primary btn-danger';
+        setConnectRoomButtonState(true);
         roomTitle.innerText = `Канал: ${displayName}`;
     } else {
-        connectRoomBtn.innerText = 'Подключиться';
-        connectRoomBtn.className = 'btn-primary';
+        setConnectRoomButtonState(false);
         roomTitle.innerText = `Канал: ${displayName} (Просмотр)`;
     }
     connectRoomBtn.style.display = 'inline-block';
@@ -3271,8 +3283,7 @@ function connectToSelectedRoom() {
     const displayName = activeBtn?.getAttribute('data-display-name') || selectedRoom;
     roomNameDisplay.innerHTML = `${ROOM_IN_ICON_SVG}<span>${escapeHtml(displayName)}</span>`;
     roomTitle.innerText = `Канал: ${displayName}`;
-    connectRoomBtn.innerText = 'Покинуть ГС';
-    connectRoomBtn.className = 'btn-primary btn-danger';
+    setConnectRoomButtonState(true);
     screenBtn.disabled = false;
     screenBtn.title = '';
 
@@ -3635,8 +3646,7 @@ function leaveVoiceChannel() {
     currentUser.room = null;
     roomTitle.innerText = `Канал: ${selectedRoom} (Просмотр)`;
     roomNameDisplay.innerHTML = `${ROOM_OUT_ICON_SVG}<span>Вы не в звонке</span>`;
-    connectRoomBtn.innerText = 'Подключиться';
-    connectRoomBtn.className = 'btn-primary';
+    setConnectRoomButtonState(false);
     screenBtn.disabled = true;
     screenBtn.title = 'Сначала подключитесь к голосовому каналу';
     connectedUsers = {};
@@ -4272,8 +4282,7 @@ closeStreamModal.addEventListener('click', () => {
 shareScreenChoice.addEventListener('click', async () => {
     streamSelectModal.style.display = 'none';
     try {
-        // Разрешение/FPS берутся из настроек (по умолчанию 720p/30 — компромисс с
-        // нагрузкой на CPU; можно поднять вплоть до 2K/30 и 1080p/60 в настройках видео).
+        // Разрешение/FPS берутся из настроек (от 720p30 до 4K30/2K60).
         const preset = getScreenQualityPreset();
         const stream = await navigator.mediaDevices.getDisplayMedia({
             video: { width: { ideal: preset.width }, height: { ideal: preset.height }, frameRate: { ideal: preset.frameRate } },
