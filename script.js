@@ -4261,57 +4261,13 @@ document.addEventListener('click', () => {
 // периодически пытается разбудить AudioContext через setInterval. Но как
 // только пользователь возвращается в приложение — будим контекст сразу же,
 // не дожидаясь ближайшего тика, чтобы микрофон включался без задержки.
-// GIF-анимации во всём интерфейсе Mute: при неактивном/скрытом окне временно заменяем GIF на 1x1 placeholder.
-// Это касается сообщений, аватарок и GIF-иконок каналов/серверов. Размеры не меняются.
-const GIF_PAUSE_PLACEHOLDER = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
-let gifsPaused = false;
-function isGifUrl(src) { return typeof src === 'string' && /\.gif(?:[?#]|$)/i.test(src); }
-function pauseGifElement(img) {
-    if (!(img instanceof HTMLImageElement) || img.dataset.gifSrc) return;
-    const src = img.getAttribute('src');
-    if (!src || src === GIF_PAUSE_PLACEHOLDER || !isGifUrl(src)) return;
-    img.dataset.gifSrc = src; img.src = GIF_PAUSE_PLACEHOLDER;
-}
-function resumeGifElement(img) { const src = img.dataset.gifSrc; if (!src) return; img.src = src; delete img.dataset.gifSrc; }
-function pauseBackgroundGifElement(el) {
-    if (!(el instanceof HTMLElement) || el.dataset.gifBgSrc) return;
-    const bg = el.style.backgroundImage || '';
-    const match = bg.match(/^url\([\"']?(.*?)[\"']?\)$/i);
-    if (!match || !isGifUrl(match[1])) return;
-    el.dataset.gifBgSrc = match[1]; el.style.backgroundImage = `url(\"${GIF_PAUSE_PLACEHOLDER}\")`;
-}
-function resumeBackgroundGifElement(el) {
-    const src = el.dataset.gifBgSrc; if (!src) return;
-    el.style.backgroundImage = `url(\"${src.replace(/\"/g, '\\\"')}\")`; delete el.dataset.gifBgSrc;
-}
-function pauseAllGifs() {
-    if (gifsPaused) return; gifsPaused = true;
-    document.querySelectorAll('img').forEach(pauseGifElement);
-    document.querySelectorAll('[style*=\"background-image\"]').forEach(pauseBackgroundGifElement);
-}
-function resumeAllGifs() {
-    if (!gifsPaused) return; gifsPaused = false;
-    document.querySelectorAll('img[data-gif-src]').forEach(resumeGifElement);
-    document.querySelectorAll('[data-gif-bg-src]').forEach(resumeBackgroundGifElement);
-}
-function syncGifActivity() { if (document.hidden || !document.hasFocus()) pauseAllGifs(); else resumeAllGifs(); }
-const gifPauseObserver = new MutationObserver((mutations) => {
-    if (!gifsPaused) return;
-    for (const mutation of mutations) for (const node of mutation.addedNodes) {
-        if (!(node instanceof Element)) continue;
-        if (node.matches('img')) pauseGifElement(node);
-        node.querySelectorAll?.('img').forEach(pauseGifElement);
-        if (node instanceof HTMLElement) pauseBackgroundGifElement(node);
-        node.querySelectorAll?.('[style*=\"background-image\"]').forEach(pauseBackgroundGifElement);
-    }
-});
-gifPauseObserver.observe(document.documentElement, { childList: true, subtree: true });
 document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && audioContext && audioContext.state === 'suspended') audioContext.resume().catch(() => {});
-    if (!document.hidden) resyncRoomUsers(); syncGifActivity();
+    if (!document.hidden && audioContext && audioContext.state === 'suspended') {
+        audioContext.resume().catch(() => {});
+    }
+    if (!document.hidden) resyncRoomUsers();
 });
-window.addEventListener('blur', pauseAllGifs);
-window.addEventListener('focus', () => { resumeAllGifs(); resyncRoomUsers(); });
+window.addEventListener('focus', resyncRoomUsers);
 window.addEventListener('online', resyncRoomUsers);
 
 // ---------- Актуальность списка участников, когда вкладка неактивна ----------
@@ -4920,15 +4876,6 @@ function renderChatMessage({ id, username, user, avatar, text, image_url, create
     }
     msg.innerHTML = html;
     messagesDiv.appendChild(msg);
-    // Если окно уже неактивно, не запускаем GIF, добавленный в фоне.
-    if (chatGifsPaused && isChatGif(msg.querySelector('img.chat-image'))) {
-        const gif = msg.querySelector('img.chat-image');
-        const src = gif.getAttribute('src');
-        if (src && src !== GIF_PAUSE_PLACEHOLDER) {
-            gif.dataset.gifSrc = src;
-            gif.src = GIF_PAUSE_PLACEHOLDER;
-        }
-    }
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
     trimRenderedMessages();
 }
