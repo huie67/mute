@@ -683,15 +683,9 @@
             transition: border-color 0.2s;
         }
         .user-avatar.speaking {
+            /* Только статичная рамка — ни анимации, ни box-shadow: ничего лишнего
+               не перерисовывается, пока пользователь говорит. */
             border-color: var(--success) !important;
-            /* Статичное кольцо-свечение — выставляется один раз при появлении класса
-               (не анимируется), поэтому не стоит ничего на каждый кадр. */
-            box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.35);
-            animation: pulseGlow 1.5s ease-in-out infinite;
-            /* Заранее просим браузер завести под аватарку отдельный композитный слой —
-               пока идёт анимация transform/opacity, дальше кадры GPU отрисовывает сам,
-               без обращения к CPU. */
-            will-change: transform, opacity;
         }
 
         .user-avatar-wrap {
