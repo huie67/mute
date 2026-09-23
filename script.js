@@ -1053,16 +1053,15 @@ function saveAudioSettings(patch) {
 
 // ---------- Настройки видео: качество демонстрации экрана и камеры ----------
 // По умолчанию 720p/30fps — компромисс между качеством картинки и нагрузкой на CPU при
-// кодировании видео. Более высокие пресеты (вплоть до 1080p/60fps) доступны в настройках,
+// кодировании видео. Более высокие пресеты (вплоть до 2K/30 и 1080p/60fps) доступны в настройках,
 // но выбираются осознанно, а не включены по умолчанию, чтобы не грузить процессор всем
 // без разбора.
 const VIDEO_QUALITY_PRESETS = {
-    '720p30': { width: 1280, height: 720, frameRate: 30, maxBitrate: 3000000 },
-    '720p60': { width: 1280, height: 720, frameRate: 60, maxBitrate: 4500000 },
-    '1080p30': { width: 1920, height: 1080, frameRate: 30, maxBitrate: 6000000 },
-    '1080p60': { width: 1920, height: 1080, frameRate: 60, maxBitrate: 8000000 },
-    '1440p60': { width: 2560, height: 1440, frameRate: 60, maxBitrate: 12000000 },
-    '4k30': { width: 3840, height: 2160, frameRate: 30, maxBitrate: 16000000 }
+    '720p30': { width: 1280, height: 720, frameRate: 30 },
+    '720p60': { width: 1280, height: 720, frameRate: 60 },
+    '1080p30': { width: 1920, height: 1080, frameRate: 30 },
+    '1080p60': { width: 1920, height: 1080, frameRate: 60 },
+    '1440p30': { width: 2560, height: 1440, frameRate: 30 }
 };
 const VIDEO_SETTINGS_KEY = 'mute:videoSettings';
 function loadVideoSettings() {
@@ -2701,7 +2700,6 @@ async function initPeer() {
             updateVoiceUsersList();
         }
         handleIncomingCall(call);
-        applyRtcSenderQuality(call);
     });
 
     // Входящий DataConnection — используется только для совместного прослушивания
@@ -3834,55 +3832,6 @@ function isIceConnected(pc) {
     return !!pc && (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed');
 }
 
-
-// ---------- Качество WebRTC для голоса и демонстрации ----------
-function applyRtcSenderQuality(call) {
-    const pc = call && call.peerConnection;
-    if (!pc || !pc.getSenders) return;
-    const screenTrack = activeVideoStream && activeVideoStream.getVideoTracks
-        ? activeVideoStream.getVideoTracks()[0] : null;
-    const screenSettings = screenTrack && screenTrack.getSettings ? screenTrack.getSettings() : {};
-    const screenPreset = getScreenQualityPreset();
-
-    pc.getSenders().forEach(sender => {
-        const track = sender.track;
-        if (!track) return;
-        try {
-            const params = sender.getParameters();
-            params.encodings = params.encodings && params.encodings.length ? params.encodings : [{}];
-
-            if (track.kind === 'video') {
-                const isScreen = !!screenTrack && track === screenTrack;
-                const width = Number(screenSettings.width || screenPreset.width || 1920);
-                const height = Number(screenSettings.height || screenPreset.height || 1080);
-                const fps = Number(screenSettings.frameRate || screenPreset.frameRate || 30);
-                const maxBitrate = isScreen
-                    ? Math.max(3000000, screenPreset.maxBitrate || 8000000)
-                    : (width * height >= 1920 * 1080 ? 6000000 : 4000000);
-
-                params.encodings.forEach(enc => {
-                    enc.maxBitrate = maxBitrate;
-                    if (fps > 0) enc.maxFramerate = fps;
-                    if (isScreen) enc.degradationPreference = 'maintain-resolution';
-                });
-                sender.setParameters(params).catch(() => {});
-                if ('contentHint' in track) track.contentHint = isScreen ? 'detail' : 'motion';
-            } else if (track.kind === 'audio') {
-                const isDemoAudio = track === currentDemoAudioTrack ||
-                    (activeVideoStream && activeVideoStream.getAudioTracks &&
-                     activeVideoStream.getAudioTracks().includes(track));
-                const maxBitrate = isDemoAudio ? 160000 : 96000;
-                params.encodings.forEach(enc => {
-                    enc.maxBitrate = maxBitrate;
-                    if (isDemoAudio && 'dtx' in enc) enc.dtx = false;
-                });
-                sender.setParameters(params).catch(() => {});
-                if ('contentHint' in track) track.contentHint = isDemoAudio ? 'music' : 'speech';
-            }
-        } catch (e) {}
-    });
-}
-
 // Исходящий звонок. Звонит только сторона с меньшим peerId (см. 'room users').
 function startCall(peerId) {
     if (!myPeer || myPeer.destroyed || !localMediaStream) { scheduleCallRetry(peerId); return; }
@@ -3892,7 +3841,6 @@ function startCall(peerId) {
     // PeerJS возвращает undefined, если сигнальное соединение сейчас разорвано.
     if (!call) { scheduleCallRetry(peerId); return; }
     handleIncomingCall(call);
-    applyRtcSenderQuality(call);
 }
 
 function scheduleCallRetry(peerId) {
@@ -4325,21 +4273,12 @@ shareScreenChoice.addEventListener('click', async () => {
     streamSelectModal.style.display = 'none';
     try {
         // Разрешение/FPS берутся из настроек (по умолчанию 720p/30 — компромисс с
-        // нагрузкой на CPU; можно поднять вплоть до 1080p/60 в настройках видео).
+        // нагрузкой на CPU; можно поднять вплоть до 2K/30 и 1080p/60 в настройках видео).
         const preset = getScreenQualityPreset();
         const stream = await navigator.mediaDevices.getDisplayMedia({
-            video: {
-                width: { ideal: preset.width },
-                height: { ideal: preset.height },
-                frameRate: { ideal: preset.frameRate },
-                cursor: 'always'
-            },
+            video: { width: { ideal: preset.width }, height: { ideal: preset.height }, frameRate: { ideal: preset.frameRate } },
             audio: true
         });
-        const screenTrack = stream.getVideoTracks()[0];
-        if (screenTrack && 'contentHint' in screenTrack) screenTrack.contentHint = 'detail';
-        const systemAudioTrack = stream.getAudioTracks()[0];
-        if (systemAudioTrack && 'contentHint' in systemAudioTrack) systemAudioTrack.contentHint = 'music';
         startVideoStream(stream);
     } catch (e) { console.error(e); }
 });
@@ -4347,8 +4286,7 @@ shareScreenChoice.addEventListener('click', async () => {
 shareCamChoice.addEventListener('click', async () => {
     streamSelectModal.style.display = 'none';
     try {
-        // То же самое: пресет из настроек видео (по умолчанию 720p/30, можно поднять до
-        // 1080p/60).
+        // То же самое: пресет из настроек видео (разрешение и FPS берутся из настроек видео).
         const preset = getCameraQualityPreset();
         const stream = await navigator.mediaDevices.getUserMedia({
             video: { width: { ideal: preset.width }, height: { ideal: preset.height }, frameRate: { ideal: preset.frameRate } },
@@ -4466,7 +4404,7 @@ function replaceVideoTrackForAllPeers(track) {
             const senders = call.peerConnection.getSenders();
             const videoSender = senders.find(s => s.track && s.track.kind === 'video');
             if (videoSender) {
-                videoSender.replaceTrack(track).then(() => applyRtcSenderQuality(call)).catch(err => console.warn('[Внимание] Ошибка замены видеотрека:', err));
+                videoSender.replaceTrack(track).catch(err => console.warn('[Внимание] Ошибка замены видеотрека:', err));
             }
         }
     }
@@ -4483,7 +4421,7 @@ function replaceMicTrackForAllPeers(newTrack, oldTrack) {
             const senders = call.peerConnection.getSenders();
             const micSender = senders.find(s => s.track === oldTrack);
             if (micSender) {
-                micSender.replaceTrack(newTrack).then(() => applyRtcSenderQuality(call)).catch(err => console.warn('[Внимание] Ошибка замены трека микрофона:', err));
+                micSender.replaceTrack(newTrack).catch(err => console.warn('[Внимание] Ошибка замены трека микрофона:', err));
             }
         }
     }
@@ -4500,7 +4438,7 @@ function replaceDemoAudioTrackForAllPeers(newTrack) {
             const senders = call.peerConnection.getSenders();
             const demoSender = senders.find(s => s.track === previousTrack);
             if (demoSender) {
-                demoSender.replaceTrack(newTrack).then(() => applyRtcSenderQuality(call)).catch(err => console.warn('[Внимание] Ошибка замены звука демонстрации:', err));
+                demoSender.replaceTrack(newTrack).catch(err => console.warn('[Внимание] Ошибка замены звука демонстрации:', err));
             }
         }
     }
