@@ -1190,6 +1190,9 @@ NOTIFY_SOUNDS.callstart = 'data:audio/wav;base64,UklGRhwwFABXQVZFZm10IBAAAAABAAE
 
 const notifyAudioCache = {};
 const activeNotifyAudio = {};
+// Отдельно отслеживаем предпросмотр из настроек, чтобы кнопка могла остановить
+// именно свой тестовый звук, не затрагивая реальные уведомления приложения.
+const activePreviewAudio = {};
 
 function trackNotifyAudio(key, audio) {
     if (!activeNotifyAudio[key]) activeNotifyAudio[key] = new Set();
@@ -1429,7 +1432,41 @@ function setupCustomSoundControls(key, els) {
     }
 
     if (els.testBtn) {
-        els.testBtn.addEventListener('click', () => playNotifySound(key, getSoundVolume(key)));
+        const setPreviewState = (playing) => {
+            if (playing) {
+                els.testBtn.title = 'Остановить';
+                els.testBtn.setAttribute('aria-label', 'Остановить');
+                els.testBtn.innerHTML = '<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"></rect></svg>';
+            } else {
+                els.testBtn.title = 'Проверить';
+                els.testBtn.setAttribute('aria-label', 'Проверить');
+                els.testBtn.innerHTML = '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>';
+            }
+        };
+
+        els.testBtn.addEventListener('click', () => {
+            const current = activePreviewAudio[key];
+            if (current && !current.paused && !current.ended) {
+                try { current.pause(); current.currentTime = 0; } catch (e) {}
+                delete activePreviewAudio[key];
+                setPreviewState(false);
+                return;
+            }
+
+            const audio = playNotifySound(key, getSoundVolume(key));
+            if (!audio) return;
+            activePreviewAudio[key] = audio;
+            setPreviewState(true);
+
+            const finish = () => {
+                if (activePreviewAudio[key] === audio) {
+                    delete activePreviewAudio[key];
+                    setPreviewState(false);
+                }
+            };
+            audio.addEventListener('ended', finish, { once: true });
+            audio.addEventListener('error', finish, { once: true });
+        });
     }
 
     if (els.fileInput) {
@@ -3243,7 +3280,8 @@ function connectToSelectedRoom() {
     socket.emit('join room', { room: selectedRoom, peerId: myPeerId, micMuted: isMuted, deafened: isDeafened });
     if (audioContext && audioContext.state === 'suspended') audioContext.resume().catch(() => {});
     playJoinSound();
-    playCallstartSound(selectedRoom);
+    // Собственный звук начала созвона не проигрываем при исходящем подключении:
+    // пользователь сам инициировал звонок и не должен слышать локальный рингтон.
     broadcastMuteState();
 }
 
