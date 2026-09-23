@@ -706,10 +706,27 @@ function applyTheme(theme) {
         btn.classList.toggle('active', (btn.dataset.color || '').toLowerCase() === accent.toLowerCase());
     });
 
+    syncDesktopIconTheme(accent);
+
     const bgPicker = document.getElementById('theme-bg-color-picker');
     const bgHexInput = document.getElementById('theme-bg-color-hex');
     if (bgPicker) bgPicker.value = bg;
     if (bgHexInput) bgHexInput.value = bg;
+}
+
+
+// Синхронизирует цвет ярлыка Mute на рабочем столе с текущим цветом темы.
+// В браузере/веб-версии просто ничего не делает.
+async function syncDesktopIconTheme(accent) {
+    try {
+        const invoke = window.__TAURI__?.core?.invoke;
+        if (typeof invoke !== 'function') return;
+        await invoke('update_desktop_icon', { accent });
+    } catch (e) {
+        // Веб-версия и окружения без ярлыка на рабочем столе могут не иметь
+        // доступа к системной функции — это не должно ломать смену темы.
+        console.debug('[Desktop icon] not updated:', e);
+    }
 }
 
 // Сохраняет локально всегда, и на сервере — если пользователь вошёл в аккаунт
