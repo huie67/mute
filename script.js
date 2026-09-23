@@ -3659,11 +3659,14 @@ socket.on('room users', (usersInRoom, room) => {
     const nextRoomUserCount = Object.keys(usersInRoom || {}).length;
     if (room) roomUserCounts[room] = nextRoomUserCount;
 
-    // Если в голосовом канале был один человек и появился второй, это начало
-    // созвона для уже находившегося там участника. Он слышит рингтон, а новый
-    // участник (который сам инициировал вход) его не слышит.
-    if (room && previousRoomUserCount === 1 && nextRoomUserCount === 2 &&
-        room === currentUser.room) {
+    // Рингтон означает именно начало нового голосового звонка:
+    // когда пустой голосовой канал становится занятым первым участником.
+    // Его слышат только те, кто смотрит этот канал, но ещё НЕ вошёл в него.
+    // Сам создатель/первый вошедший рингтон не слышит.
+    // Как только наблюдатель нажмёт «Подключиться», connectToSelectedRoom()
+    // сразу остановит текущий рингтон через stopNotifySound('callstart').
+    if (room && previousRoomUserCount === 0 && nextRoomUserCount === 1 &&
+        room === selectedRoom && currentUser.room !== room) {
         playCallstartSound(room);
     }
     // Сервер шлёт список и участникам канала, и тем, кто просто смотрит сервер (см. broadcastRoomUsers).
