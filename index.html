@@ -1177,8 +1177,56 @@
             align-items: center;
             gap: 8px;
             font-size: 13px;
-            color: #d1d5db;
+            color: var(--text-muted);
             cursor: pointer;
+            user-select: none;
+        }
+
+        /* Чекбоксы в стиле приложения: без системного белого квадрата,
+           с тем же акцентом и мягким фоном, что и остальные контролы. */
+        .checkbox-label input[type="checkbox"] {
+            appearance: none;
+            -webkit-appearance: none;
+            width: 16px;
+            height: 16px;
+            margin: 0;
+            flex: 0 0 16px;
+            border: 1px solid var(--border);
+            border-radius: 5px;
+            background: var(--bg-input);
+            color: var(--accent);
+            display: inline-grid;
+            place-content: center;
+            cursor: pointer;
+            transition: background .15s ease, border-color .15s ease, box-shadow .15s ease;
+        }
+        .checkbox-label input[type="checkbox"]::before {
+            content: "";
+            width: 8px;
+            height: 8px;
+            transform: scale(0);
+            transition: transform .12s ease;
+            box-shadow: inset 1em 1em currentColor;
+            clip-path: polygon(14% 44%, 0 59%, 40% 100%, 100% 22%, 84% 8%, 39% 74%);
+        }
+        .checkbox-label input[type="checkbox"]:checked {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #fff;
+        }
+        .checkbox-label input[type="checkbox"]:checked::before {
+            transform: scale(1);
+        }
+        .checkbox-label input[type="checkbox"]:hover {
+            border-color: var(--accent);
+        }
+        .checkbox-label input[type="checkbox"]:focus-visible {
+            outline: none;
+            box-shadow: 0 0 0 3px var(--accent-soft);
+        }
+        .checkbox-label input[type="checkbox"]:disabled {
+            opacity: .45;
+            cursor: not-allowed;
         }
 
         /* Группировка настроек микрофона по смыслу (устройство / уровень / гейт /
@@ -1818,6 +1866,14 @@
             padding: 0;
         }
         .sound-icon-btn svg { display: block; }
+        .sound-icon-btn .icon-pause { display: none; }
+        .sound-icon-btn.is-playing .icon-play { display: none; }
+        .sound-icon-btn.is-playing .icon-pause { display: block; }
+        .sound-icon-btn.is-playing {
+            border-color: var(--accent);
+            color: var(--accent);
+            background: var(--accent-soft);
+        }
         .sound-icon-btn:hover {
             border-color: var(--accent);
             color: var(--accent);
@@ -2541,7 +2597,7 @@
                         <div class="sound-row-bottom">
                             <input type="range" id="message-sound-volume-slider" min="0" max="100" step="5" value="50">
                             <span class="sound-row-value" id="message-sound-volume-value">50%</span>
-                            <button class="sound-icon-btn" id="message-sound-test-btn" type="button" title="Проверить"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg></button>
+                            <button class="sound-icon-btn" id="message-sound-test-btn" type="button" title="Воспроизвести" aria-label="Воспроизвести звук"><svg class="icon-play" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg><svg class="icon-pause" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16" rx="1"></rect><rect x="14" y="4" width="4" height="16" rx="1"></rect></svg></button>
                             <label class="sound-icon-btn" for="message-sound-file-input" title="Свой звук"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg></label>
                             <input type="file" id="message-sound-file-input" accept="audio/*" style="display:none;">
                             <button class="sound-icon-btn" id="message-sound-reset-btn" type="button" title="Сбросить"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg></button>
@@ -2556,7 +2612,7 @@
                         <div class="sound-row-bottom">
                             <input type="range" id="join-sound-volume-slider" min="0" max="100" step="5" value="60">
                             <span class="sound-row-value" id="join-sound-volume-value">60%</span>
-                            <button class="sound-icon-btn" id="join-sound-test-btn" type="button" title="Проверить"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg></button>
+                            <button class="sound-icon-btn" id="join-sound-test-btn" type="button" title="Воспроизвести" aria-label="Воспроизвести звук"><svg class="icon-play" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg><svg class="icon-pause" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16" rx="1"></rect><rect x="14" y="4" width="4" height="16" rx="1"></rect></svg></button>
                             <label class="sound-icon-btn" for="join-sound-file-input" title="Свой звук"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg></label>
                             <input type="file" id="join-sound-file-input" accept="audio/*" style="display:none;">
                             <button class="sound-icon-btn" id="join-sound-reset-btn" type="button" title="Сбросить"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg></button>
@@ -2571,7 +2627,7 @@
                         <div class="sound-row-bottom">
                             <input type="range" id="leave-sound-volume-slider" min="0" max="100" step="5" value="60">
                             <span class="sound-row-value" id="leave-sound-volume-value">60%</span>
-                            <button class="sound-icon-btn" id="leave-sound-test-btn" type="button" title="Проверить"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg></button>
+                            <button class="sound-icon-btn" id="leave-sound-test-btn" type="button" title="Воспроизвести" aria-label="Воспроизвести звук"><svg class="icon-play" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg><svg class="icon-pause" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16" rx="1"></rect><rect x="14" y="4" width="4" height="16" rx="1"></rect></svg></button>
                             <label class="sound-icon-btn" for="leave-sound-file-input" title="Свой звук"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg></label>
                             <input type="file" id="leave-sound-file-input" accept="audio/*" style="display:none;">
                             <button class="sound-icon-btn" id="leave-sound-reset-btn" type="button" title="Сбросить"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg></button>
@@ -2586,7 +2642,7 @@
                         <div class="sound-row-bottom">
                             <input type="range" id="callstart-sound-volume-slider" min="0" max="100" step="5" value="40">
                             <span class="sound-row-value" id="callstart-sound-volume-value">40%</span>
-                            <button class="sound-icon-btn" id="callstart-sound-test-btn" type="button" title="Проверить"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg></button>
+                            <button class="sound-icon-btn" id="callstart-sound-test-btn" type="button" title="Воспроизвести" aria-label="Воспроизвести звук"><svg class="icon-play" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg><svg class="icon-pause" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16" rx="1"></rect><rect x="14" y="4" width="4" height="16" rx="1"></rect></svg></button>
                             <label class="sound-icon-btn" for="callstart-sound-file-input" title="Свой звук"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg></label>
                             <input type="file" id="callstart-sound-file-input" accept="audio/*" style="display:none;">
                             <button class="sound-icon-btn" id="callstart-sound-reset-btn" type="button" title="Сбросить"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg></button>
@@ -2607,7 +2663,7 @@
                         <div class="sound-row-bottom">
                             <input type="range" id="mute-sound-volume-slider" min="0" max="100" step="5" value="50">
                             <span class="sound-row-value" id="mute-sound-volume-value">50%</span>
-                            <button class="sound-icon-btn" id="mute-sound-test-btn" type="button" title="Проверить"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg></button>
+                            <button class="sound-icon-btn" id="mute-sound-test-btn" type="button" title="Воспроизвести" aria-label="Воспроизвести звук"><svg class="icon-play" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg><svg class="icon-pause" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16" rx="1"></rect><rect x="14" y="4" width="4" height="16" rx="1"></rect></svg></button>
                             <label class="sound-icon-btn" for="mute-sound-file-input" title="Свой звук"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg></label>
                             <input type="file" id="mute-sound-file-input" accept="audio/*" style="display:none;">
                             <button class="sound-icon-btn" id="mute-sound-reset-btn" type="button" title="Сбросить"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg></button>
@@ -2622,7 +2678,7 @@
                         <div class="sound-row-bottom">
                             <input type="range" id="deafen-sound-volume-slider" min="0" max="100" step="5" value="50">
                             <span class="sound-row-value" id="deafen-sound-volume-value">50%</span>
-                            <button class="sound-icon-btn" id="deafen-sound-test-btn" type="button" title="Проверить"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg></button>
+                            <button class="sound-icon-btn" id="deafen-sound-test-btn" type="button" title="Воспроизвести" aria-label="Воспроизвести звук"><svg class="icon-play" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg><svg class="icon-pause" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16" rx="1"></rect><rect x="14" y="4" width="4" height="16" rx="1"></rect></svg></button>
                             <label class="sound-icon-btn" for="deafen-sound-file-input" title="Свой звук"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg></label>
                             <input type="file" id="deafen-sound-file-input" accept="audio/*" style="display:none;">
                             <button class="sound-icon-btn" id="deafen-sound-reset-btn" type="button" title="Сбросить"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg></button>
@@ -2637,7 +2693,7 @@
                         <div class="sound-row-bottom">
                             <input type="range" id="screenshare-sound-volume-slider" min="0" max="100" step="5" value="50">
                             <span class="sound-row-value" id="screenshare-sound-volume-value">50%</span>
-                            <button class="sound-icon-btn" id="screenshare-sound-test-btn" type="button" title="Проверить"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg></button>
+                            <button class="sound-icon-btn" id="screenshare-sound-test-btn" type="button" title="Воспроизвести" aria-label="Воспроизвести звук"><svg class="icon-play" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg><svg class="icon-pause" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16" rx="1"></rect><rect x="14" y="4" width="4" height="16" rx="1"></rect></svg></button>
                             <label class="sound-icon-btn" for="screenshare-sound-file-input" title="Свой звук"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg></label>
                             <input type="file" id="screenshare-sound-file-input" accept="audio/*" style="display:none;">
                             <button class="sound-icon-btn" id="screenshare-sound-reset-btn" type="button" title="Сбросить"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg></button>
@@ -2652,7 +2708,7 @@
                         <div class="sound-row-bottom">
                             <input type="range" id="mention-sound-volume-slider" min="0" max="100" step="5" value="70">
                             <span class="sound-row-value" id="mention-sound-volume-value">70%</span>
-                            <button class="sound-icon-btn" id="mention-sound-test-btn" type="button" title="Проверить"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg></button>
+                            <button class="sound-icon-btn" id="mention-sound-test-btn" type="button" title="Воспроизвести" aria-label="Воспроизвести звук"><svg class="icon-play" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg><svg class="icon-pause" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16" rx="1"></rect><rect x="14" y="4" width="4" height="16" rx="1"></rect></svg></button>
                             <label class="sound-icon-btn" for="mention-sound-file-input" title="Свой звук"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg></label>
                             <input type="file" id="mention-sound-file-input" accept="audio/*" style="display:none;">
                             <button class="sound-icon-btn" id="mention-sound-reset-btn" type="button" title="Сбросить"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg></button>

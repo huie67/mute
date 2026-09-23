@@ -1286,8 +1286,8 @@ function getNotifyAudio(key) {
     return notifyAudioCache[key];
 }
 
-// Проигрывает звук уведомления. Клонируем элемент, чтобы звуки могли накладываться
-// друг на друга (например, если несколько человек заходят подряд).
+// Проигрывает звук уведомления. Клонируем элемент, чтобы системные уведомления
+// могли накладываться друг на друга (например, если несколько человек заходят подряд).
 function playNotifySound(key, volume = 0.6) {
     try {
         const base = getNotifyAudio(key);
@@ -1296,6 +1296,61 @@ function playNotifySound(key, volume = 0.6) {
         instance.play().catch(() => {});
     } catch (e) {
         console.warn('[Звук] Не удалось воспроизвести звук уведомления:', e);
+    }
+}
+
+// Превью в настройках управляется отдельно от настоящих уведомлений: для каждого
+// типа звука держим один активный экземпляр, чтобы повторное нажатие его останавливало.
+const previewAudioInstances = {};
+
+function setSoundPreviewButton(btn, isPlaying) {
+    if (!btn) return;
+    btn.classList.toggle('is-playing', isPlaying);
+    btn.title = isPlaying ? 'Остановить' : 'Воспроизвести';
+    btn.setAttribute('aria-label', isPlaying ? 'Остановить звук' : 'Воспроизвести звук');
+}
+
+function stopSoundPreview(key, btn) {
+    const audio = previewAudioInstances[key];
+    if (audio) {
+        try {
+            audio.pause();
+            audio.currentTime = 0;
+        } catch (e) {}
+        delete previewAudioInstances[key];
+    }
+    setSoundPreviewButton(btn, false);
+}
+
+function playSoundPreview(key, volume, btn) {
+    if (previewAudioInstances[key]) {
+        stopSoundPreview(key, btn);
+        return;
+    }
+
+    try {
+        const base = getNotifyAudio(key);
+        const instance = base.cloneNode(true);
+        instance.volume = volume;
+        previewAudioInstances[key] = instance;
+        setSoundPreviewButton(btn, true);
+
+        instance.addEventListener('ended', () => {
+            if (previewAudioInstances[key] === instance) {
+                delete previewAudioInstances[key];
+                setSoundPreviewButton(btn, false);
+            }
+        }, { once: true });
+
+        instance.play().catch(() => {
+            if (previewAudioInstances[key] === instance) {
+                delete previewAudioInstances[key];
+                setSoundPreviewButton(btn, false);
+            }
+        });
+    } catch (e) {
+        console.warn('[Звук] Не удалось воспроизвести превью:', e);
+        setSoundPreviewButton(btn, false);
     }
 }
 
@@ -1372,7 +1427,8 @@ function setupCustomSoundControls(key, els) {
     }
 
     if (els.testBtn) {
-        els.testBtn.addEventListener('click', () => playNotifySound(key, getSoundVolume(key)));
+        setSoundPreviewButton(els.testBtn, false);
+        els.testBtn.addEventListener('click', () => playSoundPreview(key, getSoundVolume(key), els.testBtn));
     }
 
     if (els.fileInput) {
@@ -1397,8 +1453,9 @@ function setupCustomSoundControls(key, els) {
                     return;
                 }
                 delete notifyAudioCache[key]; // пересоздаём Audio с новым src при следующем проигрывании
+                stopSoundPreview(key, els.testBtn);
                 refreshLabel();
-                playNotifySound(key, getSoundVolume(key));
+                playSoundPreview(key, getSoundVolume(key), els.testBtn);
             };
             reader.onerror = () => alert('Не удалось прочитать файл.');
             reader.readAsDataURL(file);
@@ -1413,8 +1470,9 @@ function setupCustomSoundControls(key, els) {
             delete settings[cfg.nameKey];
             try { localStorage.setItem(NOTIFY_SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {}
             delete notifyAudioCache[key];
+            stopSoundPreview(key, els.testBtn);
             refreshLabel();
-            playNotifySound(key, getSoundVolume(key));
+            playSoundPreview(key, getSoundVolume(key), els.testBtn);
         });
     }
 }
