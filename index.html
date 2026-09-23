@@ -2161,7 +2161,9 @@
 
         /* ---------- Удаление своих сообщений в чате ---------- */
         .chat-message { word-break: break-word; position: relative; }
-        .chat-message.own-message { padding-right: 22px; }
+        /* Одно сообщение внутри объединённого блока (ник и время — только у первого) */
+        .msg-part { position: relative; }
+        .chat-message.own-message .msg-part { padding-right: 22px; }
         .msg-delete-btn {
             position: absolute;
             right: 0;
@@ -2179,7 +2181,7 @@
             transition: opacity 0.15s, color 0.15s;
             padding: 0;
         }
-        .chat-message.own-message:hover .msg-delete-btn { opacity: 1; }
+        .chat-message.own-message .msg-part:hover .msg-delete-btn { opacity: 1; }
         .msg-delete-btn:hover { color: var(--danger); }
         .msg-delete-btn svg { display: block; }
     </style>

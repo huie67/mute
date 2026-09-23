@@ -5155,27 +5155,40 @@ function renderChatMessage({ id, username, user, avatar, text, image_url, create
 
     maybeInsertDateSeparator(date);
 
-    const msg = document.createElement('div');
-    msg.className = 'chat-message fade-in';
-    if (id != null) msg.dataset.id = id;
-
     // Сравниваем без учёта регистра/пробелов, как и в остальных местах, где мы
     // определяем "это моё сообщение" — иначе из-за малейшего расхождения регистра
     // кнопка удаления могла бы не появиться у собственного же сообщения.
     const normNameForDelete = (n) => String(n || '').trim().toLowerCase();
     const isMine = id != null && !!normNameForDelete(currentUser.username) && normNameForDelete(name) === normNameForDelete(currentUser.username);
-    if (isMine) msg.classList.add('own-message');
+    const isWhisper = Array.isArray(whisper_to) && whisper_to.length > 0;
 
-    let html = `<strong class="msg-sender" style="color:${getUserColor(name)}">${escapeHtml(name)}:</strong> `;
-    if (Array.isArray(whisper_to) && whisper_to.length) {
-        msg.classList.add('chat-whisper');
-        const meLowerW = (currentUser.username || '').toLowerCase();
-        const iAmSender = name.toLowerCase() === meLowerW;
-        const others = whisper_to.filter(n => String(n).toLowerCase() !== name.toLowerCase());
-        const label = iAmSender
-            ? `шёпот → ${others.map(escapeHtml).join(', ')}`
-            : 'шепчет вам';
-        html += `<span class="whisper-tag" title="Это сообщение видят только отмеченные участники">${label}</span> `;
+    // Объединение сообщений: подряд идущие сообщения одного автора в пределах одной
+    // минуты (11:11, 11:11, 11:11) складываются в один блок — ник и время показываются
+    // один раз. Как только минута сменилась (11:12) или написал кто-то другой —
+    // начинается новый блок со своим ником и временем.
+    const minuteKey = `${dateKeyOf(date)}-${date.getHours()}-${date.getMinutes()}`;
+    const whisperKey = isWhisper ? whisper_to.map(n => String(n).toLowerCase()).sort().join(',') : '';
+    const groupKey = `${normNameForDelete(name)}|${minuteKey}|${whisperKey}`;
+    const lastEl = messagesDiv.lastElementChild;
+    const joinGroup = !!(lastEl && lastEl.classList.contains('chat-message') && lastEl.dataset.groupKey === groupKey);
+
+    // Каждое сообщение — отдельная часть (.msg-part) со своим id: удаляется по отдельности.
+    const part = document.createElement('div');
+    part.className = 'msg-part';
+    if (id != null) part.dataset.id = id;
+
+    let html = '';
+    if (!joinGroup) {
+        html += `<strong class="msg-sender" style="color:${getUserColor(name)}">${escapeHtml(name)}:</strong> `;
+        if (isWhisper) {
+            const meLowerW = (currentUser.username || '').toLowerCase();
+            const iAmSender = name.toLowerCase() === meLowerW;
+            const others = whisper_to.filter(n => String(n).toLowerCase() !== name.toLowerCase());
+            const label = iAmSender
+                ? `шёпот → ${others.map(escapeHtml).join(', ')}`
+                : 'шепчет вам';
+            html += `<span class="whisper-tag" title="Это сообщение видят только отмеченные участники">${label}</span> `;
+        }
     }
     if (text) html += `<span class="msg-text">${renderMessageTextWithMentions(text, getMentionCandidates(), currentUser.username)}</span>`;
     if (image_url) {
@@ -5185,15 +5198,30 @@ function renderChatMessage({ id, username, user, avatar, text, image_url, create
         // GPU-процесс — декодируются только те фото, что вы прямо сейчас видите.
         html += `<div class="chat-image-wrap"><img src="${image_url}" class="chat-image" alt="Изображение" loading="lazy" decoding="async" onclick="openImageLightbox('${image_url}')"></div>`;
     }
-    html += `<span class="msg-time">${formatMessageTime(date)}</span>`;
+    // Время — только у первого сообщения блока (у остальных та же минута).
+    if (!joinGroup) html += `<span class="msg-time">${formatMessageTime(date)}</span>`;
     if (isMine) {
         html += `<button type="button" class="msg-delete-btn" title="Удалить сообщение" onclick="deleteMyMessage(${JSON.stringify(id)})"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg></button>`;
     }
-    msg.innerHTML = html;
-    messagesDiv.appendChild(msg);
+    part.innerHTML = html;
+
+    let msg;
+    if (joinGroup) {
+        msg = lastEl;
+        part.classList.add('fade-in');
+        msg.appendChild(part);
+    } else {
+        msg = document.createElement('div');
+        msg.className = 'chat-message fade-in';
+        msg.dataset.groupKey = groupKey;
+        if (isMine) msg.classList.add('own-message');
+        if (isWhisper) msg.classList.add('chat-whisper');
+        msg.appendChild(part);
+        messagesDiv.appendChild(msg);
+    }
     // Если окно уже неактивно, не запускаем GIF, добавленный в фоне.
-    if (chatGifsPaused && isChatGif(msg.querySelector('img.chat-image'))) {
-        const gif = msg.querySelector('img.chat-image');
+    if (chatGifsPaused && isChatGif(part.querySelector('img.chat-image'))) {
+        const gif = part.querySelector('img.chat-image');
         const src = gif.getAttribute('src');
         if (src && src !== GIF_PAUSE_PLACEHOLDER) {
             gif.dataset.gifSrc = src;
@@ -5213,16 +5241,33 @@ window.deleteMyMessage = function(id) {
     socket.emit('delete message', { id, room: selectedRoom });
 };
 
+// Удаляет одно сообщение из объединённого блока. Если это последнее сообщение блока —
+// убираем весь блок. Если удалили первое, а другие остались — ник (и метку шёпота) и
+// время переносим на следующее сообщение, чтобы блок не остался без автора и времени.
+function removeMessagePart(part) {
+    const group = part.closest('.chat-message');
+    if (!group) { part.remove(); return; }
+    const parts = group.querySelectorAll(':scope > .msg-part');
+    if (parts.length <= 1) { group.remove(); return; }
+    if (parts[0] === part) {
+        const next = parts[1];
+        const frag = document.createDocumentFragment();
+        part.querySelectorAll(':scope > .msg-sender, :scope > .whisper-tag').forEach(n => {
+            frag.appendChild(n);
+            frag.appendChild(document.createTextNode(' '));
+        });
+        next.insertBefore(frag, next.firstChild);
+        const time = part.querySelector(':scope > .msg-time');
+        if (time) next.insertBefore(time, next.querySelector(':scope > .msg-delete-btn'));
+    }
+    part.remove();
+}
+
 socket.on('delete message', ({ id, room }) => {
     if (room && room !== selectedRoom) return;
     if (id == null) return;
-    const el = messagesDiv.querySelector(`.chat-message[data-id="${CSS.escape(String(id))}"]`);
-    if (el) {
-        // Если удалённое сообщение было единственным под своим разделителем даты —
-        // trimRenderedMessages() сам подчистит осиротевший разделитель сверху при
-        // следующем рендере; здесь просто убираем само сообщение.
-        el.remove();
-    }
+    const el = messagesDiv.querySelector(`.msg-part[data-id="${CSS.escape(String(id))}"]`);
+    if (el) removeMessagePart(el);
 });
 
 socket.on('chat history', (data) => {
