@@ -4261,13 +4261,62 @@ document.addEventListener('click', () => {
 // периодически пытается разбудить AudioContext через setInterval. Но как
 // только пользователь возвращается в приложение — будим контекст сразу же,
 // не дожидаясь ближайшего тика, чтобы микрофон включался без задержки.
+// GIF-анимации в чате могут продолжать декодироваться, пока окно Mute неактивно.
+// У WebView2 нет DOM API для паузы GIF, поэтому при потере видимости/фокуса
+// временно убираем src у GIF. При возврате восстанавливаем исходный URL.
+// Размеры CSS при этом НЕ меняются. GIF начинает проигрываться заново с первого кадра.
+const GIF_PAUSE_PLACEHOLDER = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+let chatGifsPaused = false;
+
+function isChatGif(img) {
+    const src = img?.dataset?.gifSrc || img?.getAttribute('src') || '';
+    return /\.gif(?:[?#]|$)/i.test(src);
+}
+
+function pauseChatGifs() {
+    if (chatGifsPaused) return;
+    chatGifsPaused = true;
+    document.querySelectorAll('img.chat-image').forEach(img => {
+        if (!isChatGif(img)) return;
+        const src = img.getAttribute('src');
+        if (!src || src === GIF_PAUSE_PLACEHOLDER) return;
+        img.dataset.gifSrc = src;
+        img.src = GIF_PAUSE_PLACEHOLDER;
+    });
+}
+
+function resumeChatGifs() {
+    if (!chatGifsPaused) return;
+    chatGifsPaused = false;
+    document.querySelectorAll('img.chat-image[data-gif-src]').forEach(img => {
+        const src = img.dataset.gifSrc;
+        if (src) {
+            img.src = src;
+            delete img.dataset.gifSrc;
+        }
+    });
+}
+
+function syncChatGifActivity() {
+    if (document.hidden || !document.hasFocus()) {
+        pauseChatGifs();
+    } else {
+        resumeChatGifs();
+    }
+}
+
 document.addEventListener('visibilitychange', () => {
     if (!document.hidden && audioContext && audioContext.state === 'suspended') {
         audioContext.resume().catch(() => {});
     }
     if (!document.hidden) resyncRoomUsers();
+    syncChatGifActivity();
 });
-window.addEventListener('focus', resyncRoomUsers);
+window.addEventListener('blur', pauseChatGifs);
+window.addEventListener('focus', () => {
+    resumeChatGifs();
+    resyncRoomUsers();
+});
 window.addEventListener('online', resyncRoomUsers);
 
 // ---------- Актуальность списка участников, когда вкладка неактивна ----------
@@ -4876,6 +4925,15 @@ function renderChatMessage({ id, username, user, avatar, text, image_url, create
     }
     msg.innerHTML = html;
     messagesDiv.appendChild(msg);
+    // Если окно уже неактивно, не запускаем GIF, добавленный в фоне.
+    if (chatGifsPaused && isChatGif(msg.querySelector('img.chat-image'))) {
+        const gif = msg.querySelector('img.chat-image');
+        const src = gif.getAttribute('src');
+        if (src && src !== GIF_PAUSE_PLACEHOLDER) {
+            gif.dataset.gifSrc = src;
+            gif.src = GIF_PAUSE_PLACEHOLDER;
+        }
+    }
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
     trimRenderedMessages();
 }
