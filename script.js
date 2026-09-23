@@ -497,6 +497,60 @@ const messagesDiv = document.getElementById('messages');
 const messageInput = document.getElementById('message-input');
 const remoteVideos = document.getElementById('remote-videos');
 
+// Локальный кэш истории: повторное переключение между недавно открытыми
+// каналами не ждёт сеть. Храним только ограниченное число комнат, чтобы RAM
+// не росла бесконечно. В кэше лежат данные сообщений, а не декодированные
+// изображения — сами картинки остаются под контролем DOM-лимита.
+const CHAT_HISTORY_CACHE_MAX_ROOMS = 12;
+const CHAT_HISTORY_CACHE_MAX_MESSAGES = 100;
+const chatHistoryCache = new Map();
+
+function getCachedChatHistory(room) {
+    const key = String(room || '');
+    const cached = chatHistoryCache.get(key);
+    if (!cached) return null;
+    // LRU: недавно использованный канал переносим в конец Map.
+    chatHistoryCache.delete(key);
+    chatHistoryCache.set(key, cached);
+    return cached.messages;
+}
+
+function setCachedChatHistory(room, messages) {
+    const key = String(room || '');
+    if (!key || !Array.isArray(messages)) return;
+    chatHistoryCache.delete(key);
+    chatHistoryCache.set(key, {
+        messages: messages.slice(-CHAT_HISTORY_CACHE_MAX_MESSAGES)
+    });
+    while (chatHistoryCache.size > CHAT_HISTORY_CACHE_MAX_ROOMS) {
+        const oldestKey = chatHistoryCache.keys().next().value;
+        if (oldestKey === undefined) break;
+        chatHistoryCache.delete(oldestKey);
+    }
+}
+
+function appendMessageToChatCache(room, payload) {
+    const key = String(room || '');
+    if (!key || !payload) return;
+    const cached = chatHistoryCache.get(key);
+    if (!cached) return;
+    const id = payload.id != null ? String(payload.id) : null;
+    if (id && cached.messages.some(m => String(m.id) === id)) return;
+    cached.messages.push(payload);
+    if (cached.messages.length > CHAT_HISTORY_CACHE_MAX_MESSAGES) {
+        cached.messages.splice(0, cached.messages.length - CHAT_HISTORY_CACHE_MAX_MESSAGES);
+    }
+    chatHistoryCache.delete(key);
+    chatHistoryCache.set(key, cached);
+}
+
+function removeMessageFromChatCache(room, id) {
+    const key = String(room || '');
+    const cached = chatHistoryCache.get(key);
+    if (!cached) return;
+    cached.messages = cached.messages.filter(m => String(m.id) !== String(id));
+}
+
 // ---------- Упоминания (@ник) в чате ----------
 // Кэш участников сервера по коду — берётся из событий 'server members list',
 // которые сервер и так рассылает всем, у кого открыт чат этого сервера
@@ -3258,6 +3312,17 @@ function selectRoomButton(btn) {
     if (roomChanged) {
         setChatEnabled(true);
         closeMentionAutocomplete();
+
+        // Сначала мгновенно показываем локальную историю, если этот канал уже
+        // открывался. Сервер всё равно проверит членство и пришлёт свежую историю
+        // в фоне — поэтому кэш не влияет на безопасность и актуальность данных.
+        const cachedHistory = getCachedChatHistory(roomName);
+        if (cachedHistory) {
+            messagesDiv.innerHTML = '';
+            lastMessageDateKey = null;
+            cachedHistory.forEach(renderChatMessage);
+        }
+
         socket.emit('select chat room', { room: roomName });
         // Список участников для автодополнения @упоминаний — сервер и так пришлёт его
         // сам через ~250 мс после 'select chat room', но запрашиваем явно, чтобы
@@ -5266,6 +5331,7 @@ function removeMessagePart(part) {
 socket.on('delete message', ({ id, room }) => {
     if (room && room !== selectedRoom) return;
     if (id == null) return;
+    removeMessageFromChatCache(room || selectedRoom, id);
     const el = messagesDiv.querySelector(`.msg-part[data-id="${CSS.escape(String(id))}"]`);
     if (el) removeMessagePart(el);
 });
@@ -5277,6 +5343,7 @@ socket.on('chat history', (data) => {
     const history = (data && data.messages) || [];
     if (room && room !== selectedRoom) return;
 
+    setCachedChatHistory(room || selectedRoom, history);
     messagesDiv.innerHTML = '';
     lastMessageDateKey = null; // заново расставляем разделители дат для свежезагруженной истории
     history.forEach(renderChatMessage);
@@ -5285,6 +5352,7 @@ socket.on('chat history', (data) => {
 socket.on('chat message', (payload) => {
     // Показываем только сообщения текущей открытой комнаты.
     if (payload.room && payload.room !== selectedRoom) return;
+    appendMessageToChatCache(payload.room || selectedRoom, payload);
     renderChatMessage(payload);
 
     // Звук — только для чужих сообщений, свои же мы и так видим, что отправили

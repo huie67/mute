@@ -189,28 +189,61 @@ function parseWhisperList(raw) {
     } catch (e) { return null; }
 }
 
+// Короткий серверный кэш последних сообщений.
+// Он резко сокращает число одинаковых запросов к Neon при быстром переключении
+// каналов/переподключении, но не держит историю бесконечно.
+const recentMessagesCache = new Map();
+const RECENT_MESSAGES_CACHE_MS = 3000;
+const RECENT_MESSAGES_CACHE_LIMIT = 100;
+
+function invalidateRecentMessagesCache(room) {
+    if (!room) return;
+    recentMessagesCache.delete(String(room));
+}
+
 // viewerName — кто запрашивает историю: чужие шёпоты (wh@) ему не отдаём.
 async function getRecentMessages(room, limit = 100, viewerName = '') {
+    const cacheKey = String(room || '');
+    const now = Date.now();
+    const cached = recentMessagesCache.get(cacheKey);
+    const requestedLimit = Math.min(Math.max(Number(limit) || 100, 1), RECENT_MESSAGES_CACHE_LIMIT);
+    const viewer = String(viewerName || '').toLowerCase();
+
+    // Кэш безопасен для обычных сообщений. Для шёпотов всё равно фильтруем уже
+    // полученный набор по viewerName, поэтому один набор можно использовать повторно.
+    if (cached && (now - cached.fetchedAt) < RECENT_MESSAGES_CACHE_MS && cached.limit >= requestedLimit) {
+        return cached.messages
+            .slice(-requestedLimit)
+            .filter(row => {
+                if (!row.whisper_to) return true;
+                if (!viewer) return false;
+                if (String(row.username || '').toLowerCase() === viewer) return true;
+                return row.whisper_to.some(n => String(n).toLowerCase() === viewer);
+            });
+    }
+
     const result = await pool.query(
         `SELECT * FROM messages WHERE room = $1 ORDER BY id DESC LIMIT $2`,
-        [room, limit]
+        [room, requestedLimit]
     );
-    const viewer = String(viewerName || '').toLowerCase();
     // pg возвращает колонки BIGINT (created_at) не числом, а строкой — так драйвер
     // защищается от потери точности у значений больше Number.MAX_SAFE_INTEGER.
     // На клиенте `new Date("1758214528000")` (строка) — это Invalid Date, а
     // `new Date(1758214528000)` (число) — нормальная дата.
-    return result.rows.reverse()
+    const messages = result.rows.reverse()
         .map(row => {
             const whisperTo = parseWhisperList(row.whisper_to);
             return { ...row, whisper_to: whisperTo, created_at: Number(row.created_at) };
-        })
-        .filter(row => {
-            if (!row.whisper_to) return true;
-            if (!viewer) return false;
-            if (String(row.username || '').toLowerCase() === viewer) return true;
-            return row.whisper_to.some(n => String(n).toLowerCase() === viewer);
         });
+
+    recentMessagesCache.set(cacheKey, { fetchedAt: now, limit: requestedLimit, messages });
+
+    return messages.filter(row => {
+        if (!row.whisper_to) return true;
+        if (!viewer) return false;
+        if (String(row.username || '').toLowerCase() === viewer) return true;
+        return row.whisper_to.some(n => String(n).toLowerCase() === viewer);
+    });
 }
 
 // ---------- Загрузка фото в чат: Cloudinary (не диск сервера — тот эфемерный на бесплатном хостинге) ----------
@@ -1417,6 +1450,8 @@ io.on('connection', (socket) => {
         try {
             const id = await insertMessage({ username, avatar, text: cleanText, imageUrl, room, createdAt, whisperTo });
 
+            invalidateRecentMessagesCache(room);
+
             const outgoing = {
                 id,
                 username,
@@ -1455,6 +1490,7 @@ io.on('connection', (socket) => {
         try {
             const deleted = await deleteOwnMessage(id, socket.data.username);
             if (deleted && deleted.room) {
+                invalidateRecentMessagesCache(deleted.room);
                 // Рассылаем всем, у кого сейчас открыт этот чат — включая самого автора
                 // (на случай, если сообщение открыто в нескольких вкладках/устройствах).
                 io.to(`chat:${deleted.room}`).emit('delete message', { id, room: deleted.room });
