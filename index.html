@@ -1181,6 +1181,48 @@
             cursor: pointer;
         }
 
+        /* Все чекбоксы используют тот же компактный вид, что и выбор каналов
+           для конкретного звука. */
+        input[type="checkbox"] {
+            appearance: none;
+            -webkit-appearance: none;
+            width: 14px;
+            height: 14px;
+            margin: 0;
+            flex: 0 0 14px;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            background: var(--bg-card);
+            display: inline-grid;
+            place-content: center;
+            cursor: pointer;
+            transition: background .12s ease, border-color .12s ease;
+        }
+        input[type="checkbox"]::after {
+            content: "";
+            width: 7px;
+            height: 4px;
+            border-left: 2px solid #fff;
+            border-bottom: 2px solid #fff;
+            transform: rotate(-45deg) scale(0);
+            transform-origin: center;
+            transition: transform .1s ease;
+        }
+        input[type="checkbox"]:checked {
+            background: var(--accent);
+            border-color: var(--accent);
+        }
+        input[type="checkbox"]:checked::after {
+            transform: rotate(-45deg) scale(1);
+        }
+        input[type="checkbox"]:hover {
+            border-color: var(--accent);
+        }
+        input[type="checkbox"]:focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+        }
+
         /* Группировка настроек микрофона по смыслу (устройство / уровень / гейт /
            обработка), чтобы длинный список карточек не выглядел одной сплошной стеной. */
         .settings-section {

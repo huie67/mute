@@ -1394,13 +1394,11 @@ function playMentionSound() {
     playNotifySound('mention', getSoundVolume('mention'), selectedRoom);
 }
 
-// Мелодия начала созвона — играет один раз при собственном подключении к голосовому
-// каналу (см. connectToSelectedRoom), если не отключена для этого конкретного канала.
+// Мелодия начала созвона — рингтон для участника, которому начинают звонить.
+// Вызывающий её не слышит; звук включается отдельно для каждого канала.
 function playCallstartSound(roomId) {
-    if (!isCallstartEnabledForChannel(roomId)) return;
-    // Если в канале уже есть участники, звонок уже идёт — при входе не
-    // запускаем мелодию начала созвона поверх разговора.
-    if (roomId && Number(roomUserCounts[roomId] || 0) > 0) return;
+    if (!roomId || !isCallstartEnabledForChannel(roomId)) return;
+    // Это рингтон для того, кому уже звонят: вызывающий сам его не слышит.
     playNotifySound('callstart', getSoundVolume('callstart'), roomId);
 }
 
@@ -3657,7 +3655,17 @@ function cleanupCalls() {
 }
 
 socket.on('room users', (usersInRoom, room) => {
-    if (room) roomUserCounts[room] = Object.keys(usersInRoom || {}).length;
+    const previousRoomUserCount = room ? Number(roomUserCounts[room] || 0) : 0;
+    const nextRoomUserCount = Object.keys(usersInRoom || {}).length;
+    if (room) roomUserCounts[room] = nextRoomUserCount;
+
+    // Если в голосовом канале был один человек и появился второй, это начало
+    // созвона для уже находившегося там участника. Он слышит рингтон, а новый
+    // участник (который сам инициировал вход) его не слышит.
+    if (room && previousRoomUserCount === 1 && nextRoomUserCount === 2 &&
+        room === currentUser.room) {
+        playCallstartSound(room);
+    }
     // Сервер шлёт список и участникам канала, и тем, кто просто смотрит сервер (см. broadcastRoomUsers).
     // `room` — какой именно канал обновился: обновления чужих каналов игнорируем.
     const inVoiceRoom = room ? room === currentUser.room : currentUser.room === selectedRoom;
