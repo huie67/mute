@@ -505,6 +505,82 @@ const CHAT_HISTORY_CACHE_MAX_ROOMS = 12;
 const CHAT_HISTORY_CACHE_MAX_MESSAGES = 100;
 const chatHistoryCache = new Map();
 
+// Непрочитанные сообщения: считаем только входящие сообщения чужих пользователей.
+// Ограничиваем объём, чтобы состояние уведомлений не могло бесконечно расти.
+const UNREAD_MAX_MESSAGES_PER_ROOM = 100;
+const unreadByRoom = new Map();
+const unreadStorageKey = 'muteUnreadMessages';
+
+function loadUnreadState() {
+    try {
+        const raw = JSON.parse(localStorage.getItem(unreadStorageKey) || '{}');
+        if (!raw || typeof raw !== 'object') return;
+        for (const [room, value] of Object.entries(raw)) {
+            const ids = Array.isArray(value) ? value.map(String).slice(-UNREAD_MAX_MESSAGES_PER_ROOM) : [];
+            if (ids.length) unreadByRoom.set(room, ids);
+        }
+    } catch (_) {}
+}
+
+function saveUnreadState() {
+    try {
+        const out = {};
+        unreadByRoom.forEach((ids, room) => { out[room] = ids.slice(-UNREAD_MAX_MESSAGES_PER_ROOM); });
+        localStorage.setItem(unreadStorageKey, JSON.stringify(out));
+    } catch (_) {}
+}
+
+function unreadCount(room) {
+    return (unreadByRoom.get(String(room || '')) || []).length;
+}
+
+function updateUnreadBadge(room) {
+    const key = String(room || '');
+    if (!key) return;
+    const buttons = document.querySelectorAll(`[data-room="${CSS.escape(key)}"]`);
+    const count = unreadCount(key);
+    buttons.forEach(btn => {
+        let badge = btn.querySelector('.unread-count-badge');
+        if (count > 0) {
+            if (!badge) {
+                badge = document.createElement('span');
+                badge.className = 'unread-count-badge';
+                btn.appendChild(badge);
+            }
+            badge.textContent = count > 99 ? '99+' : String(count);
+            badge.title = `${count} непрочитанных сообщений`;
+        } else if (badge) {
+            badge.remove();
+        }
+    });
+}
+
+function markRoomRead(room) {
+    const key = String(room || '');
+    if (!key) return;
+    unreadByRoom.delete(key);
+    saveUnreadState();
+    updateUnreadBadge(key);
+}
+
+function addUnreadMessage(room, payload) {
+    const key = String(room || '');
+    if (!key || !payload?.id) return;
+    const ids = unreadByRoom.get(key) || [];
+    const id = String(payload.id);
+    if (!ids.includes(id)) ids.push(id);
+    if (ids.length > UNREAD_MAX_MESSAGES_PER_ROOM) ids.splice(0, ids.length - UNREAD_MAX_MESSAGES_PER_ROOM);
+    unreadByRoom.set(key, ids);
+    saveUnreadState();
+    updateUnreadBadge(key);
+}
+
+function getUnreadIds(room) {
+    return new Set((unreadByRoom.get(String(room || '')) || []).map(String));
+}
+
+loadUnreadState();
+
 function getCachedChatHistory(room) {
     const key = String(room || '');
     const cached = chatHistoryCache.get(key);
@@ -3304,7 +3380,7 @@ function selectRoomButton(btn) {
         setConnectRoomButtonState(false);
         roomTitle.innerText = `Канал: ${displayName} (Просмотр)`;
     }
-    connectRoomBtn.style.display = 'inline-flex';
+    connectRoomBtn.style.display = 'inline-block';
     socket.emit('get room users', roomName);
 
     // Чат — свой для каждого сервера. Переключаем его только если реально сменили комнату,
@@ -3321,6 +3397,8 @@ function selectRoomButton(btn) {
             messagesDiv.innerHTML = '';
             lastMessageDateKey = null;
             cachedHistory.forEach(renderChatMessage);
+            markUnreadMessagesInChat(roomName);
+            markRoomRead(roomName);
         }
 
         socket.emit('select chat room', { room: roomName });
@@ -5336,6 +5414,25 @@ socket.on('delete message', ({ id, room }) => {
     if (el) removeMessagePart(el);
 });
 
+function markUnreadMessagesInChat(room) {
+    const ids = getUnreadIds(room);
+    if (!ids.size) return;
+    const parts = Array.from(messagesDiv.querySelectorAll('.msg-part[data-id]'));
+    let firstUnread = null;
+    parts.forEach(part => {
+        if (ids.has(String(part.dataset.id))) {
+            part.classList.add('unread-message');
+            if (!firstUnread) firstUnread = part;
+        }
+    });
+    if (firstUnread && !messagesDiv.querySelector('.unread-divider')) {
+        const divider = document.createElement('div');
+        divider.className = 'unread-divider';
+        divider.textContent = 'Непрочитанные';
+        firstUnread.parentElement?.before(divider);
+    }
+}
+
 socket.on('chat history', (data) => {
     // Пришла история чата другой комнаты, чем та, что сейчас открыта (например,
     // ответ на уже неактуальный запрос) — игнорируем, чтобы не подмешать чужой чат.
@@ -5347,21 +5444,26 @@ socket.on('chat history', (data) => {
     messagesDiv.innerHTML = '';
     lastMessageDateKey = null; // заново расставляем разделители дат для свежезагруженной истории
     history.forEach(renderChatMessage);
+    markUnreadMessagesInChat(room || selectedRoom);
+    markRoomRead(room || selectedRoom);
 });
 
 socket.on('chat message', (payload) => {
-    // Показываем только сообщения текущей открытой комнаты.
-    if (payload.room && payload.room !== selectedRoom) return;
-    appendMessageToChatCache(payload.room || selectedRoom, payload);
-    renderChatMessage(payload);
-
-    // Звук — только для чужих сообщений, свои же мы и так видим, что отправили
+    const room = payload.room || selectedRoom;
     const senderName = payload.username || payload.user;
-    // Сравниваем без учёта регистра и пробелов — иначе при малейшем расхождении ника
-    // собственное сообщение считалось бы чужим и проигрывало звук. Свои сообщения
-    // (в том числе отправленные с другого устройства с тем же аккаунтом) — без звука и тостов.
     const normName = (n) => String(n || '').trim().toLowerCase();
     const isOwnMessage = !!normName(currentUser.username) && normName(senderName) === normName(currentUser.username);
+
+    // Сообщение другой комнаты не рендерим, но сохраняем уведомление.
+    if (room !== selectedRoom) {
+        if (!isOwnMessage) addUnreadMessage(room, payload);
+        return;
+    }
+
+    appendMessageToChatCache(room, payload);
+    renderChatMessage(payload);
+
+    // Звук — только для чужих сообщений, свои же мы и так видим, что отправили.
     if (!isOwnMessage) {
         // Если в сообщении упомянули нас по нику — играем отдельный, более заметный
         // звук упоминания ВМЕСТО обычного звука сообщения (чтобы не звучало дважды),

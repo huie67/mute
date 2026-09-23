@@ -191,11 +191,9 @@
             border-radius: 9px;
         }
         .call-action-btn svg {
-            display: block;
             width: 20px;
             height: 20px;
             flex: 0 0 auto;
-            margin: auto;
         }
 
         .btn-sm {
@@ -297,11 +295,6 @@
             background: var(--accent);
             color: #fff;
         }
-        /* Обводка текущего (выбранного) канала: зазор под цвет колонки + кольцо акцентного цвета */
-        .server-icon.active {
-            border-color: var(--bg-sunken);
-            box-shadow: 0 0 0 2px var(--accent);
-        }
 
         .server-add-btn {
             border: 2px dashed var(--border-strong);
@@ -310,8 +303,27 @@
             font-size: 24px;
         }
         .server-add-btn:hover { border-color: var(--accent); color: #fff; background: var(--bg-card); }
+        .unread-divider {
+            display: flex; align-items: center; gap: 8px; margin: 10px 0;
+            color: var(--accent); font-size: 11px; font-weight: 700;
+        }
+        .unread-divider::before, .unread-divider::after {
+            content: ''; height: 1px; background: var(--accent); opacity: .45; flex: 1;
+        }
+        .msg-part.unread-message {
+            border-left: 2px solid var(--accent); padding-left: 7px;
+            background: color-mix(in srgb, var(--accent) 8%, transparent);
+            border-radius: 4px;
+        }
         #custom-servers-list { display: contents; }
         .custom-server-icon { position: relative; }
+        .unread-count-badge {
+            position: absolute; right: -5px; bottom: -5px; min-width: 18px; height: 18px;
+            padding: 0 5px; border-radius: 10px; background: var(--accent); color: #fff;
+            border: 2px solid var(--bg-sunken); font-size: 10px; font-weight: 800;
+            line-height: 14px; display: flex; align-items: center; justify-content: center;
+            pointer-events: none; box-sizing: border-box; z-index: 4;
+        }
         .custom-server-icon .lock-dot {
             position: absolute; right: -2px; bottom: -2px; width: 15px; height: 15px;
             border-radius: 50%; background: var(--bg-elevated); border: 2px solid var(--bg-sunken);
