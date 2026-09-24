@@ -579,8 +579,11 @@ function getUnreadIds(room) {
     return new Set((unreadByRoom.get(String(room || '')) || []).map(String));
 }
 
-// Снимок непрочитанных на момент открытия канала из кэша (см. selectRoomButton).
+// Снимок непрочитанных на момент открытия канала из кэша (см. selectRoomButton):
+// { ids: Set, at: время открытия }. Время нужно, чтобы при перерисовке чата свежей
+// историей подсветка продолжила гаснуть с того же места, а не вспыхнула заново.
 const unreadSnapshotByRoom = new Map();
+const UNREAD_FLASH_MS = 1000; // должно совпадать с длительностью unread-flash в index.html
 
 loadUnreadState();
 
@@ -3412,8 +3415,10 @@ function selectRoomButton(btn) {
             markUnreadMessagesInChat(roomName);
             // Свежая история с сервера перерисует чат целиком — запоминаем, что было
             // непрочитанным, чтобы разделитель «Непрочитанные» не пропал при перерисовке.
-            unreadSnapshotByRoom.set(String(roomName), getUnreadIds(roomName));
+            unreadSnapshotByRoom.set(String(roomName), { ids: getUnreadIds(roomName), at: Date.now() });
             markRoomRead(roomName);
+        } else {
+            unreadSnapshotByRoom.delete(String(roomName)); // старый снимок не должен гасить вспышку
         }
 
         socket.emit('select chat room', { room: roomName });
@@ -5435,14 +5440,23 @@ socket.on('delete message', ({ id, room }) => {
 function markUnreadMessagesInChat(room) {
     const ids = getUnreadIds(room);
     const snapshot = unreadSnapshotByRoom.get(String(room || ''));
-    if (snapshot) snapshot.forEach(id => ids.add(id));
+    if (snapshot) snapshot.ids.forEach(id => ids.add(id));
     if (!ids.size) return;
+    // Сколько уже прошло с момента первой отрисовки (если чат перерисовывается
+    // свежей историей сразу после показа из кэша) — вспышка должна быть одна.
+    const elapsed = snapshot ? Date.now() - snapshot.at : 0;
+    const flash = elapsed < UNREAD_FLASH_MS;
     const parts = Array.from(messagesDiv.querySelectorAll('.msg-part[data-id]'));
     let firstUnread = null;
     parts.forEach(part => {
         if (ids.has(String(part.dataset.id))) {
-            part.classList.add('unread-message');
             if (!firstUnread) firstUnread = part;
+            if (!flash) return; // вспышка уже отыграла — сообщение выглядит как обычное
+            part.classList.add('unread-message');
+            // Отрицательная задержка «перематывает» анимацию на уже прошедшее время.
+            if (elapsed > 0) part.style.animationDelay = `-${elapsed}ms`;
+            // Убираем класс после окончания, чтобы не оставлять лишнего в DOM.
+            setTimeout(() => part.classList.remove('unread-message'), UNREAD_FLASH_MS - elapsed + 50);
         }
     });
     if (firstUnread && !messagesDiv.querySelector('.unread-divider')) {

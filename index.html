@@ -295,6 +295,12 @@
             background: var(--accent);
             color: #fff;
         }
+        /* Обводка выбранного канала: кольцо с зазором вокруг иконки. outline повторяет
+           скруглённую форму и не сдвигает соседние иконки (в отличие от border/margin). */
+        .server-icon.active {
+            outline: 2px solid var(--accent);
+            outline-offset: 3px;
+        }
 
         .server-add-btn {
             border: 2px dashed var(--border-strong);
@@ -310,10 +316,22 @@
         .unread-divider::before, .unread-divider::after {
             content: ''; height: 1px; background: var(--accent); opacity: .45; flex: 1;
         }
+        /* Подсветка непрочитанных — разовая: вспыхивает при заходе в канал и за ~1 секунду
+           плавно гаснет. Полоска слева сделана через inset box-shadow, а не border+padding,
+           чтобы после окончания анимации текст не «прыгал» по горизонтали. */
         .msg-part.unread-message {
-            border-left: 2px solid var(--accent); padding-left: 7px;
-            background: color-mix(in srgb, var(--accent) 8%, transparent);
             border-radius: 4px;
+            animation: unread-flash 1s ease-out 1;
+        }
+        @keyframes unread-flash {
+            from {
+                background: color-mix(in srgb, var(--accent) 22%, transparent);
+                box-shadow: inset 2px 0 0 var(--accent);
+            }
+            to {
+                background: color-mix(in srgb, var(--accent) 0%, transparent);
+                box-shadow: inset 2px 0 0 transparent;
+            }
         }
         #custom-servers-list { display: contents; }
         .custom-server-icon { position: relative; }
