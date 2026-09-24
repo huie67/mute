@@ -278,7 +278,7 @@ socket.on('server members list', ({ code, members } = {}) => {
     if (code) mentionMembersCache[code] = members || [];
 
     // Обновился список участников (кто-то зашёл/вышел в сеть) — перерисовываем боковой список.
-    if (showOffCallMembers && code && code === customCodeFromRoomName(selectedRoom)) {
+    if (showOffCallMembers && code && code === customCodeFromRoomName(currentUser.room || selectedRoom)) {
         updateVoiceUsersList(lastRenderedVoiceUsers);
     }
 
@@ -339,6 +339,10 @@ socket.on('kicked from server', ({ code, name } = {}) => {
         cleanupCalls();
         connectedUsers = {};
         updateVoiceUsersList();
+        renderCallHeader();
+        setConnectRoomButtonState(false);
+        screenBtn.disabled = true;
+        screenBtn.title = 'Сначала подключитесь к голосовому каналу';
     }
 
     alert(`Вас исключили с сервера «${name || code}».`);
@@ -578,6 +582,28 @@ function addUnreadMessage(room, payload) {
 function getUnreadIds(room) {
     return new Set((unreadByRoom.get(String(room || '')) || []).map(String));
 }
+
+// Снимок непрочитанных на момент открытия канала из кэша (см. selectRoomButton):
+// { ids: Set, at: время открытия }. Время нужно, чтобы при перерисовке чата свежей
+// историей подсветка продолжила гаснуть с того же места, а не вспыхнула заново.
+const unreadSnapshotByRoom = new Map();
+// Состояние, которое читают функции ниже по файлу (объявлено здесь заранее, чтобы
+// не попасть во временную мёртвую зону — см. комментарий у mentionAutocompleteEl).
+let previewUsers = {};          // участники просматриваемого канала, пока мы в звонке другого
+let chatBulkRender = false;     // идёт пакетная отрисовка истории — не скроллим на каждом сообщении
+let chatPinnedToBottom = true;  // человек сейчас у конца чата (обновляется по событию scroll)
+let chatScrollAnchor = null;    // удерживаемая позиция чата (см. holdChatAnchor)
+// Где человек остановился в каждом канале: { комната: { id последнего прочитанного сообщения, atBottom } }.
+// Нужно, чтобы при возврате в канал чат вставал на последнее прочитанное, а не куда попало.
+const CHAT_READ_POS_KEY = 'mute:chatReadPosition';
+const CHAT_READ_POS_MAX_ROOMS = 50;
+let chatRenderedRoom = null;       // чей чат сейчас отрисован в messagesDiv
+let chatReadPositionByRoom = {};
+try {
+    const rawPos = JSON.parse(localStorage.getItem(CHAT_READ_POS_KEY) || '{}');
+    if (rawPos && typeof rawPos === 'object' && !Array.isArray(rawPos)) chatReadPositionByRoom = rawPos;
+} catch (e) { /* ignore */ }
+const UNREAD_FLASH_MS = 1000; // должно совпадать с длительностью unread-flash в index.html
 
 loadUnreadState();
 
@@ -1070,6 +1096,151 @@ let destinationNode = null;
 let processedTrack = null;
 let micVolume = 1; // 0..2 (0%..200%), усиление своего микрофона перед отправкой
 
+// ---------- Изменение голоса («Девчачий голос») ----------
+// Между громкостью микрофона (micGainNode) и исходящим треком стоит узел voiceOutNode.
+// Когда изменение голоса выключено, micGainNode подключён к нему напрямую; когда включено —
+// сигнал идёт через AudioWorklet-питчшифтер (поднимает высоту голоса в реальном времени)
+// и пару фильтров (срезаем «грудные» низы, чуть подсвечиваем верха), и уже потом уходит
+// собеседникам и в самопрослушивание. Анализатор уровня/Voice Gate сидит на сыром
+// источнике и от эффекта не зависит.
+// Питчшифтер — классическая схема «две линии задержки с плавным кроссфейдом»: точка чтения
+// движется по кольцевому буферу быстрее точки записи (ratio > 1 → выше по тону), а две
+// точки, сдвинутые на полокна, перекрываются окном Ханна, чтобы не было щелчков на стыках.
+const VOICE_CHANGER_PROCESSOR_NAME = 'mute-voice-changer';
+const VOICE_CHANGER_PROCESSOR_CODE = `
+class MuteVoiceChangerProcessor extends AudioWorkletProcessor {
+    static get parameterDescriptors() {
+        return [{ name: 'ratio', defaultValue: 1.335, minValue: 0.5, maxValue: 2.5, automationRate: 'k-rate' }];
+    }
+    constructor() {
+        super();
+        this._size = 16384;                 // степень двойки, с запасом больше окна
+        this._mask = this._size - 1;
+        this._buf = new Float32Array(this._size);
+        this._w = 0;                        // позиция записи
+        this._win = Math.max(64, Math.min(this._size / 2 - 8, Math.round(sampleRate * 0.045)));
+        this._phase = 0;                    // 0..1, положение первой линии задержки
+    }
+    process(inputs, outputs, parameters) {
+        const output = outputs[0];
+        if (!output || !output.length) return true;
+        const out = output[0];
+        const inp = inputs[0] && inputs[0][0];
+        const ratio = parameters.ratio[0];
+        const win = this._win, buf = this._buf, mask = this._mask;
+        const step = (ratio - 1) / win;
+        let w = this._w, phase = this._phase;
+        for (let i = 0; i < out.length; i++) {
+            buf[w] = inp ? inp[i] : 0;
+
+            let p2 = phase + 0.5;
+            if (p2 >= 1) p2 -= 1;
+            const g1 = 0.5 - 0.5 * Math.cos(6.283185307179586 * phase);
+            const g2 = 0.5 - 0.5 * Math.cos(6.283185307179586 * p2);
+
+            const pos1 = w - (phase * win + 1);
+            const i1 = Math.floor(pos1), f1 = pos1 - i1;
+            const s1 = buf[i1 & mask] + (buf[(i1 + 1) & mask] - buf[i1 & mask]) * f1;
+
+            const pos2 = w - (p2 * win + 1);
+            const i2 = Math.floor(pos2), f2 = pos2 - i2;
+            const s2 = buf[i2 & mask] + (buf[(i2 + 1) & mask] - buf[i2 & mask]) * f2;
+
+            out[i] = s1 * g1 + s2 * g2;
+
+            w = (w + 1) & mask;
+            phase -= step;
+            if (phase < 0) phase += 1;
+            else if (phase >= 1) phase -= 1;
+        }
+        // Остальные каналы (если вход стерео) просто копируем — дальше всё равно моно.
+        for (let c = 1; c < output.length; c++) output[c].set(out);
+        this._w = w;
+        this._phase = phase;
+        return true;
+    }
+}
+registerProcessor('${VOICE_CHANGER_PROCESSOR_NAME}', MuteVoiceChangerProcessor);
+`;
+const VOICE_CHANGER_DEFAULT_SEMITONES = 5;   // «девчачий» голос по умолчанию
+const VOICE_CHANGER_MIN_SEMITONES = 1;
+const VOICE_CHANGER_MAX_SEMITONES = 10;
+let voiceChangerEnabled = false;
+let voiceChangerSemitones = VOICE_CHANGER_DEFAULT_SEMITONES;
+let voiceOutNode = null;        // выход «после эффекта» → исходящий трек и самопрослушивание
+let voiceChain = null;          // { node, highpass, shelf } пока эффект включён
+let voiceChangerApplyId = 0;    // защита от гонок при быстром переключении
+let voiceChangerModulePromise = null;
+
+function semitonesToRatio(st) { return Math.pow(2, st / 12); }
+
+function ensureVoiceChangerModule(ctx) {
+    if (!voiceChangerModulePromise) {
+        const blob = new Blob([VOICE_CHANGER_PROCESSOR_CODE], { type: 'application/javascript' });
+        const blobUrl = URL.createObjectURL(blob);
+        voiceChangerModulePromise = ctx.audioWorklet.addModule(blobUrl).catch(err => {
+            voiceChangerModulePromise = null;
+            throw err;
+        });
+    }
+    return voiceChangerModulePromise;
+}
+
+function disposeVoiceChain() {
+    if (!voiceChain) return;
+    Object.values(voiceChain).forEach(n => { try { n.disconnect(); } catch (e) { /* ignore */ } });
+    voiceChain = null;
+}
+
+// Собирает маршрут micGainNode → (эффект) → voiceOutNode под текущую настройку.
+// Можно вызывать в любой момент, в том числе посреди звонка: трек и его подключение
+// к собеседникам не пересоздаются, меняется только путь сигнала внутри графа.
+async function applyVoiceChanger() {
+    const myId = ++voiceChangerApplyId;
+    const ctx = audioContext, inNode = micGainNode, outNode = voiceOutNode;
+    if (!ctx || !inNode || !outNode) return;
+
+    disposeVoiceChain();
+    try { inNode.disconnect(); } catch (e) { /* ignore */ }
+
+    if (voiceChangerEnabled && ctx.audioWorklet && typeof AudioWorkletNode !== 'undefined') {
+        try {
+            await ensureVoiceChangerModule(ctx);
+            if (myId !== voiceChangerApplyId || micGainNode !== inNode) return; // пришёл более свежий вызов
+            const node = new AudioWorkletNode(ctx, VOICE_CHANGER_PROCESSOR_NAME, {
+                numberOfInputs: 1,
+                numberOfOutputs: 1,
+                outputChannelCount: [1]
+            });
+            node.parameters.get('ratio').value = semitonesToRatio(voiceChangerSemitones);
+
+            const highpass = ctx.createBiquadFilter();
+            highpass.type = 'highpass';
+            highpass.frequency.value = 130;
+            const shelf = ctx.createBiquadFilter();
+            shelf.type = 'highshelf';
+            shelf.frequency.value = 3200;
+            shelf.gain.value = 3;
+            // Кроссфейд двух линий задержки чуть «проседает» по громкости (около -3 дБ) —
+            // компенсируем, чтобы с эффектом голос не звучал тише, чем без него.
+            const makeup = ctx.createGain();
+            makeup.gain.value = 1.3;
+
+            inNode.connect(node);
+            node.connect(highpass);
+            highpass.connect(shelf);
+            shelf.connect(makeup);
+            makeup.connect(outNode);
+            voiceChain = { node, highpass, shelf, makeup };
+            return;
+        } catch (e) {
+            console.warn('[Голос] Не удалось включить изменение голоса, отправляем как есть:', e);
+        }
+    }
+    if (myId !== voiceChangerApplyId || micGainNode !== inNode) return;
+    try { inNode.connect(outNode); } catch (e) { /* ignore */ }
+}
+
 // ---------- Пункт оптимизации №5: RMS-метр громкости через AudioWorklet ----------
 // Раньше уровень/RMS считался опросом AnalyserNode из setInterval в ГЛАВНОМ потоке —
 // это обычный JS-код, который конкурирует за время с рендерингом интерфейса и вообще
@@ -1272,6 +1443,10 @@ function saveRemoteVolume(username, percent) {
     if (typeof saved.noiseSuppression === 'boolean' && noiseCheck) noiseCheck.checked = saved.noiseSuppression;
     if (typeof saved.echoCancellation === 'boolean' && echoCheck) echoCheck.checked = saved.echoCancellation;
     if (typeof saved.agc === 'boolean' && agcCheck) agcCheck.checked = saved.agc;
+    if (typeof saved.voiceChangerEnabled === 'boolean') voiceChangerEnabled = saved.voiceChangerEnabled;
+    if (typeof saved.voiceChangerSemitones === 'number') {
+        voiceChangerSemitones = Math.min(VOICE_CHANGER_MAX_SEMITONES, Math.max(VOICE_CHANGER_MIN_SEMITONES, Math.round(saved.voiceChangerSemitones)));
+    }
     if (gateEnabledCheck) gateEnabledCheck.checked = gateEnabled;
     if (gateHangoverSlider) gateHangoverSlider.value = gateHangoverMs;
     if (gateHangoverValueDisplay) gateHangoverValueDisplay.innerText = `${gateHangoverMs} мс`;
@@ -1490,8 +1665,8 @@ function playNotifySound(key, volume = 0.6, roomId = null) {
 }
 
 // Новое сообщение в чате
-function playMessageSound() {
-    playNotifySound('message', getSoundVolume('message'), selectedRoom);
+function playMessageSound(room = selectedRoom) {
+    playNotifySound('message', getSoundVolume('message'), room);
 }
 
 // Кто-то зашёл в комнату
@@ -1523,14 +1698,27 @@ function playScreenShareSound() {
 
 // Кто-то упомянул нас через @ник в чате — отдельный, более заметный звук,
 // проигрывается ВМЕСТО обычного звука сообщения (см. обработчик 'chat message').
-function playMentionSound() {
-    playNotifySound('mention', getSoundVolume('mention'), selectedRoom);
+function playMentionSound(room = selectedRoom) {
+    playNotifySound('mention', getSoundVolume('mention'), room);
 }
 
 // Мелодия начала созвона — рингтон для участника, которому начинают звонить.
 // Вызывающий её не слышит; звук включается отдельно для каждого канала.
+// Настройка «Не беспокоить в звонке» (Спец. возможности): пока человек разговаривает в
+// голосовом канале с кем-то, мелодия начала другого созвона не играет. Хранится на устройстве.
+const CALLSTART_QUIET_IN_CALL_KEY = 'mute:callstartQuietInCall';
+let callstartQuietInCall = false;
+try { callstartQuietInCall = localStorage.getItem(CALLSTART_QUIET_IN_CALL_KEY) === '1'; } catch (e) { /* ignore */ }
+
+// «В гс с кем-то» — мы в голосовом канале и там есть хотя бы один другой участник.
+function isInCallWithSomeone() {
+    if (!currentUser.room) return false;
+    return Object.keys(connectedUsers || {}).some(peerId => peerId !== myPeerId);
+}
+
 function playCallstartSound(roomId) {
     if (!roomId || !isCallstartEnabledForChannel(roomId)) return;
+    if (callstartQuietInCall && isInCallWithSomeone()) return;
     // Это рингтон для того, кому уже звонят: вызывающий сам его не слышит.
     playNotifySound('callstart', getSoundVolume('callstart'), roomId);
 }
@@ -2952,8 +3140,11 @@ async function initMediaStream(deviceId = null) {
 // трек продолжали бы висеть в памяти и в звонках.
 function teardownAudioGraph() {
     if (sourceNode) { try { sourceNode.disconnect(); } catch (e) { /* ignore */ } }
+    disposeVoiceChain();
     if (micGainNode) { try { micGainNode.disconnect(); } catch (e) { /* ignore */ } }
     micGainNode = null;
+    if (voiceOutNode) { try { voiceOutNode.disconnect(); } catch (e) { /* ignore */ } }
+    voiceOutNode = null;
     if (destinationNode) { try { destinationNode.disconnect(); } catch (e) { /* ignore */ } }
     destinationNode = null;
     if (processedTrack) { try { processedTrack.stop(); } catch (e) { /* ignore */ } }
@@ -2997,7 +3188,10 @@ async function setupAudioAnalyzer(stream) {
         sourceNode.connect(micGainNode);
 
         destinationNode = audioContext.createMediaStreamDestination();
-        micGainNode.connect(destinationNode);
+        // Всё, что уходит собеседникам (и в самопрослушивание), проходит через voiceOutNode —
+        // между ним и micGainNode при необходимости включается изменение голоса.
+        voiceOutNode = audioContext.createGain();
+        voiceOutNode.connect(destinationNode);
         processedTrack = destinationNode.stream.getAudioTracks()[0];
 
         // Самопрослушивание микрофона ("Слышать себя"): подключаем к уже обработанному
@@ -3009,7 +3203,8 @@ async function setupAudioAnalyzer(stream) {
             micMonitorGain.gain.value = micMonitorEnabled ? 1 : 0;
             micMonitorGain.connect(audioContext.destination);
         }
-        micGainNode.connect(micMonitorGain);
+        voiceOutNode.connect(micMonitorGain);
+        await applyVoiceChanger();
 
         if (analyserNode.__isWorklet) {
             processAudioLevel(analyserNode);
@@ -3370,6 +3565,7 @@ function selectRoomButton(btn) {
     roomButtons.forEach(b => b.classList.remove('active'));
     document.querySelectorAll('.custom-room-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
+    const previousRoom = selectedRoom;
     const roomChanged = selectedRoom !== roomName;
     selectedRoom = roomName;
 
@@ -3381,11 +3577,17 @@ function selectRoomButton(btn) {
         roomTitle.innerText = `Канал: ${displayName} (Просмотр)`;
     }
     connectRoomBtn.style.display = 'inline-block';
+    // Звонок не зависит от открытого канала: основной список остаётся списком звонка,
+    // а новый просматриваемый канал (если он не наш звонок) показывается отдельным блоком.
+    if (roomChanged) previewUsers = {};
+    renderPreviewUsers();
     socket.emit('get room users', roomName);
 
     // Чат — свой для каждого сервера. Переключаем его только если реально сменили комнату,
     // чтобы повторный клик (открывающий настройки сервера) не дёргал историю чата заново.
     if (roomChanged) {
+        // Пока в ленте ещё чат прежнего канала — запоминаем, докуда человек дочитал.
+        rememberChatReadPosition(previousRoom);
         setChatEnabled(true);
         closeMentionAutocomplete();
 
@@ -3399,15 +3601,19 @@ function selectRoomButton(btn) {
             // См. комментарий у socket.on('chat history') — один и тот же защитный
             // try/catch на сообщение нужен и здесь, иначе быстрый локальный рендер
             // из кэша мог так же обрываться после первого сообщения.
-            cachedHistory.forEach((msg) => {
-                try {
-                    renderChatMessage(msg);
-                } catch (err) {
-                    console.error('❌ Не удалось отрисовать сообщение из кэша:', err, msg);
-                }
-            });
+            renderChatBatch(cachedHistory, '❌ Не удалось отрисовать сообщение из кэша:');
+            chatRenderedRoom = roomName;
             markUnreadMessagesInChat(roomName);
+            // Нет новых сообщений — встаём на последнее прочитанное в этом канале.
+            if (!messagesDiv.querySelector('.unread-divider')) {
+                restoreChatPosition(chatReadPositionByRoom[roomName]);
+            }
+            // Свежая история с сервера перерисует чат целиком — запоминаем, что было
+            // непрочитанным, чтобы разделитель «Непрочитанные» не пропал при перерисовке.
+            unreadSnapshotByRoom.set(String(roomName), { ids: getUnreadIds(roomName), at: Date.now() });
             markRoomRead(roomName);
+        } else {
+            unreadSnapshotByRoom.delete(String(roomName)); // старый снимок не должен гасить вспышку
         }
 
         socket.emit('select chat room', { room: roomName });
@@ -3421,6 +3627,38 @@ function selectRoomButton(btn) {
 
 roomButtons.forEach(btn => btn.addEventListener('click', () => selectRoomButton(btn)));
 
+// Название канала по его id (сервер мог быть переименован — берём из иконки в рейле).
+function roomDisplayName(room) {
+    if (!room) return '';
+    const btn = document.querySelector(`[data-room="${CSS.escape(String(room))}"]`);
+    return btn?.getAttribute('data-display-name') || String(room);
+}
+
+// Строка «в каком канале вы в звонке» в боковой панели. Звонок живёт независимо от того,
+// какой канал открыт в чате, поэтому здесь есть «Выйти», а по клику на название можно
+// вернуться в канал звонка.
+function renderCallHeader() {
+    if (!currentUser.room) {
+        roomNameDisplay.classList.remove('in-call');
+        roomNameDisplay.innerHTML = `${ROOM_OUT_ICON_SVG}<span>Вы не в звонке</span>`;
+        return;
+    }
+    roomNameDisplay.classList.add('in-call');
+    roomNameDisplay.innerHTML = `${ROOM_IN_ICON_SVG}<span class="call-room-name" title="Перейти в канал звонка">${escapeHtml(roomDisplayName(currentUser.room))}</span><button type="button" class="call-leave-mini" title="Покинуть звонок">Выйти</button>`;
+}
+
+roomNameDisplay.addEventListener('click', (e) => {
+    if (!currentUser.room) return;
+    if (e.target.closest('.call-leave-mini')) {
+        leaveVoiceChannel();
+        return;
+    }
+    if (e.target.closest('.call-room-name') && currentUser.room !== selectedRoom) {
+        const btn = document.querySelector(`.custom-room-btn[data-room="${CSS.escape(String(currentUser.room))}"]`);
+        if (btn) selectRoomButton(btn);
+    }
+});
+
 function connectToSelectedRoom() {
     if (!selectedRoom) return;
     // При входе в войс не оставляем уже проигрывающуюся мелодию созвона/превью.
@@ -3433,11 +3671,13 @@ function connectToSelectedRoom() {
 
     if (currentUser.room) leaveVoiceChannel();
     currentUser.room = selectedRoom;
-    const activeBtn = document.querySelector(`[data-room="${CSS.escape(selectedRoom)}"]`);
-    const displayName = activeBtn?.getAttribute('data-display-name') || selectedRoom;
-    roomNameDisplay.innerHTML = `${ROOM_IN_ICON_SVG}<span>${escapeHtml(displayName)}</span>`;
+    const displayName = roomDisplayName(selectedRoom);
+    renderCallHeader();
     roomTitle.innerText = `Канал: ${displayName}`;
     setConnectRoomButtonState(true);
+    // Мы теперь в звонке именно этого канала — отдельный «просмотр» не нужен.
+    previewUsers = {};
+    renderPreviewUsers();
     screenBtn.disabled = false;
     screenBtn.title = '';
 
@@ -3552,6 +3792,10 @@ function addCustomServerButton(data) {
         }
     });
     customServersList.appendChild(btn);
+    // Иконки пересоздаются (список серверов пришёл заново, сервер переименовали) —
+    // без этого кружок непрочитанных пропадал, хотя сами данные ещё лежат в unreadByRoom.
+    updateUnreadBadge(btn.dataset.room);
+    if (currentUser.room === btn.dataset.room) renderCallHeader();
     return btn;
 }
 
@@ -3798,8 +4042,10 @@ function leaveVoiceChannel() {
     // Звук собственного выхода из комнаты
     playLeaveSound();
     currentUser.room = null;
-    roomTitle.innerText = `Канал: ${selectedRoom} (Просмотр)`;
-    roomNameDisplay.innerHTML = `${ROOM_OUT_ICON_SVG}<span>Вы не в звонке</span>`;
+    roomTitle.innerText = `Канал: ${roomDisplayName(selectedRoom)} (Просмотр)`;
+    renderCallHeader();
+    previewUsers = {};
+    renderPreviewUsers();
     setConnectRoomButtonState(false);
     screenBtn.disabled = true;
     screenBtn.title = 'Сначала подключитесь к голосовому каналу';
@@ -3819,31 +4065,38 @@ function cleanupCalls() {
     remoteVideos.innerHTML = '';
 }
 
+// Кто-то начал созвон (пустой голосовой канал стал занят). Сервер шлёт это событие всем
+// участникам сервера, независимо от того, какой чат у них сейчас открыт. Сам звонящий
+// и те, кто уже в этом звонке, его не получают. Рингтон остановится, как только
+// человек нажмёт «Подключиться» (connectToSelectedRoom → stopNotifySound('callstart')).
+socket.on('call started', ({ room } = {}) => {
+    if (!room || currentUser.room === room) return;
+    playCallstartSound(room);
+});
+
 socket.on('room users', (usersInRoom, room) => {
-    const previousRoomUserCount = room ? Number(roomUserCounts[room] || 0) : 0;
     const nextRoomUserCount = Object.keys(usersInRoom || {}).length;
     if (room) roomUserCounts[room] = nextRoomUserCount;
 
-    // Рингтон означает именно начало нового голосового звонка:
-    // когда пустой голосовой канал становится занятым первым участником.
-    // Его слышат только те, кто смотрит этот канал, но ещё НЕ вошёл в него.
-    // Сам создатель/первый вошедший рингтон не слышит.
-    // Как только наблюдатель нажмёт «Подключиться», connectToSelectedRoom()
-    // сразу остановит текущий рингтон через stopNotifySound('callstart').
-    if (room && previousRoomUserCount === 0 && nextRoomUserCount === 1 &&
-        room === selectedRoom && currentUser.room !== room) {
-        playCallstartSound(room);
-    }
+    // Рингтон начала созвона здесь больше НЕ играет: этот список приходит только тем,
+    // у кого открыт именно этот канал, а звонок должен быть слышен и когда человек сидит
+    // в другом чате. Теперь рингтон запускает отдельное событие 'call started' (см. выше).
     // Сервер шлёт список и участникам канала, и тем, кто просто смотрит сервер (см. broadcastRoomUsers).
     // `room` — какой именно канал обновился: обновления чужих каналов игнорируем.
     const inVoiceRoom = room ? room === currentUser.room : currentUser.room === selectedRoom;
     if (room && !inVoiceRoom && room !== selectedRoom) return;
 
     if (!inVoiceRoom) {
-        // Только смотрим канал (в звонке нас в нём нет) — просто перерисовываем список.
-        // Если мы сидим в голосе другого канала, его состояние (connectedUsers) не трогаем.
-        if (!currentUser.room) connectedUsers = usersInRoom;
-        updateVoiceUsersList(usersInRoom);
+        if (!currentUser.room) {
+            // Не в звонке — основной список показывает просматриваемый канал.
+            connectedUsers = usersInRoom;
+            updateVoiceUsersList(usersInRoom);
+        } else {
+            // Мы в звонке ДРУГОГО канала: основной список (наш звонок) не трогаем,
+            // а просматриваемый канал показываем отдельным блоком ниже.
+            previewUsers = usersInRoom || {};
+            renderPreviewUsers();
+        }
         return;
     }
 
@@ -3867,8 +4120,8 @@ socket.on('room users', (usersInRoom, room) => {
         micMuted: isMuted,
         deafened: isDeafened
     };
-    // Список рисуем, только если сейчас открыт именно этот канал (иначе смотрим другой).
-    if (!room || room === selectedRoom) updateVoiceUsersList();
+    // Список звонка рисуем всегда — он не зависит от того, какой канал открыт в чате.
+    updateVoiceUsersList();
 
     for (let peerId in usersInRoom) {
         // ВАЖНО: раньше звонок инициировали ОБЕ стороны одновременно (каждый, у кого
@@ -4206,7 +4459,7 @@ socket.on('user connected', ({ username, avatar, peerId }) => {
     // Теперь просто дополняем существующую запись, а не заменяем её целиком.
     const prev = connectedUsers[peerId] || {};
     connectedUsers[peerId] = { ...prev, username, avatar };
-    if (currentUser.room === selectedRoom) updateVoiceUsersList();
+    if (currentUser.room) updateVoiceUsersList();
 
     // Звук входа — только если мы сами сейчас в голосовом канале и зашёл не мы сами
     if (isNewcomer && peerId !== myPeerId && currentUser.room) {
@@ -4220,7 +4473,7 @@ socket.on('user disconnected', (peerId) => {
     cleanupRemoteAudio(peerId);
     delete remoteStreamsByPeer[peerId];
     sharingPeers.delete(peerId);
-    if (currentUser.room === selectedRoom) updateVoiceUsersList();
+    if (currentUser.room) updateVoiceUsersList();
     if (listenSession && listenSession.peerId === peerId) endListenSession(true);
 
     // Звук выхода — только если мы сами сейчас в голосовом канале
@@ -4260,7 +4513,8 @@ const ROOM_OUT_ICON_SVG = `<svg viewBox="0 0 24 24" width="14" height="14" fill=
 // Хранится на этом устройстве.
 
 function buildOffCallRows(users) {
-    const code = customCodeFromRoomName(selectedRoom);
+    // Основной список — это звонок (если мы в нём), иначе просматриваемый канал.
+    const code = customCodeFromRoomName(currentUser.room || selectedRoom);
     if (!code) return [];
     const members = mentionMembersCache[code];
     if (!members || !members.length) return [];
@@ -4289,30 +4543,50 @@ function buildOffCallRows(users) {
     });
 }
 
+// Строка участника. interactive=false — для блока «просмотр» (мы в этом канале не
+// в звонке): без id (чтобы не дублировать id строк основного списка) и без громкости.
+function buildVoiceUserRow(id, user, interactive = true) {
+    const row = document.createElement('div');
+    row.className = 'voice-user-row';
+    const ids = (kind) => interactive ? `id="${kind}-${id}"` : '';
+    row.innerHTML = `
+        <div class="user-avatar-wrap">
+            <img src="${user.avatar || 'https://api.dicebear.com/7.x/identicon/svg?seed=def'}" class="user-avatar" ${ids('avatar')} alt="">
+            <span class="status-badge mic-mute-badge${(user.micMuted || user.deafened) ? ' visible' : ''}" ${ids('mic-badge')} title="Микрофон выключен">${MIC_OFF_ICON_SVG}</span>
+            <span class="status-badge deafen-badge${user.deafened ? ' visible' : ''}" ${ids('deafen-badge')} title="Наушники выключены">${DEAFEN_OFF_ICON_SVG}</span>
+        </div>
+        <span class="voice-user-name" title="${escapeHtml(user.username || 'Участник')}" style="color:${getUserColor(user.username)}">${escapeHtml(user.username || 'Участник')}</span>
+    `;
+    // Громкость каждого собеседника можно менять только у себя — по клику на его
+    // строку в списке. На себя самого это не вешаем.
+    if (interactive && id !== myPeerId) {
+        row.classList.add('clickable');
+        row.title = 'Нажать, чтобы изменить громкость только для себя';
+        row.addEventListener('click', () => openUserVolumePopover(id, row, user.username || 'Участник'));
+    }
+    return row;
+}
+
+// Участники голосового канала, который мы ПРОСМАТРИВАЕМ, пока сидим в звонке другого.
+function renderPreviewUsers() {
+    const wrap = document.getElementById('voice-preview');
+    const title = document.getElementById('voice-preview-title');
+    const cont = document.getElementById('voice-preview-container');
+    if (!wrap || !title || !cont) return;
+    const ids = Object.keys(previewUsers || {});
+    const show = !!currentUser.room && !!selectedRoom && currentUser.room !== selectedRoom && ids.length > 0;
+    cont.innerHTML = '';
+    if (!show) { wrap.style.display = 'none'; return; }
+    title.textContent = `Просмотр: ${roomDisplayName(selectedRoom)} — ${ids.length}`;
+    ids.forEach(id => cont.appendChild(buildVoiceUserRow(id, previewUsers[id], false)));
+    wrap.style.display = '';
+}
+
 function updateVoiceUsersList(users = connectedUsers) {
     lastRenderedVoiceUsers = users;
     voiceUsersContainer.innerHTML = '';
     for (let id in users) {
-        let user = users[id];
-        let row = document.createElement('div');
-        row.className = 'voice-user-row';
-        row.innerHTML = `
-            <div class="user-avatar-wrap">
-                <img src="${user.avatar || 'https://api.dicebear.com/7.x/identicon/svg?seed=def'}" class="user-avatar" id="avatar-${id}" alt="">
-                <span class="status-badge mic-mute-badge${(user.micMuted || user.deafened) ? ' visible' : ''}" id="mic-badge-${id}" title="Микрофон выключен">${MIC_OFF_ICON_SVG}</span>
-                <span class="status-badge deafen-badge${user.deafened ? ' visible' : ''}" id="deafen-badge-${id}" title="Наушники выключены">${DEAFEN_OFF_ICON_SVG}</span>
-            </div>
-            <span class="voice-user-name" title="${escapeHtml(user.username || 'Участник')}" style="color:${getUserColor(user.username)}">${escapeHtml(user.username || 'Участник')}</span>
-        `;
-        // Громкость каждого собеседника можно менять только у себя — по клику на его
-        // строку в списке. На себя самого это не вешаем (собственную громкость менять
-        // не через что — её регулирует "Громкость своего микрофона" в настройках).
-        if (id !== myPeerId) {
-            row.classList.add('clickable');
-            row.title = 'Нажать, чтобы изменить громкость только для себя';
-            row.addEventListener('click', () => openUserVolumePopover(id, row, user.username || 'Участник'));
-        }
-        voiceUsersContainer.appendChild(row);
+        voiceUsersContainer.appendChild(buildVoiceUserRow(id, users[id], true));
     }
 
     // Остальные участники сервера — в том же списке, ниже тех, кто в звонке.
@@ -4336,9 +4610,22 @@ function updateVoiceUsersList(users = connectedUsers) {
     check.addEventListener('change', () => {
         showOffCallMembers = check.checked;
         try { localStorage.setItem(SHOW_OFFCALL_KEY, showOffCallMembers ? '1' : '0'); } catch (e) { /* ignore */ }
-        const code = customCodeFromRoomName(selectedRoom);
+        const code = customCodeFromRoomName(currentUser.room || selectedRoom);
         if (showOffCallMembers && code) socket.emit('get server members', { code });
         updateVoiceUsersList(lastRenderedVoiceUsers);
+    });
+})();
+
+// Переключатель «Не беспокоить в звонке» в Спец. возможностях
+(function initCallstartQuietInCallSetting() {
+    const check = document.getElementById('callstart-quiet-in-call-check');
+    if (!check) return;
+    check.checked = callstartQuietInCall;
+    check.addEventListener('change', () => {
+        callstartQuietInCall = check.checked;
+        try { localStorage.setItem(CALLSTART_QUIET_IN_CALL_KEY, callstartQuietInCall ? '1' : '0'); } catch (e) { /* ignore */ }
+        // Если уже играет чужой рингтон, а мы сейчас в звонке — сразу его глушим.
+        if (callstartQuietInCall && isInCallWithSomeone()) stopNotifySound('callstart');
     });
 })();
 
@@ -5108,6 +5395,51 @@ if (micVolumeSlider) {
     });
 }
 
+// Изменение голоса («Девчачий голос»): включение и высота. Работает на лету, без
+// пересборки микрофона и без обрыва звонка.
+(function initVoiceChangerControls() {
+    const check = document.getElementById('voice-changer-check');
+    const slider = document.getElementById('voice-changer-pitch-slider');
+    const valueEl = document.getElementById('voice-changer-pitch-value');
+    const group = document.getElementById('voice-changer-pitch-group');
+    const hint = document.getElementById('voice-changer-hint');
+    if (!check || !slider) return;
+
+    const supported = typeof AudioWorkletNode !== 'undefined' && !!(window.AudioContext || window.webkitAudioContext);
+    slider.min = VOICE_CHANGER_MIN_SEMITONES;
+    slider.max = VOICE_CHANGER_MAX_SEMITONES;
+    slider.value = voiceChangerSemitones;
+    check.checked = voiceChangerEnabled && supported;
+    const refresh = () => {
+        if (valueEl) valueEl.innerText = `+${voiceChangerSemitones}`;
+        if (group) group.classList.toggle('control-group-disabled', !check.checked);
+        slider.disabled = !check.checked;
+    };
+    refresh();
+
+    if (!supported) {
+        check.disabled = true;
+        if (hint) hint.innerText = 'Изменение голоса не поддерживается в этом браузере (нужен AudioWorklet и HTTPS).';
+        return;
+    }
+
+    check.addEventListener('change', () => {
+        voiceChangerEnabled = check.checked;
+        saveAudioSettings({ voiceChangerEnabled });
+        refresh();
+        if (audioContext && audioContext.state === 'suspended') audioContext.resume().catch(() => {});
+        applyVoiceChanger();
+    });
+    slider.addEventListener('input', () => {
+        voiceChangerSemitones = parseInt(slider.value, 10);
+        saveAudioSettings({ voiceChangerSemitones });
+        refresh();
+        if (voiceChain && voiceChain.node) {
+            voiceChain.node.parameters.get('ratio').value = semitonesToRatio(voiceChangerSemitones);
+        }
+    });
+})();
+
 thresholdSlider.addEventListener('input', (e) => {
     gateThreshold = parseInt(e.target.value, 10);
     thresholdValueDisplay.innerText = `${gateThreshold} дБ`;
@@ -5298,6 +5630,12 @@ function renderMessageTextWithMentions(text, members, myUsername) {
 
 function renderChatMessage({ id, username, user, avatar, text, image_url, created_at, whisper_to }) {
     const name = username || user || 'Участник';
+    // Прилипать к низу нужно, только если человек и так смотрит на конец чата (или это
+    // его собственное сообщение). Измеряем ДО добавления сообщения — после него
+    // scrollHeight уже вырастет. Раньше чат прыгал вниз при каждом новом сообщении,
+    // даже если человек читал историю выше.
+    // Своё сообщение тоже НЕ тянет вниз, если человек в этот момент читает историю выше.
+    const wasAtBottom = chatPinnedToBottom || isChatNearBottom();
     // created_at приходит с сервера как Date.now() (мс) — если вдруг отсутствует или же
     // после парсинга получилась невалидная дата (например, у старых записей в БД, ещё
     // до фикса с BIGINT-как-строкой), подстраховываемся текущим временем, чтобы не
@@ -5372,15 +5710,18 @@ function renderChatMessage({ id, username, user, avatar, text, image_url, create
         messagesDiv.appendChild(msg);
     }
     // Если окно уже неактивно, не запускаем GIF, добавленный в фоне.
-    if (chatGifsPaused && isChatGif(part.querySelector('img.chat-image'))) {
-        const gif = part.querySelector('img.chat-image');
-        const src = gif.getAttribute('src');
-        if (src && src !== GIF_PAUSE_PLACEHOLDER) {
-            gif.dataset.gifSrc = src;
-            gif.src = GIF_PAUSE_PLACEHOLDER;
-        }
+    // ВАЖНО: раньше здесь стояли имена chatGifsPaused / isChatGif, которых нигде нет —
+    // на КАЖДОМ сообщении бросался ReferenceError. Он обрывал и renderChatMessage (после
+    // него не срабатывали ни прокрутка вниз, ни trimRenderedMessages), и обработчик
+    // 'chat message' целиком, поэтому в открытом чате не играл звук нового сообщения.
+    // Настоящее состояние паузы GIF — gifsPaused (см. блок GIF ниже по файлу).
+    if (gifsPaused) part.querySelectorAll('img').forEach(pauseGifElement);
+    // При пакетной отрисовке истории (chatBulkRender) позицию выставляет вызывающий код —
+    // либо вниз, либо на последнее прочитанное сообщение.
+    if (!chatBulkRender && wasAtBottom) {
+        scrollChatToBottom();
+        holdChatAnchor({ type: 'bottom' });
     }
-    messagesDiv.scrollTop = messagesDiv.scrollHeight;
     trimRenderedMessages();
 }
 
@@ -5423,15 +5764,152 @@ socket.on('delete message', ({ id, room }) => {
     if (el) removeMessagePart(el);
 });
 
+// ---------- Позиция прокрутки чата ----------
+// chatBulkRender — идёт пакетная отрисовка истории: не скроллим на каждом сообщении.
+// Якорь позиции: картинки грузятся уже после отрисовки и меняют высоту чата, из-за чего
+// позиция «уезжала». Пока человек сам не начал скроллить, при каждой загрузке
+// картинки возвращаем чат на нужное место (но не дольше нескольких секунд).
+const CHAT_ANCHOR_HOLD_MS = 3000;
+
+function isChatNearBottom(threshold = 120) {
+    return messagesDiv.scrollHeight - messagesDiv.scrollTop - messagesDiv.clientHeight <= threshold;
+}
+// Флаг обновляем только на реальной прокрутке: когда картинка догрузилась и чат «вырос»,
+// scroll не срабатывает — и человек, который был внизу, по-прежнему считается «внизу».
+messagesDiv.addEventListener('scroll', () => { chatPinnedToBottom = isChatNearBottom(); }, { passive: true });
+function scrollChatToBottom() {
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    chatPinnedToBottom = true;
+}
+// Ставит чат так, чтобы элемент (разделитель «Непрочитанные») был примерно на трети
+// высоты: сверху виден кусочек уже прочитанного, ниже — новое.
+function scrollChatToElement(el) {
+    if (!el || !el.isConnected) return;
+    const top = el.getBoundingClientRect().top - messagesDiv.getBoundingClientRect().top + messagesDiv.scrollTop;
+    messagesDiv.scrollTop = Math.max(0, top - Math.round(messagesDiv.clientHeight * 0.3));
+    chatPinnedToBottom = isChatNearBottom();
+}
+function holdChatAnchor(anchor) {
+    chatScrollAnchor = Object.assign({ until: Date.now() + CHAT_ANCHOR_HOLD_MS }, anchor);
+    // Сразу после отрисовки браузер ещё дорассчитывает высоты (шрифты, переносы,
+    // картинки) — повторяем прокрутку на следующих кадрах, пока человек сам не тронул чат.
+    requestAnimationFrame(() => {
+        applyChatAnchor();
+        requestAnimationFrame(applyChatAnchor);
+    });
+}
+function applyChatAnchor() {
+    const a = chatScrollAnchor;
+    if (!a || Date.now() > a.until) { chatScrollAnchor = null; return; }
+    if (a.type === 'bottom') scrollChatToBottom();
+    else if (a.type === 'element') scrollChatToElement(a.el);
+    else if (a.type === 'read') scrollChatToReadMessage(a.el);
+}
+
+// ---------- Последнее прочитанное сообщение ----------
+// Ставит чат так, чтобы сообщение el было у нижнего края — ровно как человек его оставил.
+function scrollChatToReadMessage(el) {
+    if (!el || !el.isConnected) return;
+    const boxTop = messagesDiv.getBoundingClientRect().top;
+    const elBottom = el.getBoundingClientRect().bottom - boxTop + messagesDiv.scrollTop;
+    messagesDiv.scrollTop = Math.max(0, elBottom - messagesDiv.clientHeight + 12);
+    chatPinnedToBottom = isChatNearBottom();
+}
+
+// Что человек успел прочитать: у конца чата — «всё», иначе — самое нижнее сообщение,
+// которое уже показалось на экране.
+function computeChatReadPosition() {
+    const parts = messagesDiv.querySelectorAll('.msg-part[data-id]');
+    if (!parts.length) return null;
+    if (chatPinnedToBottom || isChatNearBottom()) {
+        return { id: String(parts[parts.length - 1].dataset.id), atBottom: true };
+    }
+    const viewBottom = messagesDiv.getBoundingClientRect().bottom;
+    let found = null;
+    for (const part of parts) {
+        if (part.getBoundingClientRect().top < viewBottom - 8) found = part;
+        else break;
+    }
+    return found ? { id: String(found.dataset.id), atBottom: false } : null;
+}
+
+// Запоминаем позицию, пока в messagesDiv ещё чат ЭТОЙ комнаты (до переключения/закрытия).
+function rememberChatReadPosition(room) {
+    if (!room || chatRenderedRoom !== room) return;
+    const pos = computeChatReadPosition();
+    if (!pos) return;
+    delete chatReadPositionByRoom[room];
+    chatReadPositionByRoom[room] = pos;
+    const keys = Object.keys(chatReadPositionByRoom);
+    if (keys.length > CHAT_READ_POS_MAX_ROOMS) {
+        keys.slice(0, keys.length - CHAT_READ_POS_MAX_ROOMS).forEach(k => delete chatReadPositionByRoom[k]);
+    }
+    try { localStorage.setItem(CHAT_READ_POS_KEY, JSON.stringify(chatReadPositionByRoom)); } catch (e) { /* ignore */ }
+}
+
+// Возвращает чат на сохранённую позицию. false — сообщения уже нет в ленте (осталось внизу).
+function restoreChatPosition(pos) {
+    if (!pos) return false;
+    if (pos.atBottom) {
+        scrollChatToBottom();
+        holdChatAnchor({ type: 'bottom' });
+        return true;
+    }
+    const el = messagesDiv.querySelector(`.msg-part[data-id="${CSS.escape(String(pos.id))}"]`);
+    if (!el) return false;
+    scrollChatToReadMessage(el);
+    holdChatAnchor({ type: 'read', el });
+    return true;
+}
+
+window.addEventListener('pagehide', () => rememberChatReadPosition(chatRenderedRoom));
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) rememberChatReadPosition(chatRenderedRoom);
+});
+messagesDiv.addEventListener('load', applyChatAnchor, true); // load у <img> не всплывает — ловим в capture
+['wheel', 'touchstart', 'mousedown', 'keydown'].forEach(ev =>
+    messagesDiv.addEventListener(ev, () => { chatScrollAnchor = null; }, { passive: true }));
+
+// Отрисовывает пачку сообщений (история / кэш). Каждое — в своём try/catch, см.
+// комментарий у socket.on('chat history'). По умолчанию после пачки — прокрутка вниз;
+// если есть непрочитанные, markUnreadMessagesInChat потом переставит чат на них.
+function renderChatBatch(list, errLabel) {
+    chatBulkRender = true;
+    try {
+        (list || []).forEach((msg) => {
+            try {
+                renderChatMessage(msg);
+            } catch (err) {
+                console.error(errLabel, err, msg);
+            }
+        });
+    } finally {
+        chatBulkRender = false;
+    }
+    scrollChatToBottom();
+    holdChatAnchor({ type: 'bottom' });
+}
+
 function markUnreadMessagesInChat(room) {
     const ids = getUnreadIds(room);
+    const snapshot = unreadSnapshotByRoom.get(String(room || ''));
+    if (snapshot) snapshot.ids.forEach(id => ids.add(id));
     if (!ids.size) return;
+    // Сколько уже прошло с момента первой отрисовки (если чат перерисовывается
+    // свежей историей сразу после показа из кэша) — вспышка должна быть одна.
+    const elapsed = snapshot ? Date.now() - snapshot.at : 0;
+    const flash = elapsed < UNREAD_FLASH_MS;
     const parts = Array.from(messagesDiv.querySelectorAll('.msg-part[data-id]'));
     let firstUnread = null;
     parts.forEach(part => {
         if (ids.has(String(part.dataset.id))) {
-            part.classList.add('unread-message');
             if (!firstUnread) firstUnread = part;
+            if (!flash) return; // вспышка уже отыграла — сообщение выглядит как обычное
+            part.classList.add('unread-message');
+            // Отрицательная задержка «перематывает» анимацию на уже прошедшее время.
+            if (elapsed > 0) part.style.animationDelay = `-${elapsed}ms`;
+            // Убираем класс после окончания, чтобы не оставлять лишнего в DOM.
+            setTimeout(() => part.classList.remove('unread-message'), UNREAD_FLASH_MS - elapsed + 50);
         }
     });
     if (firstUnread && !messagesDiv.querySelector('.unread-divider')) {
@@ -5439,6 +5917,22 @@ function markUnreadMessagesInChat(room) {
         divider.className = 'unread-divider';
         divider.textContent = 'Непрочитанные';
         firstUnread.parentElement?.before(divider);
+    }
+    // Заходим в канал — показываем место, где закончилось прочитанное, а не конец чата:
+    // разделитель «Непрочитанные» встаёт примерно на трети высоты, а прямо над ним
+    // виден последний прочитанный кусок. Если над разделителем читать нечего (непрочитано
+    // всё, что есть в ленте) — прыгать некуда, остаёмся внизу.
+    const marker = messagesDiv.querySelector('.unread-divider');
+    if (firstUnread && marker) {
+        const firstMsg = messagesDiv.querySelector('.chat-message');
+        const hasReadAbove = !!firstMsg && !!(firstMsg.compareDocumentPosition(marker) & Node.DOCUMENT_POSITION_FOLLOWING);
+        if (hasReadAbove) {
+            scrollChatToElement(marker);
+            holdChatAnchor({ type: 'element', el: marker });
+        } else {
+            scrollChatToBottom();
+            holdChatAnchor({ type: 'bottom' });
+        }
     }
 }
 
@@ -5448,6 +5942,12 @@ socket.on('chat history', (data) => {
     const room = data && data.room;
     const history = (data && data.messages) || [];
     if (room && room !== selectedRoom) return;
+
+    const targetRoom = room || selectedRoom;
+    // Если этот же канал уже показан (свежая история пришла после кэша или после
+    // переподключения) — запоминаем, где человек сейчас, и возвращаем его туда же,
+    // а не бросаем в конец чата.
+    const liveView = chatRenderedRoom === targetRoom ? computeChatReadPosition() : null;
 
     setCachedChatHistory(room || selectedRoom, history);
     messagesDiv.innerHTML = '';
@@ -5462,16 +5962,58 @@ socket.on('chat history', (data) => {
     // непрочитанного) тоже не выполнялся. Изоляция ошибки на уровне одного
     // сообщения гарантирует, что вся остальная история и кружок непрочитанных
     // отрисуются, даже если какое-то одно сообщение не смогло отрендериться.
-    history.forEach((msg) => {
-        try {
-            renderChatMessage(msg);
-        } catch (err) {
-            console.error('❌ Не удалось отрисовать сообщение истории:', err, msg);
-        }
-    });
-    markUnreadMessagesInChat(room || selectedRoom);
-    markRoomRead(room || selectedRoom);
+    renderChatBatch(history, '❌ Не удалось отрисовать сообщение истории:');
+    chatRenderedRoom = targetRoom;
+    markUnreadMessagesInChat(targetRoom);
+    unreadSnapshotByRoom.delete(String(targetRoom || ''));
+    markRoomRead(targetRoom);
+    if (liveView) {
+        restoreChatPosition(liveView);
+    } else if (!messagesDiv.querySelector('.unread-divider')) {
+        restoreChatPosition(chatReadPositionByRoom[targetRoom]);
+    }
 });
+
+// Решает, какой звук/тост показать для чужого сообщения. Работает и для открытого
+// канала, и для остальных серверов пользователя (там сообщение только копит кружок
+// непрочитанных и играет звук, но в ленту не рендерится).
+function notifyIncomingMessage(payload, room, senderName) {
+    const isCurrent = room === selectedRoom;
+    const code = customCodeFromRoomName(room);
+    const cachedMembers = (code && mentionMembersCache[code]) || [];
+    // Для неоткрытого сервера список участников мог ещё не загружаться — добавляем
+    // самих себя, иначе @упоминание не распознается и прозвучит обычный звук.
+    const candidates = isCurrent
+        ? getMentionCandidates()
+        : [...cachedMembers, { username: currentUser.username }];
+    const mentions = findMentionMatches(payload.text || '', candidates);
+    const meLower = (currentUser.username || '').toLowerCase();
+    const iAmMentioned = !!meLower && mentions.some(m => m.username.toLowerCase() === meLower);
+    const isWhisper = Array.isArray(payload.whisper_to) && payload.whisper_to.length > 0;
+    // "f@" отмечает всех, но не в шёпоте (шёпот видят только его адресаты)
+    const everyoneMentioned = !isWhisper && findEveryoneMatches(payload.text || '').length > 0;
+
+    // В тосте про чужой сервер добавляем его название, иначе непонятно, откуда сообщение.
+    let where = '';
+    if (!isCurrent) {
+        const btn = document.querySelector(`[data-room="${CSS.escape(String(room))}"]`);
+        const name = btn?.getAttribute('data-display-name');
+        if (name) where = ` (${name})`;
+    }
+
+    if (isWhisper) {
+        playMentionSound(room);
+        showToast(`${senderName} прошептал(а) вам${where}`);
+    } else if (iAmMentioned) {
+        playMentionSound(room);
+        showToast(`${senderName} упомянул(а) вас в чате${where}`);
+    } else if (everyoneMentioned) {
+        playMentionSound(room);
+        showToast(`${senderName} отметил(а) всех участников${where}`);
+    } else {
+        playMessageSound(room);
+    }
+}
 
 socket.on('chat message', (payload) => {
     const room = payload.room || selectedRoom;
@@ -5479,40 +6021,27 @@ socket.on('chat message', (payload) => {
     const normName = (n) => String(n || '').trim().toLowerCase();
     const isOwnMessage = !!normName(currentUser.username) && normName(senderName) === normName(currentUser.username);
 
-    // Сообщение другой комнаты не рендерим, но сохраняем уведомление.
+    // Сообщение другого сервера: не рендерим в ленту, но копим кружок непрочитанных
+    // и проигрываем звук (сервер присылает такие сообщения всем участникам сервера,
+    // даже если они сейчас смотрят другой канал или сидят в войсе другого сервера).
     if (room !== selectedRoom) {
-        if (!isOwnMessage) addUnreadMessage(room, payload);
+        if (isOwnMessage) return;
+        appendMessageToChatCache(room, payload);
+        addUnreadMessage(room, payload);
+        notifyIncomingMessage(payload, room, senderName);
         return;
     }
 
     appendMessageToChatCache(room, payload);
-    renderChatMessage(payload);
+    try {
+        renderChatMessage(payload);
+    } catch (err) {
+        // Сбой отрисовки одного сообщения не должен отключать звук уведомления.
+        console.error('❌ Не удалось отрисовать новое сообщение:', err, payload);
+    }
 
     // Звук — только для чужих сообщений, свои же мы и так видим, что отправили.
-    if (!isOwnMessage) {
-        // Если в сообщении упомянули нас по нику — играем отдельный, более заметный
-        // звук упоминания ВМЕСТО обычного звука сообщения (чтобы не звучало дважды),
-        // и показываем тост, чтобы не пропустить упоминание среди прочих сообщений.
-        const mentions = findMentionMatches(payload.text || '', getMentionCandidates());
-        const meLower = (currentUser.username || '').toLowerCase();
-        const iAmMentioned = !!meLower && mentions.some(m => m.username.toLowerCase() === meLower);
-        const isWhisper = Array.isArray(payload.whisper_to) && payload.whisper_to.length > 0;
-        // "f@" отмечает всех, но не в шёпоте (шёпот видят только его адресаты)
-        const everyoneMentioned = !isWhisper && findEveryoneMatches(payload.text || '').length > 0;
-
-        if (isWhisper) {
-            playMentionSound();
-            showToast(`${senderName} прошептал(а) вам`);
-        } else if (iAmMentioned) {
-            playMentionSound();
-            showToast(`${senderName} упомянул(а) вас в чате`);
-        } else if (everyoneMentioned) {
-            playMentionSound();
-            showToast(`${senderName} отметил(а) всех участников`);
-        } else {
-            playMessageSound();
-        }
-    }
+    if (!isOwnMessage) notifyIncomingMessage(payload, room, senderName);
 });
 
 // Сервер сообщает, почему сообщение не ушло (например, неверный ник после wh@)
@@ -5651,11 +6180,20 @@ messageInput.addEventListener('keydown', (e) => {
     }
 
     if (e.key === 'Enter' && messageInput.value.trim() && !messageInput.disabled) {
+        // Позицию меряем ДО отправки: вниз прокручиваем, только если человек и так
+        // находится у конца чата. Если он читает историю выше — не трогаем прокрутку.
+        const stickToBottom = chatPinnedToBottom || isChatNearBottom();
         socket.emit('chat message', { text: messageInput.value.trim() });
         messageInput.value = '';
         closeMentionAutocomplete();
+        if (stickToBottom) {
+            scrollChatToBottom();
+            holdChatAnchor({ type: 'bottom' });
+        }
     }
 });
+// Раньше здесь был обработчик 'input', который прокручивал чат вниз уже при первом
+// набранном символе. Теперь набор текста прокрутку не меняет — только отправка (см. выше).
 
 const attachBtn = document.getElementById('attach-image-btn');
 const attachInput = document.getElementById('attach-image-input');
@@ -5684,7 +6222,12 @@ if (attachBtn && attachInput) {
             const res = await fetch('/upload', { method: 'POST', body: formData });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Ошибка загрузки');
+            const stickToBottom = chatPinnedToBottom || isChatNearBottom();
             socket.emit('chat message', { text: '', imageUrl: data.url });
+            if (stickToBottom) {
+                scrollChatToBottom();
+                holdChatAnchor({ type: 'bottom' });
+            }
         } catch (err) {
             console.error('[Ошибка] Загрузка изображения:', err);
             alert('Не удалось загрузить изображение');
