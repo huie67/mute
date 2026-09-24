@@ -593,7 +593,16 @@ let previewUsers = {};          // участники просматриваем
 let chatBulkRender = false;     // идёт пакетная отрисовка истории — не скроллим на каждом сообщении
 let chatPinnedToBottom = true;  // человек сейчас у конца чата (обновляется по событию scroll)
 let chatScrollAnchor = null;    // удерживаемая позиция чата (см. holdChatAnchor)
-const UNREAD_JUMP_MAX_SCREENS = 1.5; // непрочитанного больше этого (в экранах) — не прыгаем на его начало, остаёмся внизу
+// Где человек остановился в каждом канале: { комната: { id последнего прочитанного сообщения, atBottom } }.
+// Нужно, чтобы при возврате в канал чат вставал на последнее прочитанное, а не куда попало.
+const CHAT_READ_POS_KEY = 'mute:chatReadPosition';
+const CHAT_READ_POS_MAX_ROOMS = 50;
+let chatRenderedRoom = null;       // чей чат сейчас отрисован в messagesDiv
+let chatReadPositionByRoom = {};
+try {
+    const rawPos = JSON.parse(localStorage.getItem(CHAT_READ_POS_KEY) || '{}');
+    if (rawPos && typeof rawPos === 'object' && !Array.isArray(rawPos)) chatReadPositionByRoom = rawPos;
+} catch (e) { /* ignore */ }
 const UNREAD_FLASH_MS = 1000; // должно совпадать с длительностью unread-flash в index.html
 
 loadUnreadState();
@@ -3400,6 +3409,7 @@ function selectRoomButton(btn) {
     roomButtons.forEach(b => b.classList.remove('active'));
     document.querySelectorAll('.custom-room-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
+    const previousRoom = selectedRoom;
     const roomChanged = selectedRoom !== roomName;
     selectedRoom = roomName;
 
@@ -3420,6 +3430,8 @@ function selectRoomButton(btn) {
     // Чат — свой для каждого сервера. Переключаем его только если реально сменили комнату,
     // чтобы повторный клик (открывающий настройки сервера) не дёргал историю чата заново.
     if (roomChanged) {
+        // Пока в ленте ещё чат прежнего канала — запоминаем, докуда человек дочитал.
+        rememberChatReadPosition(previousRoom);
         setChatEnabled(true);
         closeMentionAutocomplete();
 
@@ -3434,7 +3446,12 @@ function selectRoomButton(btn) {
             // try/catch на сообщение нужен и здесь, иначе быстрый локальный рендер
             // из кэша мог так же обрываться после первого сообщения.
             renderChatBatch(cachedHistory, '❌ Не удалось отрисовать сообщение из кэша:');
+            chatRenderedRoom = roomName;
             markUnreadMessagesInChat(roomName);
+            // Нет новых сообщений — встаём на последнее прочитанное в этом канале.
+            if (!messagesDiv.querySelector('.unread-divider')) {
+                restoreChatPosition(chatReadPositionByRoom[roomName]);
+            }
             // Свежая история с сервера перерисует чат целиком — запоминаем, что было
             // непрочитанным, чтобы разделитель «Непрочитанные» не пропал при перерисовке.
             unreadSnapshotByRoom.set(String(roomName), { ids: getUnreadIds(roomName), at: Date.now() });
@@ -5579,7 +5596,69 @@ function applyChatAnchor() {
     if (!a || Date.now() > a.until) { chatScrollAnchor = null; return; }
     if (a.type === 'bottom') scrollChatToBottom();
     else if (a.type === 'element') scrollChatToElement(a.el);
+    else if (a.type === 'read') scrollChatToReadMessage(a.el);
 }
+
+// ---------- Последнее прочитанное сообщение ----------
+// Ставит чат так, чтобы сообщение el было у нижнего края — ровно как человек его оставил.
+function scrollChatToReadMessage(el) {
+    if (!el || !el.isConnected) return;
+    const boxTop = messagesDiv.getBoundingClientRect().top;
+    const elBottom = el.getBoundingClientRect().bottom - boxTop + messagesDiv.scrollTop;
+    messagesDiv.scrollTop = Math.max(0, elBottom - messagesDiv.clientHeight + 12);
+    chatPinnedToBottom = isChatNearBottom();
+}
+
+// Что человек успел прочитать: у конца чата — «всё», иначе — самое нижнее сообщение,
+// которое уже показалось на экране.
+function computeChatReadPosition() {
+    const parts = messagesDiv.querySelectorAll('.msg-part[data-id]');
+    if (!parts.length) return null;
+    if (chatPinnedToBottom || isChatNearBottom()) {
+        return { id: String(parts[parts.length - 1].dataset.id), atBottom: true };
+    }
+    const viewBottom = messagesDiv.getBoundingClientRect().bottom;
+    let found = null;
+    for (const part of parts) {
+        if (part.getBoundingClientRect().top < viewBottom - 8) found = part;
+        else break;
+    }
+    return found ? { id: String(found.dataset.id), atBottom: false } : null;
+}
+
+// Запоминаем позицию, пока в messagesDiv ещё чат ЭТОЙ комнаты (до переключения/закрытия).
+function rememberChatReadPosition(room) {
+    if (!room || chatRenderedRoom !== room) return;
+    const pos = computeChatReadPosition();
+    if (!pos) return;
+    delete chatReadPositionByRoom[room];
+    chatReadPositionByRoom[room] = pos;
+    const keys = Object.keys(chatReadPositionByRoom);
+    if (keys.length > CHAT_READ_POS_MAX_ROOMS) {
+        keys.slice(0, keys.length - CHAT_READ_POS_MAX_ROOMS).forEach(k => delete chatReadPositionByRoom[k]);
+    }
+    try { localStorage.setItem(CHAT_READ_POS_KEY, JSON.stringify(chatReadPositionByRoom)); } catch (e) { /* ignore */ }
+}
+
+// Возвращает чат на сохранённую позицию. false — сообщения уже нет в ленте (осталось внизу).
+function restoreChatPosition(pos) {
+    if (!pos) return false;
+    if (pos.atBottom) {
+        scrollChatToBottom();
+        holdChatAnchor({ type: 'bottom' });
+        return true;
+    }
+    const el = messagesDiv.querySelector(`.msg-part[data-id="${CSS.escape(String(pos.id))}"]`);
+    if (!el) return false;
+    scrollChatToReadMessage(el);
+    holdChatAnchor({ type: 'read', el });
+    return true;
+}
+
+window.addEventListener('pagehide', () => rememberChatReadPosition(chatRenderedRoom));
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) rememberChatReadPosition(chatRenderedRoom);
+});
 messagesDiv.addEventListener('load', applyChatAnchor, true); // load у <img> не всплывает — ловим в capture
 ['wheel', 'touchstart', 'mousedown', 'keydown'].forEach(ev =>
     messagesDiv.addEventListener(ev, () => { chatScrollAnchor = null; }, { passive: true }));
@@ -5632,15 +5711,15 @@ function markUnreadMessagesInChat(room) {
         divider.textContent = 'Непрочитанные';
         firstUnread.parentElement?.before(divider);
     }
-    // Заходим в канал — показываем место, где закончилось прочитанное, а не конец чата.
+    // Заходим в канал — показываем место, где закончилось прочитанное, а не конец чата:
+    // разделитель «Непрочитанные» встаёт примерно на трети высоты, а прямо над ним
+    // виден последний прочитанный кусок. Если над разделителем читать нечего (непрочитано
+    // всё, что есть в ленте) — прыгать некуда, остаёмся внизу.
     const marker = messagesDiv.querySelector('.unread-divider');
     if (firstUnread && marker) {
-        // Сколько высоты занимает непрочитанное. Если это «стена» длиннее пары экранов,
-        // прыжок на её начало выкидывал человека в самый верх чата — тогда остаёмся внизу
-        // (разделитель «Непрочитанные» при этом остаётся в ленте, до него можно прокрутить).
-        const markerTop = marker.getBoundingClientRect().top - messagesDiv.getBoundingClientRect().top + messagesDiv.scrollTop;
-        const unreadHeight = messagesDiv.scrollHeight - markerTop;
-        if (unreadHeight <= messagesDiv.clientHeight * UNREAD_JUMP_MAX_SCREENS) {
+        const firstMsg = messagesDiv.querySelector('.chat-message');
+        const hasReadAbove = !!firstMsg && !!(firstMsg.compareDocumentPosition(marker) & Node.DOCUMENT_POSITION_FOLLOWING);
+        if (hasReadAbove) {
             scrollChatToElement(marker);
             holdChatAnchor({ type: 'element', el: marker });
         } else {
@@ -5657,6 +5736,12 @@ socket.on('chat history', (data) => {
     const history = (data && data.messages) || [];
     if (room && room !== selectedRoom) return;
 
+    const targetRoom = room || selectedRoom;
+    // Если этот же канал уже показан (свежая история пришла после кэша или после
+    // переподключения) — запоминаем, где человек сейчас, и возвращаем его туда же,
+    // а не бросаем в конец чата.
+    const liveView = chatRenderedRoom === targetRoom ? computeChatReadPosition() : null;
+
     setCachedChatHistory(room || selectedRoom, history);
     messagesDiv.innerHTML = '';
     lastMessageDateKey = null; // заново расставляем разделители дат для свежезагруженной истории
@@ -5671,9 +5756,15 @@ socket.on('chat history', (data) => {
     // сообщения гарантирует, что вся остальная история и кружок непрочитанных
     // отрисуются, даже если какое-то одно сообщение не смогло отрендериться.
     renderChatBatch(history, '❌ Не удалось отрисовать сообщение истории:');
-    markUnreadMessagesInChat(room || selectedRoom);
-    unreadSnapshotByRoom.delete(String(room || selectedRoom || ''));
-    markRoomRead(room || selectedRoom);
+    chatRenderedRoom = targetRoom;
+    markUnreadMessagesInChat(targetRoom);
+    unreadSnapshotByRoom.delete(String(targetRoom || ''));
+    markRoomRead(targetRoom);
+    if (liveView) {
+        restoreChatPosition(liveView);
+    } else if (!messagesDiv.querySelector('.unread-divider')) {
+        restoreChatPosition(chatReadPositionByRoom[targetRoom]);
+    }
 });
 
 // Решает, какой звук/тост показать для чужого сообщения. Работает и для открытого
