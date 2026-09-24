@@ -822,6 +822,43 @@ async function notifyMembersOutsideChat(room, outgoing, whisperTo) {
     }
 }
 
+// Начало созвона (пустой голосовой канал стал занят первым участником) — сообщаем об этом
+// ВСЕМ участникам сервера, у кого сейчас открыт другой чат или вообще ничего не открыто.
+// Раньше рингтон срабатывал только у тех, кто смотрел именно этот канал (комната
+// `chat:<канал>`, см. broadcastRoomUsers), и пропадал, если человек сидел в другом чате.
+// Членство берём из БД, как и в notifyMembersOutsideChat: исключённый звонков не слышит.
+async function notifyCallStarted(room, starterSocketId) {
+    const code = customCodeFromRoom(room);
+    const custom = code && customRooms[code];
+    if (!custom) return;
+
+    let members = new Set();
+    try {
+        const result = await pool.query(
+            `SELECT username FROM custom_room_members WHERE code = $1`,
+            [code]
+        );
+        members = new Set(result.rows.map(r => String(r.username).toLowerCase()));
+    } catch (err) {
+        console.error('❌ Ошибка чтения участников для уведомления о звонке:', err);
+    }
+
+    const starter = io.sockets.sockets.get(starterSocketId);
+    const starterName = (starter && starter.data && starter.data.username) || '';
+    const starterLower = starterName.toLowerCase();
+
+    for (const [, sock] of io.sockets.sockets) {
+        if (sock.id === starterSocketId) continue;
+        if (sock.rooms && sock.rooms.has(room)) continue; // уже в этом звонке
+        const uname = sock.data && sock.data.username;
+        if (!uname) continue;
+        const lower = uname.toLowerCase();
+        if (starterLower && lower === starterLower) continue; // другая вкладка самого звонящего
+        if (!members.has(lower) && !isRoomOwner(custom, uname)) continue;
+        sock.emit('call started', { room, username: starterName });
+    }
+}
+
 io.on('connection', (socket) => {
     let currentUserRoom = null;
     let currentUserData = null;
@@ -1325,6 +1362,10 @@ io.on('connection', (socket) => {
         currentUserRoom = room;
         socket.join(room);
 
+        // Это начало нового созвона? Проверяем ДО добавления себя в комнату.
+        const callWasEmpty = !rooms[room] ||
+            !Object.values(rooms[room]).some(u => u && u.peerId);
+
         if (!rooms[room]) {
             rooms[room] = {};
         }
@@ -1342,6 +1383,7 @@ io.on('connection', (socket) => {
 
         // Оповещаем всех в комнате о новом участнике
         broadcastRoomUsers(room);
+        if (callWasEmpty && peerId) notifyCallStarted(room, socket.id);
         socket.to(room).emit('user connected', {
             username: currentUserData.username,
             avatar: currentUserData.avatar,

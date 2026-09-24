@@ -1546,8 +1546,21 @@ function playMentionSound(room = selectedRoom) {
 
 // Мелодия начала созвона — рингтон для участника, которому начинают звонить.
 // Вызывающий её не слышит; звук включается отдельно для каждого канала.
+// Настройка «Не беспокоить в звонке» (Спец. возможности): пока человек разговаривает в
+// голосовом канале с кем-то, мелодия начала другого созвона не играет. Хранится на устройстве.
+const CALLSTART_QUIET_IN_CALL_KEY = 'mute:callstartQuietInCall';
+let callstartQuietInCall = false;
+try { callstartQuietInCall = localStorage.getItem(CALLSTART_QUIET_IN_CALL_KEY) === '1'; } catch (e) { /* ignore */ }
+
+// «В гс с кем-то» — мы в голосовом канале и там есть хотя бы один другой участник.
+function isInCallWithSomeone() {
+    if (!currentUser.room) return false;
+    return Object.keys(connectedUsers || {}).some(peerId => peerId !== myPeerId);
+}
+
 function playCallstartSound(roomId) {
     if (!roomId || !isCallstartEnabledForChannel(roomId)) return;
+    if (callstartQuietInCall && isInCallWithSomeone()) return;
     // Это рингтон для того, кому уже звонят: вызывающий сам его не слышит.
     playNotifySound('callstart', getSoundVolume('callstart'), roomId);
 }
@@ -3879,21 +3892,22 @@ function cleanupCalls() {
     remoteVideos.innerHTML = '';
 }
 
+// Кто-то начал созвон (пустой голосовой канал стал занят). Сервер шлёт это событие всем
+// участникам сервера, независимо от того, какой чат у них сейчас открыт. Сам звонящий
+// и те, кто уже в этом звонке, его не получают. Рингтон остановится, как только
+// человек нажмёт «Подключиться» (connectToSelectedRoom → stopNotifySound('callstart')).
+socket.on('call started', ({ room } = {}) => {
+    if (!room || currentUser.room === room) return;
+    playCallstartSound(room);
+});
+
 socket.on('room users', (usersInRoom, room) => {
-    const previousRoomUserCount = room ? Number(roomUserCounts[room] || 0) : 0;
     const nextRoomUserCount = Object.keys(usersInRoom || {}).length;
     if (room) roomUserCounts[room] = nextRoomUserCount;
 
-    // Рингтон означает именно начало нового голосового звонка:
-    // когда пустой голосовой канал становится занятым первым участником.
-    // Его слышат только те, кто смотрит этот канал, но ещё НЕ вошёл в него.
-    // Сам создатель/первый вошедший рингтон не слышит.
-    // Как только наблюдатель нажмёт «Подключиться», connectToSelectedRoom()
-    // сразу остановит текущий рингтон через stopNotifySound('callstart').
-    if (room && previousRoomUserCount === 0 && nextRoomUserCount === 1 &&
-        room === selectedRoom && currentUser.room !== room) {
-        playCallstartSound(room);
-    }
+    // Рингтон начала созвона здесь больше НЕ играет: этот список приходит только тем,
+    // у кого открыт именно этот канал, а звонок должен быть слышен и когда человек сидит
+    // в другом чате. Теперь рингтон запускает отдельное событие 'call started' (см. выше).
     // Сервер шлёт список и участникам канала, и тем, кто просто смотрит сервер (см. broadcastRoomUsers).
     // `room` — какой именно канал обновился: обновления чужих каналов игнорируем.
     const inVoiceRoom = room ? room === currentUser.room : currentUser.room === selectedRoom;
@@ -4426,6 +4440,19 @@ function updateVoiceUsersList(users = connectedUsers) {
         const code = customCodeFromRoomName(currentUser.room || selectedRoom);
         if (showOffCallMembers && code) socket.emit('get server members', { code });
         updateVoiceUsersList(lastRenderedVoiceUsers);
+    });
+})();
+
+// Переключатель «Не беспокоить в звонке» в Спец. возможностях
+(function initCallstartQuietInCallSetting() {
+    const check = document.getElementById('callstart-quiet-in-call-check');
+    if (!check) return;
+    check.checked = callstartQuietInCall;
+    check.addEventListener('change', () => {
+        callstartQuietInCall = check.checked;
+        try { localStorage.setItem(CALLSTART_QUIET_IN_CALL_KEY, callstartQuietInCall ? '1' : '0'); } catch (e) { /* ignore */ }
+        // Если уже играет чужой рингтон, а мы сейчас в звонке — сразу его глушим.
+        if (callstartQuietInCall && isInCallWithSomeone()) stopNotifySound('callstart');
     });
 })();
 
@@ -5389,9 +5416,8 @@ function renderChatMessage({ id, username, user, avatar, text, image_url, create
     // его собственное сообщение). Измеряем ДО добавления сообщения — после него
     // scrollHeight уже вырастет. Раньше чат прыгал вниз при каждом новом сообщении,
     // даже если человек читал историю выше.
+    // Своё сообщение тоже НЕ тянет вниз, если человек в этот момент читает историю выше.
     const wasAtBottom = chatPinnedToBottom || isChatNearBottom();
-    const isOwnByName = !!String(currentUser.username || '').trim() &&
-        String(name).trim().toLowerCase() === String(currentUser.username).trim().toLowerCase();
     // created_at приходит с сервера как Date.now() (мс) — если вдруг отсутствует или же
     // после парсинга получилась невалидная дата (например, у старых записей в БД, ещё
     // до фикса с BIGINT-как-строкой), подстраховываемся текущим временем, чтобы не
@@ -5474,7 +5500,7 @@ function renderChatMessage({ id, username, user, avatar, text, image_url, create
     if (gifsPaused) part.querySelectorAll('img').forEach(pauseGifElement);
     // При пакетной отрисовке истории (chatBulkRender) позицию выставляет вызывающий код —
     // либо вниз, либо на последнее прочитанное сообщение.
-    if (!chatBulkRender && (wasAtBottom || isOwnByName)) {
+    if (!chatBulkRender && wasAtBottom) {
         scrollChatToBottom();
         holdChatAnchor({ type: 'bottom' });
     }
@@ -5856,22 +5882,20 @@ messageInput.addEventListener('keydown', (e) => {
     }
 
     if (e.key === 'Enter' && messageInput.value.trim() && !messageInput.disabled) {
+        // Позицию меряем ДО отправки: вниз прокручиваем, только если человек и так
+        // находится у конца чата. Если он читает историю выше — не трогаем прокрутку.
+        const stickToBottom = chatPinnedToBottom || isChatNearBottom();
         socket.emit('chat message', { text: messageInput.value.trim() });
         messageInput.value = '';
         closeMentionAutocomplete();
-        // Написали сообщение — сразу показываем конец чата, не дожидаясь ответа сервера.
-        scrollChatToBottom();
-        holdChatAnchor({ type: 'bottom' });
+        if (stickToBottom) {
+            scrollChatToBottom();
+            holdChatAnchor({ type: 'bottom' });
+        }
     }
 });
-
-// Начали печатать — показываем последнее сообщение (если чат прокручен выше).
-messageInput.addEventListener('input', () => {
-    if (!chatPinnedToBottom && !isChatNearBottom()) {
-        scrollChatToBottom();
-        holdChatAnchor({ type: 'bottom' });
-    }
-});
+// Раньше здесь был обработчик 'input', который прокручивал чат вниз уже при первом
+// набранном символе. Теперь набор текста прокрутку не меняет — только отправка (см. выше).
 
 const attachBtn = document.getElementById('attach-image-btn');
 const attachInput = document.getElementById('attach-image-input');
@@ -5900,9 +5924,12 @@ if (attachBtn && attachInput) {
             const res = await fetch('/upload', { method: 'POST', body: formData });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Ошибка загрузки');
+            const stickToBottom = chatPinnedToBottom || isChatNearBottom();
             socket.emit('chat message', { text: '', imageUrl: data.url });
-            scrollChatToBottom();
-            holdChatAnchor({ type: 'bottom' });
+            if (stickToBottom) {
+                scrollChatToBottom();
+                holdChatAnchor({ type: 'bottom' });
+            }
         } catch (err) {
             console.error('[Ошибка] Загрузка изображения:', err);
             alert('Не удалось загрузить изображение');
