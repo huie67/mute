@@ -591,7 +591,9 @@ const unreadSnapshotByRoom = new Map();
 // не попасть во временную мёртвую зону — см. комментарий у mentionAutocompleteEl).
 let previewUsers = {};          // участники просматриваемого канала, пока мы в звонке другого
 let chatBulkRender = false;     // идёт пакетная отрисовка истории — не скроллим на каждом сообщении
+let chatPinnedToBottom = true;  // человек сейчас у конца чата (обновляется по событию scroll)
 let chatScrollAnchor = null;    // удерживаемая позиция чата (см. holdChatAnchor)
+const UNREAD_JUMP_MAX_SCREENS = 1.5; // непрочитанного больше этого (в экранах) — не прыгаем на его начало, остаёмся внизу
 const UNREAD_FLASH_MS = 1000; // должно совпадать с длительностью unread-flash в index.html
 
 loadUnreadState();
@@ -5387,7 +5389,7 @@ function renderChatMessage({ id, username, user, avatar, text, image_url, create
     // его собственное сообщение). Измеряем ДО добавления сообщения — после него
     // scrollHeight уже вырастет. Раньше чат прыгал вниз при каждом новом сообщении,
     // даже если человек читал историю выше.
-    const wasAtBottom = isChatNearBottom();
+    const wasAtBottom = chatPinnedToBottom || isChatNearBottom();
     const isOwnByName = !!String(currentUser.username || '').trim() &&
         String(name).trim().toLowerCase() === String(currentUser.username).trim().toLowerCase();
     // created_at приходит с сервера как Date.now() (мс) — если вдруг отсутствует или же
@@ -5464,14 +5466,12 @@ function renderChatMessage({ id, username, user, avatar, text, image_url, create
         messagesDiv.appendChild(msg);
     }
     // Если окно уже неактивно, не запускаем GIF, добавленный в фоне.
-    if (chatGifsPaused && isChatGif(part.querySelector('img.chat-image'))) {
-        const gif = part.querySelector('img.chat-image');
-        const src = gif.getAttribute('src');
-        if (src && src !== GIF_PAUSE_PLACEHOLDER) {
-            gif.dataset.gifSrc = src;
-            gif.src = GIF_PAUSE_PLACEHOLDER;
-        }
-    }
+    // ВАЖНО: раньше здесь стояли имена chatGifsPaused / isChatGif, которых нигде нет —
+    // на КАЖДОМ сообщении бросался ReferenceError. Он обрывал и renderChatMessage (после
+    // него не срабатывали ни прокрутка вниз, ни trimRenderedMessages), и обработчик
+    // 'chat message' целиком, поэтому в открытом чате не играл звук нового сообщения.
+    // Настоящее состояние паузы GIF — gifsPaused (см. блок GIF ниже по файлу).
+    if (gifsPaused) part.querySelectorAll('img').forEach(pauseGifElement);
     // При пакетной отрисовке истории (chatBulkRender) позицию выставляет вызывающий код —
     // либо вниз, либо на последнее прочитанное сообщение.
     if (!chatBulkRender && (wasAtBottom || isOwnByName)) {
@@ -5527,11 +5527,15 @@ socket.on('delete message', ({ id, room }) => {
 // картинки возвращаем чат на нужное место (но не дольше нескольких секунд).
 const CHAT_ANCHOR_HOLD_MS = 3000;
 
-function isChatNearBottom(threshold = 80) {
+function isChatNearBottom(threshold = 120) {
     return messagesDiv.scrollHeight - messagesDiv.scrollTop - messagesDiv.clientHeight <= threshold;
 }
+// Флаг обновляем только на реальной прокрутке: когда картинка догрузилась и чат «вырос»,
+// scroll не срабатывает — и человек, который был внизу, по-прежнему считается «внизу».
+messagesDiv.addEventListener('scroll', () => { chatPinnedToBottom = isChatNearBottom(); }, { passive: true });
 function scrollChatToBottom() {
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    chatPinnedToBottom = true;
 }
 // Ставит чат так, чтобы элемент (разделитель «Непрочитанные») был примерно на трети
 // высоты: сверху виден кусочек уже прочитанного, ниже — новое.
@@ -5539,6 +5543,7 @@ function scrollChatToElement(el) {
     if (!el || !el.isConnected) return;
     const top = el.getBoundingClientRect().top - messagesDiv.getBoundingClientRect().top + messagesDiv.scrollTop;
     messagesDiv.scrollTop = Math.max(0, top - Math.round(messagesDiv.clientHeight * 0.3));
+    chatPinnedToBottom = isChatNearBottom();
 }
 function holdChatAnchor(anchor) {
     chatScrollAnchor = Object.assign({ until: Date.now() + CHAT_ANCHOR_HOLD_MS }, anchor);
@@ -5604,8 +5609,18 @@ function markUnreadMessagesInChat(room) {
     // Заходим в канал — показываем место, где закончилось прочитанное, а не конец чата.
     const marker = messagesDiv.querySelector('.unread-divider');
     if (firstUnread && marker) {
-        scrollChatToElement(marker);
-        holdChatAnchor({ type: 'element', el: marker });
+        // Сколько высоты занимает непрочитанное. Если это «стена» длиннее пары экранов,
+        // прыжок на её начало выкидывал человека в самый верх чата — тогда остаёмся внизу
+        // (разделитель «Непрочитанные» при этом остаётся в ленте, до него можно прокрутить).
+        const markerTop = marker.getBoundingClientRect().top - messagesDiv.getBoundingClientRect().top + messagesDiv.scrollTop;
+        const unreadHeight = messagesDiv.scrollHeight - markerTop;
+        if (unreadHeight <= messagesDiv.clientHeight * UNREAD_JUMP_MAX_SCREENS) {
+            scrollChatToElement(marker);
+            holdChatAnchor({ type: 'element', el: marker });
+        } else {
+            scrollChatToBottom();
+            holdChatAnchor({ type: 'bottom' });
+        }
     }
 }
 
@@ -5694,7 +5709,12 @@ socket.on('chat message', (payload) => {
     }
 
     appendMessageToChatCache(room, payload);
-    renderChatMessage(payload);
+    try {
+        renderChatMessage(payload);
+    } catch (err) {
+        // Сбой отрисовки одного сообщения не должен отключать звук уведомления.
+        console.error('❌ Не удалось отрисовать новое сообщение:', err, payload);
+    }
 
     // Звук — только для чужих сообщений, свои же мы и так видим, что отправили.
     if (!isOwnMessage) notifyIncomingMessage(payload, room, senderName);
@@ -5847,7 +5867,7 @@ messageInput.addEventListener('keydown', (e) => {
 
 // Начали печатать — показываем последнее сообщение (если чат прокручен выше).
 messageInput.addEventListener('input', () => {
-    if (!isChatNearBottom()) {
+    if (!chatPinnedToBottom && !isChatNearBottom()) {
         scrollChatToBottom();
         holdChatAnchor({ type: 'bottom' });
     }
