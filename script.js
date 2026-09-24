@@ -579,6 +579,9 @@ function getUnreadIds(room) {
     return new Set((unreadByRoom.get(String(room || '')) || []).map(String));
 }
 
+// Снимок непрочитанных на момент открытия канала из кэша (см. selectRoomButton).
+const unreadSnapshotByRoom = new Map();
+
 loadUnreadState();
 
 function getCachedChatHistory(room) {
@@ -1490,8 +1493,8 @@ function playNotifySound(key, volume = 0.6, roomId = null) {
 }
 
 // Новое сообщение в чате
-function playMessageSound() {
-    playNotifySound('message', getSoundVolume('message'), selectedRoom);
+function playMessageSound(room = selectedRoom) {
+    playNotifySound('message', getSoundVolume('message'), room);
 }
 
 // Кто-то зашёл в комнату
@@ -1523,8 +1526,8 @@ function playScreenShareSound() {
 
 // Кто-то упомянул нас через @ник в чате — отдельный, более заметный звук,
 // проигрывается ВМЕСТО обычного звука сообщения (см. обработчик 'chat message').
-function playMentionSound() {
-    playNotifySound('mention', getSoundVolume('mention'), selectedRoom);
+function playMentionSound(room = selectedRoom) {
+    playNotifySound('mention', getSoundVolume('mention'), room);
 }
 
 // Мелодия начала созвона — рингтон для участника, которому начинают звонить.
@@ -3407,6 +3410,9 @@ function selectRoomButton(btn) {
                 }
             });
             markUnreadMessagesInChat(roomName);
+            // Свежая история с сервера перерисует чат целиком — запоминаем, что было
+            // непрочитанным, чтобы разделитель «Непрочитанные» не пропал при перерисовке.
+            unreadSnapshotByRoom.set(String(roomName), getUnreadIds(roomName));
             markRoomRead(roomName);
         }
 
@@ -3552,6 +3558,9 @@ function addCustomServerButton(data) {
         }
     });
     customServersList.appendChild(btn);
+    // Иконки пересоздаются (список серверов пришёл заново, сервер переименовали) —
+    // без этого кружок непрочитанных пропадал, хотя сами данные ещё лежат в unreadByRoom.
+    updateUnreadBadge(btn.dataset.room);
     return btn;
 }
 
@@ -5425,6 +5434,8 @@ socket.on('delete message', ({ id, room }) => {
 
 function markUnreadMessagesInChat(room) {
     const ids = getUnreadIds(room);
+    const snapshot = unreadSnapshotByRoom.get(String(room || ''));
+    if (snapshot) snapshot.forEach(id => ids.add(id));
     if (!ids.size) return;
     const parts = Array.from(messagesDiv.querySelectorAll('.msg-part[data-id]'));
     let firstUnread = null;
@@ -5470,8 +5481,50 @@ socket.on('chat history', (data) => {
         }
     });
     markUnreadMessagesInChat(room || selectedRoom);
+    unreadSnapshotByRoom.delete(String(room || selectedRoom || ''));
     markRoomRead(room || selectedRoom);
 });
+
+// Решает, какой звук/тост показать для чужого сообщения. Работает и для открытого
+// канала, и для остальных серверов пользователя (там сообщение только копит кружок
+// непрочитанных и играет звук, но в ленту не рендерится).
+function notifyIncomingMessage(payload, room, senderName) {
+    const isCurrent = room === selectedRoom;
+    const code = customCodeFromRoomName(room);
+    const cachedMembers = (code && mentionMembersCache[code]) || [];
+    // Для неоткрытого сервера список участников мог ещё не загружаться — добавляем
+    // самих себя, иначе @упоминание не распознается и прозвучит обычный звук.
+    const candidates = isCurrent
+        ? getMentionCandidates()
+        : [...cachedMembers, { username: currentUser.username }];
+    const mentions = findMentionMatches(payload.text || '', candidates);
+    const meLower = (currentUser.username || '').toLowerCase();
+    const iAmMentioned = !!meLower && mentions.some(m => m.username.toLowerCase() === meLower);
+    const isWhisper = Array.isArray(payload.whisper_to) && payload.whisper_to.length > 0;
+    // "f@" отмечает всех, но не в шёпоте (шёпот видят только его адресаты)
+    const everyoneMentioned = !isWhisper && findEveryoneMatches(payload.text || '').length > 0;
+
+    // В тосте про чужой сервер добавляем его название, иначе непонятно, откуда сообщение.
+    let where = '';
+    if (!isCurrent) {
+        const btn = document.querySelector(`[data-room="${CSS.escape(String(room))}"]`);
+        const name = btn?.getAttribute('data-display-name');
+        if (name) where = ` (${name})`;
+    }
+
+    if (isWhisper) {
+        playMentionSound(room);
+        showToast(`${senderName} прошептал(а) вам${where}`);
+    } else if (iAmMentioned) {
+        playMentionSound(room);
+        showToast(`${senderName} упомянул(а) вас в чате${where}`);
+    } else if (everyoneMentioned) {
+        playMentionSound(room);
+        showToast(`${senderName} отметил(а) всех участников${where}`);
+    } else {
+        playMessageSound(room);
+    }
+}
 
 socket.on('chat message', (payload) => {
     const room = payload.room || selectedRoom;
@@ -5479,9 +5532,14 @@ socket.on('chat message', (payload) => {
     const normName = (n) => String(n || '').trim().toLowerCase();
     const isOwnMessage = !!normName(currentUser.username) && normName(senderName) === normName(currentUser.username);
 
-    // Сообщение другой комнаты не рендерим, но сохраняем уведомление.
+    // Сообщение другого сервера: не рендерим в ленту, но копим кружок непрочитанных
+    // и проигрываем звук (сервер присылает такие сообщения всем участникам сервера,
+    // даже если они сейчас смотрят другой канал или сидят в войсе другого сервера).
     if (room !== selectedRoom) {
-        if (!isOwnMessage) addUnreadMessage(room, payload);
+        if (isOwnMessage) return;
+        appendMessageToChatCache(room, payload);
+        addUnreadMessage(room, payload);
+        notifyIncomingMessage(payload, room, senderName);
         return;
     }
 
@@ -5489,30 +5547,7 @@ socket.on('chat message', (payload) => {
     renderChatMessage(payload);
 
     // Звук — только для чужих сообщений, свои же мы и так видим, что отправили.
-    if (!isOwnMessage) {
-        // Если в сообщении упомянули нас по нику — играем отдельный, более заметный
-        // звук упоминания ВМЕСТО обычного звука сообщения (чтобы не звучало дважды),
-        // и показываем тост, чтобы не пропустить упоминание среди прочих сообщений.
-        const mentions = findMentionMatches(payload.text || '', getMentionCandidates());
-        const meLower = (currentUser.username || '').toLowerCase();
-        const iAmMentioned = !!meLower && mentions.some(m => m.username.toLowerCase() === meLower);
-        const isWhisper = Array.isArray(payload.whisper_to) && payload.whisper_to.length > 0;
-        // "f@" отмечает всех, но не в шёпоте (шёпот видят только его адресаты)
-        const everyoneMentioned = !isWhisper && findEveryoneMatches(payload.text || '').length > 0;
-
-        if (isWhisper) {
-            playMentionSound();
-            showToast(`${senderName} прошептал(а) вам`);
-        } else if (iAmMentioned) {
-            playMentionSound();
-            showToast(`${senderName} упомянул(а) вас в чате`);
-        } else if (everyoneMentioned) {
-            playMentionSound();
-            showToast(`${senderName} отметил(а) всех участников`);
-        } else {
-            playMessageSound();
-        }
-    }
+    if (!isOwnMessage) notifyIncomingMessage(payload, room, senderName);
 });
 
 // Сервер сообщает, почему сообщение не ушло (например, неверный ник после wh@)
