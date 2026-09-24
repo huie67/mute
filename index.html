@@ -433,6 +433,15 @@
             gap: 8px;
         }
         .sidebar-item svg { flex-shrink: 0; }
+        /* Строка «вы в звонке»: название канала (клик — перейти в него) и кнопка «Выйти». */
+        .sidebar-item.in-call { color: var(--text); }
+        .sidebar-item.in-call .call-room-name { cursor: pointer; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .sidebar-item.in-call .call-room-name:hover { text-decoration: underline; }
+        .call-leave-mini {
+            flex-shrink: 0; border: 1px solid var(--border); background: transparent;
+            color: var(--text-muted); font-size: 11px; padding: 2px 8px; border-radius: 6px; cursor: pointer;
+        }
+        .call-leave-mini:hover { background: var(--danger); border-color: var(--danger); color: #fff; }
 
         .voice-users-list {
             display: flex;
@@ -2310,6 +2319,10 @@
                         <span>Вы не в звонке</span>
                     </div>
                     <div class="voice-users-list" id="voice-users-container"></div>
+                    <div id="voice-preview" style="display:none">
+                        <div class="voice-offcall-divider" id="voice-preview-title"></div>
+                        <div class="voice-users-list" id="voice-preview-container"></div>
+                    </div>
                 </div>
             </div>
             

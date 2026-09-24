@@ -278,7 +278,7 @@ socket.on('server members list', ({ code, members } = {}) => {
     if (code) mentionMembersCache[code] = members || [];
 
     // Обновился список участников (кто-то зашёл/вышел в сеть) — перерисовываем боковой список.
-    if (showOffCallMembers && code && code === customCodeFromRoomName(selectedRoom)) {
+    if (showOffCallMembers && code && code === customCodeFromRoomName(currentUser.room || selectedRoom)) {
         updateVoiceUsersList(lastRenderedVoiceUsers);
     }
 
@@ -339,6 +339,10 @@ socket.on('kicked from server', ({ code, name } = {}) => {
         cleanupCalls();
         connectedUsers = {};
         updateVoiceUsersList();
+        renderCallHeader();
+        setConnectRoomButtonState(false);
+        screenBtn.disabled = true;
+        screenBtn.title = 'Сначала подключитесь к голосовому каналу';
     }
 
     alert(`Вас исключили с сервера «${name || code}».`);
@@ -583,6 +587,11 @@ function getUnreadIds(room) {
 // { ids: Set, at: время открытия }. Время нужно, чтобы при перерисовке чата свежей
 // историей подсветка продолжила гаснуть с того же места, а не вспыхнула заново.
 const unreadSnapshotByRoom = new Map();
+// Состояние, которое читают функции ниже по файлу (объявлено здесь заранее, чтобы
+// не попасть во временную мёртвую зону — см. комментарий у mentionAutocompleteEl).
+let previewUsers = {};          // участники просматриваемого канала, пока мы в звонке другого
+let chatBulkRender = false;     // идёт пакетная отрисовка истории — не скроллим на каждом сообщении
+let chatScrollAnchor = null;    // удерживаемая позиция чата (см. holdChatAnchor)
 const UNREAD_FLASH_MS = 1000; // должно совпадать с длительностью unread-flash в index.html
 
 loadUnreadState();
@@ -3387,6 +3396,10 @@ function selectRoomButton(btn) {
         roomTitle.innerText = `Канал: ${displayName} (Просмотр)`;
     }
     connectRoomBtn.style.display = 'inline-block';
+    // Звонок не зависит от открытого канала: основной список остаётся списком звонка,
+    // а новый просматриваемый канал (если он не наш звонок) показывается отдельным блоком.
+    if (roomChanged) previewUsers = {};
+    renderPreviewUsers();
     socket.emit('get room users', roomName);
 
     // Чат — свой для каждого сервера. Переключаем его только если реально сменили комнату,
@@ -3405,13 +3418,7 @@ function selectRoomButton(btn) {
             // См. комментарий у socket.on('chat history') — один и тот же защитный
             // try/catch на сообщение нужен и здесь, иначе быстрый локальный рендер
             // из кэша мог так же обрываться после первого сообщения.
-            cachedHistory.forEach((msg) => {
-                try {
-                    renderChatMessage(msg);
-                } catch (err) {
-                    console.error('❌ Не удалось отрисовать сообщение из кэша:', err, msg);
-                }
-            });
+            renderChatBatch(cachedHistory, '❌ Не удалось отрисовать сообщение из кэша:');
             markUnreadMessagesInChat(roomName);
             // Свежая история с сервера перерисует чат целиком — запоминаем, что было
             // непрочитанным, чтобы разделитель «Непрочитанные» не пропал при перерисовке.
@@ -3432,6 +3439,38 @@ function selectRoomButton(btn) {
 
 roomButtons.forEach(btn => btn.addEventListener('click', () => selectRoomButton(btn)));
 
+// Название канала по его id (сервер мог быть переименован — берём из иконки в рейле).
+function roomDisplayName(room) {
+    if (!room) return '';
+    const btn = document.querySelector(`[data-room="${CSS.escape(String(room))}"]`);
+    return btn?.getAttribute('data-display-name') || String(room);
+}
+
+// Строка «в каком канале вы в звонке» в боковой панели. Звонок живёт независимо от того,
+// какой канал открыт в чате, поэтому здесь есть «Выйти», а по клику на название можно
+// вернуться в канал звонка.
+function renderCallHeader() {
+    if (!currentUser.room) {
+        roomNameDisplay.classList.remove('in-call');
+        roomNameDisplay.innerHTML = `${ROOM_OUT_ICON_SVG}<span>Вы не в звонке</span>`;
+        return;
+    }
+    roomNameDisplay.classList.add('in-call');
+    roomNameDisplay.innerHTML = `${ROOM_IN_ICON_SVG}<span class="call-room-name" title="Перейти в канал звонка">${escapeHtml(roomDisplayName(currentUser.room))}</span><button type="button" class="call-leave-mini" title="Покинуть звонок">Выйти</button>`;
+}
+
+roomNameDisplay.addEventListener('click', (e) => {
+    if (!currentUser.room) return;
+    if (e.target.closest('.call-leave-mini')) {
+        leaveVoiceChannel();
+        return;
+    }
+    if (e.target.closest('.call-room-name') && currentUser.room !== selectedRoom) {
+        const btn = document.querySelector(`.custom-room-btn[data-room="${CSS.escape(String(currentUser.room))}"]`);
+        if (btn) selectRoomButton(btn);
+    }
+});
+
 function connectToSelectedRoom() {
     if (!selectedRoom) return;
     // При входе в войс не оставляем уже проигрывающуюся мелодию созвона/превью.
@@ -3444,11 +3483,13 @@ function connectToSelectedRoom() {
 
     if (currentUser.room) leaveVoiceChannel();
     currentUser.room = selectedRoom;
-    const activeBtn = document.querySelector(`[data-room="${CSS.escape(selectedRoom)}"]`);
-    const displayName = activeBtn?.getAttribute('data-display-name') || selectedRoom;
-    roomNameDisplay.innerHTML = `${ROOM_IN_ICON_SVG}<span>${escapeHtml(displayName)}</span>`;
+    const displayName = roomDisplayName(selectedRoom);
+    renderCallHeader();
     roomTitle.innerText = `Канал: ${displayName}`;
     setConnectRoomButtonState(true);
+    // Мы теперь в звонке именно этого канала — отдельный «просмотр» не нужен.
+    previewUsers = {};
+    renderPreviewUsers();
     screenBtn.disabled = false;
     screenBtn.title = '';
 
@@ -3566,6 +3607,7 @@ function addCustomServerButton(data) {
     // Иконки пересоздаются (список серверов пришёл заново, сервер переименовали) —
     // без этого кружок непрочитанных пропадал, хотя сами данные ещё лежат в unreadByRoom.
     updateUnreadBadge(btn.dataset.room);
+    if (currentUser.room === btn.dataset.room) renderCallHeader();
     return btn;
 }
 
@@ -3812,8 +3854,10 @@ function leaveVoiceChannel() {
     // Звук собственного выхода из комнаты
     playLeaveSound();
     currentUser.room = null;
-    roomTitle.innerText = `Канал: ${selectedRoom} (Просмотр)`;
-    roomNameDisplay.innerHTML = `${ROOM_OUT_ICON_SVG}<span>Вы не в звонке</span>`;
+    roomTitle.innerText = `Канал: ${roomDisplayName(selectedRoom)} (Просмотр)`;
+    renderCallHeader();
+    previewUsers = {};
+    renderPreviewUsers();
     setConnectRoomButtonState(false);
     screenBtn.disabled = true;
     screenBtn.title = 'Сначала подключитесь к голосовому каналу';
@@ -3854,10 +3898,16 @@ socket.on('room users', (usersInRoom, room) => {
     if (room && !inVoiceRoom && room !== selectedRoom) return;
 
     if (!inVoiceRoom) {
-        // Только смотрим канал (в звонке нас в нём нет) — просто перерисовываем список.
-        // Если мы сидим в голосе другого канала, его состояние (connectedUsers) не трогаем.
-        if (!currentUser.room) connectedUsers = usersInRoom;
-        updateVoiceUsersList(usersInRoom);
+        if (!currentUser.room) {
+            // Не в звонке — основной список показывает просматриваемый канал.
+            connectedUsers = usersInRoom;
+            updateVoiceUsersList(usersInRoom);
+        } else {
+            // Мы в звонке ДРУГОГО канала: основной список (наш звонок) не трогаем,
+            // а просматриваемый канал показываем отдельным блоком ниже.
+            previewUsers = usersInRoom || {};
+            renderPreviewUsers();
+        }
         return;
     }
 
@@ -3881,8 +3931,8 @@ socket.on('room users', (usersInRoom, room) => {
         micMuted: isMuted,
         deafened: isDeafened
     };
-    // Список рисуем, только если сейчас открыт именно этот канал (иначе смотрим другой).
-    if (!room || room === selectedRoom) updateVoiceUsersList();
+    // Список звонка рисуем всегда — он не зависит от того, какой канал открыт в чате.
+    updateVoiceUsersList();
 
     for (let peerId in usersInRoom) {
         // ВАЖНО: раньше звонок инициировали ОБЕ стороны одновременно (каждый, у кого
@@ -4220,7 +4270,7 @@ socket.on('user connected', ({ username, avatar, peerId }) => {
     // Теперь просто дополняем существующую запись, а не заменяем её целиком.
     const prev = connectedUsers[peerId] || {};
     connectedUsers[peerId] = { ...prev, username, avatar };
-    if (currentUser.room === selectedRoom) updateVoiceUsersList();
+    if (currentUser.room) updateVoiceUsersList();
 
     // Звук входа — только если мы сами сейчас в голосовом канале и зашёл не мы сами
     if (isNewcomer && peerId !== myPeerId && currentUser.room) {
@@ -4234,7 +4284,7 @@ socket.on('user disconnected', (peerId) => {
     cleanupRemoteAudio(peerId);
     delete remoteStreamsByPeer[peerId];
     sharingPeers.delete(peerId);
-    if (currentUser.room === selectedRoom) updateVoiceUsersList();
+    if (currentUser.room) updateVoiceUsersList();
     if (listenSession && listenSession.peerId === peerId) endListenSession(true);
 
     // Звук выхода — только если мы сами сейчас в голосовом канале
@@ -4274,7 +4324,8 @@ const ROOM_OUT_ICON_SVG = `<svg viewBox="0 0 24 24" width="14" height="14" fill=
 // Хранится на этом устройстве.
 
 function buildOffCallRows(users) {
-    const code = customCodeFromRoomName(selectedRoom);
+    // Основной список — это звонок (если мы в нём), иначе просматриваемый канал.
+    const code = customCodeFromRoomName(currentUser.room || selectedRoom);
     if (!code) return [];
     const members = mentionMembersCache[code];
     if (!members || !members.length) return [];
@@ -4303,30 +4354,50 @@ function buildOffCallRows(users) {
     });
 }
 
+// Строка участника. interactive=false — для блока «просмотр» (мы в этом канале не
+// в звонке): без id (чтобы не дублировать id строк основного списка) и без громкости.
+function buildVoiceUserRow(id, user, interactive = true) {
+    const row = document.createElement('div');
+    row.className = 'voice-user-row';
+    const ids = (kind) => interactive ? `id="${kind}-${id}"` : '';
+    row.innerHTML = `
+        <div class="user-avatar-wrap">
+            <img src="${user.avatar || 'https://api.dicebear.com/7.x/identicon/svg?seed=def'}" class="user-avatar" ${ids('avatar')} alt="">
+            <span class="status-badge mic-mute-badge${(user.micMuted || user.deafened) ? ' visible' : ''}" ${ids('mic-badge')} title="Микрофон выключен">${MIC_OFF_ICON_SVG}</span>
+            <span class="status-badge deafen-badge${user.deafened ? ' visible' : ''}" ${ids('deafen-badge')} title="Наушники выключены">${DEAFEN_OFF_ICON_SVG}</span>
+        </div>
+        <span class="voice-user-name" title="${escapeHtml(user.username || 'Участник')}" style="color:${getUserColor(user.username)}">${escapeHtml(user.username || 'Участник')}</span>
+    `;
+    // Громкость каждого собеседника можно менять только у себя — по клику на его
+    // строку в списке. На себя самого это не вешаем.
+    if (interactive && id !== myPeerId) {
+        row.classList.add('clickable');
+        row.title = 'Нажать, чтобы изменить громкость только для себя';
+        row.addEventListener('click', () => openUserVolumePopover(id, row, user.username || 'Участник'));
+    }
+    return row;
+}
+
+// Участники голосового канала, который мы ПРОСМАТРИВАЕМ, пока сидим в звонке другого.
+function renderPreviewUsers() {
+    const wrap = document.getElementById('voice-preview');
+    const title = document.getElementById('voice-preview-title');
+    const cont = document.getElementById('voice-preview-container');
+    if (!wrap || !title || !cont) return;
+    const ids = Object.keys(previewUsers || {});
+    const show = !!currentUser.room && !!selectedRoom && currentUser.room !== selectedRoom && ids.length > 0;
+    cont.innerHTML = '';
+    if (!show) { wrap.style.display = 'none'; return; }
+    title.textContent = `Просмотр: ${roomDisplayName(selectedRoom)} — ${ids.length}`;
+    ids.forEach(id => cont.appendChild(buildVoiceUserRow(id, previewUsers[id], false)));
+    wrap.style.display = '';
+}
+
 function updateVoiceUsersList(users = connectedUsers) {
     lastRenderedVoiceUsers = users;
     voiceUsersContainer.innerHTML = '';
     for (let id in users) {
-        let user = users[id];
-        let row = document.createElement('div');
-        row.className = 'voice-user-row';
-        row.innerHTML = `
-            <div class="user-avatar-wrap">
-                <img src="${user.avatar || 'https://api.dicebear.com/7.x/identicon/svg?seed=def'}" class="user-avatar" id="avatar-${id}" alt="">
-                <span class="status-badge mic-mute-badge${(user.micMuted || user.deafened) ? ' visible' : ''}" id="mic-badge-${id}" title="Микрофон выключен">${MIC_OFF_ICON_SVG}</span>
-                <span class="status-badge deafen-badge${user.deafened ? ' visible' : ''}" id="deafen-badge-${id}" title="Наушники выключены">${DEAFEN_OFF_ICON_SVG}</span>
-            </div>
-            <span class="voice-user-name" title="${escapeHtml(user.username || 'Участник')}" style="color:${getUserColor(user.username)}">${escapeHtml(user.username || 'Участник')}</span>
-        `;
-        // Громкость каждого собеседника можно менять только у себя — по клику на его
-        // строку в списке. На себя самого это не вешаем (собственную громкость менять
-        // не через что — её регулирует "Громкость своего микрофона" в настройках).
-        if (id !== myPeerId) {
-            row.classList.add('clickable');
-            row.title = 'Нажать, чтобы изменить громкость только для себя';
-            row.addEventListener('click', () => openUserVolumePopover(id, row, user.username || 'Участник'));
-        }
-        voiceUsersContainer.appendChild(row);
+        voiceUsersContainer.appendChild(buildVoiceUserRow(id, users[id], true));
     }
 
     // Остальные участники сервера — в том же списке, ниже тех, кто в звонке.
@@ -4350,7 +4421,7 @@ function updateVoiceUsersList(users = connectedUsers) {
     check.addEventListener('change', () => {
         showOffCallMembers = check.checked;
         try { localStorage.setItem(SHOW_OFFCALL_KEY, showOffCallMembers ? '1' : '0'); } catch (e) { /* ignore */ }
-        const code = customCodeFromRoomName(selectedRoom);
+        const code = customCodeFromRoomName(currentUser.room || selectedRoom);
         if (showOffCallMembers && code) socket.emit('get server members', { code });
         updateVoiceUsersList(lastRenderedVoiceUsers);
     });
@@ -5312,6 +5383,13 @@ function renderMessageTextWithMentions(text, members, myUsername) {
 
 function renderChatMessage({ id, username, user, avatar, text, image_url, created_at, whisper_to }) {
     const name = username || user || 'Участник';
+    // Прилипать к низу нужно, только если человек и так смотрит на конец чата (или это
+    // его собственное сообщение). Измеряем ДО добавления сообщения — после него
+    // scrollHeight уже вырастет. Раньше чат прыгал вниз при каждом новом сообщении,
+    // даже если человек читал историю выше.
+    const wasAtBottom = isChatNearBottom();
+    const isOwnByName = !!String(currentUser.username || '').trim() &&
+        String(name).trim().toLowerCase() === String(currentUser.username).trim().toLowerCase();
     // created_at приходит с сервера как Date.now() (мс) — если вдруг отсутствует или же
     // после парсинга получилась невалидная дата (например, у старых записей в БД, ещё
     // до фикса с BIGINT-как-строкой), подстраховываемся текущим временем, чтобы не
@@ -5394,7 +5472,12 @@ function renderChatMessage({ id, username, user, avatar, text, image_url, create
             gif.src = GIF_PAUSE_PLACEHOLDER;
         }
     }
-    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    // При пакетной отрисовке истории (chatBulkRender) позицию выставляет вызывающий код —
+    // либо вниз, либо на последнее прочитанное сообщение.
+    if (!chatBulkRender && (wasAtBottom || isOwnByName)) {
+        scrollChatToBottom();
+        holdChatAnchor({ type: 'bottom' });
+    }
     trimRenderedMessages();
 }
 
@@ -5437,6 +5520,59 @@ socket.on('delete message', ({ id, room }) => {
     if (el) removeMessagePart(el);
 });
 
+// ---------- Позиция прокрутки чата ----------
+// chatBulkRender — идёт пакетная отрисовка истории: не скроллим на каждом сообщении.
+// Якорь позиции: картинки грузятся уже после отрисовки и меняют высоту чата, из-за чего
+// позиция «уезжала». Пока человек сам не начал скроллить, при каждой загрузке
+// картинки возвращаем чат на нужное место (но не дольше нескольких секунд).
+const CHAT_ANCHOR_HOLD_MS = 3000;
+
+function isChatNearBottom(threshold = 80) {
+    return messagesDiv.scrollHeight - messagesDiv.scrollTop - messagesDiv.clientHeight <= threshold;
+}
+function scrollChatToBottom() {
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+// Ставит чат так, чтобы элемент (разделитель «Непрочитанные») был примерно на трети
+// высоты: сверху виден кусочек уже прочитанного, ниже — новое.
+function scrollChatToElement(el) {
+    if (!el || !el.isConnected) return;
+    const top = el.getBoundingClientRect().top - messagesDiv.getBoundingClientRect().top + messagesDiv.scrollTop;
+    messagesDiv.scrollTop = Math.max(0, top - Math.round(messagesDiv.clientHeight * 0.3));
+}
+function holdChatAnchor(anchor) {
+    chatScrollAnchor = Object.assign({ until: Date.now() + CHAT_ANCHOR_HOLD_MS }, anchor);
+}
+function applyChatAnchor() {
+    const a = chatScrollAnchor;
+    if (!a || Date.now() > a.until) { chatScrollAnchor = null; return; }
+    if (a.type === 'bottom') scrollChatToBottom();
+    else if (a.type === 'element') scrollChatToElement(a.el);
+}
+messagesDiv.addEventListener('load', applyChatAnchor, true); // load у <img> не всплывает — ловим в capture
+['wheel', 'touchstart', 'mousedown', 'keydown'].forEach(ev =>
+    messagesDiv.addEventListener(ev, () => { chatScrollAnchor = null; }, { passive: true }));
+
+// Отрисовывает пачку сообщений (история / кэш). Каждое — в своём try/catch, см.
+// комментарий у socket.on('chat history'). По умолчанию после пачки — прокрутка вниз;
+// если есть непрочитанные, markUnreadMessagesInChat потом переставит чат на них.
+function renderChatBatch(list, errLabel) {
+    chatBulkRender = true;
+    try {
+        (list || []).forEach((msg) => {
+            try {
+                renderChatMessage(msg);
+            } catch (err) {
+                console.error(errLabel, err, msg);
+            }
+        });
+    } finally {
+        chatBulkRender = false;
+    }
+    scrollChatToBottom();
+    holdChatAnchor({ type: 'bottom' });
+}
+
 function markUnreadMessagesInChat(room) {
     const ids = getUnreadIds(room);
     const snapshot = unreadSnapshotByRoom.get(String(room || ''));
@@ -5465,6 +5601,12 @@ function markUnreadMessagesInChat(room) {
         divider.textContent = 'Непрочитанные';
         firstUnread.parentElement?.before(divider);
     }
+    // Заходим в канал — показываем место, где закончилось прочитанное, а не конец чата.
+    const marker = messagesDiv.querySelector('.unread-divider');
+    if (firstUnread && marker) {
+        scrollChatToElement(marker);
+        holdChatAnchor({ type: 'element', el: marker });
+    }
 }
 
 socket.on('chat history', (data) => {
@@ -5487,13 +5629,7 @@ socket.on('chat history', (data) => {
     // непрочитанного) тоже не выполнялся. Изоляция ошибки на уровне одного
     // сообщения гарантирует, что вся остальная история и кружок непрочитанных
     // отрисуются, даже если какое-то одно сообщение не смогло отрендериться.
-    history.forEach((msg) => {
-        try {
-            renderChatMessage(msg);
-        } catch (err) {
-            console.error('❌ Не удалось отрисовать сообщение истории:', err, msg);
-        }
-    });
+    renderChatBatch(history, '❌ Не удалось отрисовать сообщение истории:');
     markUnreadMessagesInChat(room || selectedRoom);
     unreadSnapshotByRoom.delete(String(room || selectedRoom || ''));
     markRoomRead(room || selectedRoom);
@@ -5703,6 +5839,17 @@ messageInput.addEventListener('keydown', (e) => {
         socket.emit('chat message', { text: messageInput.value.trim() });
         messageInput.value = '';
         closeMentionAutocomplete();
+        // Написали сообщение — сразу показываем конец чата, не дожидаясь ответа сервера.
+        scrollChatToBottom();
+        holdChatAnchor({ type: 'bottom' });
+    }
+});
+
+// Начали печатать — показываем последнее сообщение (если чат прокручен выше).
+messageInput.addEventListener('input', () => {
+    if (!isChatNearBottom()) {
+        scrollChatToBottom();
+        holdChatAnchor({ type: 'bottom' });
     }
 });
 
@@ -5734,6 +5881,8 @@ if (attachBtn && attachInput) {
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Ошибка загрузки');
             socket.emit('chat message', { text: '', imageUrl: data.url });
+            scrollChatToBottom();
+            holdChatAnchor({ type: 'bottom' });
         } catch (err) {
             console.error('[Ошибка] Загрузка изображения:', err);
             alert('Не удалось загрузить изображение');
