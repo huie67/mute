@@ -3396,7 +3396,16 @@ function selectRoomButton(btn) {
         if (cachedHistory) {
             messagesDiv.innerHTML = '';
             lastMessageDateKey = null;
-            cachedHistory.forEach(renderChatMessage);
+            // См. комментарий у socket.on('chat history') — один и тот же защитный
+            // try/catch на сообщение нужен и здесь, иначе быстрый локальный рендер
+            // из кэша мог так же обрываться после первого сообщения.
+            cachedHistory.forEach((msg) => {
+                try {
+                    renderChatMessage(msg);
+                } catch (err) {
+                    console.error('❌ Не удалось отрисовать сообщение из кэша:', err, msg);
+                }
+            });
             markUnreadMessagesInChat(roomName);
             markRoomRead(roomName);
         }
@@ -5443,7 +5452,23 @@ socket.on('chat history', (data) => {
     setCachedChatHistory(room || selectedRoom, history);
     messagesDiv.innerHTML = '';
     lastMessageDateKey = null; // заново расставляем разделители дат для свежезагруженной истории
-    history.forEach(renderChatMessage);
+    // Каждое сообщение рендерим в своём try/catch: раньше одно "плохое" сообщение
+    // (например, повреждённые данные шёпота или неожиданный формат строки из БД)
+    // бросало исключение прямо внутри forEach — а forEach на исключении молча
+    // останавливается и больше не вызывает колбэк для оставшихся элементов.
+    // Из-за этого при повторном заходе в канал (когда история приходит не из кэша,
+    // а заново с сервера) в чате оставалось только первое сообщение, всё
+    // остальное просто не успевало отрисоваться, и код ниже (снятие пометки
+    // непрочитанного) тоже не выполнялся. Изоляция ошибки на уровне одного
+    // сообщения гарантирует, что вся остальная история и кружок непрочитанных
+    // отрисуются, даже если какое-то одно сообщение не смогло отрендериться.
+    history.forEach((msg) => {
+        try {
+            renderChatMessage(msg);
+        } catch (err) {
+            console.error('❌ Не удалось отрисовать сообщение истории:', err, msg);
+        }
+    });
     markUnreadMessagesInChat(room || selectedRoom);
     markRoomRead(room || selectedRoom);
 });
