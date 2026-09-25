@@ -384,6 +384,10 @@ const playlistPrevBtn = document.getElementById('playlist-prev-btn');
 const playlistPlayPauseBtn = document.getElementById('playlist-playpause-btn');
 const playlistNextBtn = document.getElementById('playlist-next-btn');
 const playlistFileInput = document.getElementById('playlist-file-input');
+const playlistRewindBtn = document.getElementById('playlist-rewind-btn');
+const playlistFolderSelect = document.getElementById('playlist-folder-select');
+const playlistFolderNewBtn = document.getElementById('playlist-folder-new-btn');
+const playlistFolderDeleteBtn = document.getElementById('playlist-folder-delete-btn');
 const playlistSettingsList = document.getElementById('playlist-settings-list');
 const playlistEmptyHint = document.getElementById('playlist-empty-hint');
 const playlistShuffleCheck = document.getElementById('playlist-shuffle-check');
@@ -2060,10 +2064,41 @@ function savePlaylistMeta(list) {
     try { localStorage.setItem(PLAYLIST_META_KEY, JSON.stringify(list)); } catch (e) { /* ignore */ }
 }
 
-let playlistTracks = loadPlaylistMeta(); // [{id, name, addedAt}]
+const PLAYLIST_FOLDERS_KEY = 'mute:playlistFolders';
+const PLAYLIST_ACTIVE_FOLDER_KEY = 'mute:playlistActiveFolder';
+function loadPlaylistFolders() {
+    try {
+        const raw = JSON.parse(localStorage.getItem(PLAYLIST_FOLDERS_KEY) || '[]');
+        return Array.isArray(raw) && raw.length ? raw : [{ id: 'folder_default', name: 'Моя музыка' }];
+    } catch (e) {
+        return [{ id: 'folder_default', name: 'Моя музыка' }];
+    }
+}
+function savePlaylistFolders() {
+    try { localStorage.setItem(PLAYLIST_FOLDERS_KEY, JSON.stringify(playlistFolders)); } catch (e) {}
+}
+let playlistFolders = loadPlaylistFolders();
+let playlistActiveFolderId = localStorage.getItem(PLAYLIST_ACTIVE_FOLDER_KEY) || playlistFolders[0].id;
+if (!playlistFolders.some(f => f.id === playlistActiveFolderId)) playlistActiveFolderId = playlistFolders[0].id;
+
+let playlistTracks = loadPlaylistMeta(); // все треки; folderId определяет папку
 let playlistCurrentIndex = -1;
+function migratePlaylistFolders() {
+    let changed = false;
+    playlistTracks.forEach(t => {
+        if (!t.folderId) { t.folderId = playlistFolders[0].id; changed = true; }
+    });
+    if (changed) savePlaylistMeta(playlistTracks);
+    savePlaylistFolders();
+}
+migratePlaylistFolders();
+
+function getActivePlaylistTracks() {
+    return playlistTracks.filter(t => t.folderId === playlistActiveFolderId);
+}
 const playlistAudio = new Audio();
 let playlistCurrentObjectUrl = null;
+let playlistTrackLoading = false;
 
 // Случайный порядок воспроизведения плейлиста — настройка хранится локально
 const PLAYLIST_SHUFFLE_KEY = 'mute_playlist_shuffle';
@@ -2083,10 +2118,10 @@ if (playlistShuffleCheck) {
 }
 // Возвращает случайный индекс трека, отличный от текущего (если треков больше одного)
 function getRandomPlaylistIndex() {
-    if (playlistTracks.length <= 1) return 0;
+    if (getActivePlaylistTracks().length <= 1) return 0;
     let idx;
     do {
-        idx = Math.floor(Math.random() * playlistTracks.length);
+        idx = Math.floor(Math.random() * getActivePlaylistTracks().length);
     } while (idx === playlistCurrentIndex);
     return idx;
 }
@@ -2125,12 +2160,12 @@ function stripExt(name) {
 }
 
 function updatePlaylistWidget() {
-    const hasTracks = playlistTracks.length > 0;
+    const hasTracks = getActivePlaylistTracks().length > 0;
     playlistWidget.classList.toggle('has-tracks', hasTracks);
-    const current = playlistTracks[playlistCurrentIndex];
+    const current = getActivePlaylistTracks()[playlistCurrentIndex];
     if (current) {
         playlistTrackNameEl.textContent = stripExt(current.name);
-        playlistTrackSubEl.textContent = `Трек ${playlistCurrentIndex + 1} из ${playlistTracks.length}`;
+        playlistTrackSubEl.textContent = `Трек ${playlistCurrentIndex + 1} из ${getActivePlaylistTracks().length}`;
     } else {
         playlistTrackNameEl.textContent = 'Нет трека';
         playlistTrackSubEl.textContent = hasTracks ? 'Выберите трек' : 'Плейлист пуст';
@@ -2145,8 +2180,8 @@ function updatePlaylistWidget() {
 
 function renderPlaylistSettingsList() {
     playlistSettingsList.querySelectorAll('.playlist-track-row').forEach(el => el.remove());
-    playlistEmptyHint.style.display = playlistTracks.length ? 'none' : '';
-    playlistTracks.forEach((track, index) => {
+    playlistEmptyHint.style.display = getActivePlaylistTracks().length ? 'none' : '';
+    getActivePlaylistTracks().forEach((track, index) => {
         const row = document.createElement('div');
         row.className = 'playlist-track-row' + (index === playlistCurrentIndex ? ' is-current' : '');
         row.innerHTML = `
@@ -2160,14 +2195,87 @@ function renderPlaylistSettingsList() {
     });
 }
 
+function renderPlaylistFolders() {
+    if (!playlistFolderSelect) return;
+    playlistFolderSelect.innerHTML = '';
+    playlistFolders.forEach(folder => {
+        const option = document.createElement('option');
+        option.value = folder.id;
+        option.textContent = folder.name;
+        option.selected = folder.id === playlistActiveFolderId;
+        playlistFolderSelect.appendChild(option);
+    });
+    playlistFolderDeleteBtn.disabled = playlistFolders.length <= 1;
+}
+
+function createPlaylistFolder() {
+    const name = prompt('Название новой папки:');
+    const clean = String(name || '').trim();
+    if (!clean) return;
+    if (playlistFolders.some(f => f.name.toLowerCase() === clean.toLowerCase())) {
+        alert('Папка с таким названием уже существует.');
+        return;
+    }
+    const folder = { id: `folder_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, name: clean };
+    playlistFolders.push(folder);
+    playlistActiveFolderId = folder.id;
+    savePlaylistFolders();
+    localStorage.setItem(PLAYLIST_ACTIVE_FOLDER_KEY, playlistActiveFolderId);
+    playlistCurrentIndex = -1;
+    playlistAudio.pause();
+    playlistAudio.removeAttribute('src');
+    renderPlaylistFolders();
+    refreshPlaylistUi();
+}
+
+function deleteActivePlaylistFolder() {
+    if (playlistFolders.length <= 1) {
+        alert('Нельзя удалить последнюю папку.');
+        return;
+    }
+    const folder = playlistFolders.find(f => f.id === playlistActiveFolderId);
+    if (!folder || !confirm(`Удалить папку «${folder.name}» вместе со всеми её треками?`)) return;
+    const ids = new Set(playlistTracks.filter(t => t.folderId === folder.id).map(t => t.id));
+    playlistTracks = playlistTracks.filter(t => t.folderId !== folder.id);
+    ids.forEach(id => playlistDbDelete(id).catch(() => {}));
+    playlistFolders = playlistFolders.filter(f => f.id !== folder.id);
+    playlistActiveFolderId = playlistFolders[0].id;
+    savePlaylistFolders();
+    savePlaylistMeta(playlistTracks);
+    localStorage.setItem(PLAYLIST_ACTIVE_FOLDER_KEY, playlistActiveFolderId);
+    playlistCurrentIndex = -1;
+    playlistAudio.pause();
+    playlistAudio.removeAttribute('src');
+    renderPlaylistFolders();
+    refreshPlaylistUi();
+}
+
+if (playlistFolderSelect) {
+    playlistFolderSelect.addEventListener('change', () => {
+        playlistActiveFolderId = playlistFolderSelect.value;
+        localStorage.setItem(PLAYLIST_ACTIVE_FOLDER_KEY, playlistActiveFolderId);
+        playlistCurrentIndex = -1;
+        playlistAudio.pause();
+        playlistAudio.removeAttribute('src');
+        if (playlistCurrentObjectUrl) { URL.revokeObjectURL(playlistCurrentObjectUrl); playlistCurrentObjectUrl = null; }
+        refreshPlaylistUi();
+    });
+}
+if (playlistFolderNewBtn) playlistFolderNewBtn.addEventListener('click', createPlaylistFolder);
+if (playlistFolderDeleteBtn) playlistFolderDeleteBtn.addEventListener('click', deleteActivePlaylistFolder);
+
 function refreshPlaylistUi() {
+    renderPlaylistFolders();
     updatePlaylistWidget();
     renderPlaylistSettingsList();
 }
 
 async function playPlaylistTrack(index) {
-    if (index < 0 || index >= playlistTracks.length) return;
-    const track = playlistTracks[index];
+    if (index < 0 || index >= getActivePlaylistTracks().length) return;
+    // Новый трек получает новый номер, чтобы старые состояния/файлы не могли вернуть воспроизведение назад.
+    if (listenSession && listenSession.role === 'host') listenTrackGeneration++;
+    const track = getActivePlaylistTracks()[index];
+    playlistTrackLoading = true;
     try {
         const blob = await playlistDbGet(track.id);
         if (!blob) {
@@ -2190,12 +2298,14 @@ async function playPlaylistTrack(index) {
         if (listenSession && listenSession.role === 'host') sendCurrentTrackToListenGuest();
     } catch (e) {
         console.warn('[Плейлист] Не удалось воспроизвести трек:', e);
+    } finally {
+        playlistTrackLoading = false;
     }
     refreshPlaylistUi();
 }
 
 function togglePlaylistPlayPause() {
-    if (!playlistTracks.length) return;
+    if (!getActivePlaylistTracks().length) return;
     if (playlistCurrentIndex === -1) {
         playPlaylistTrack(0);
         return;
@@ -2209,21 +2319,21 @@ function togglePlaylistPlayPause() {
 }
 
 function playlistPrevTrack() {
-    if (!playlistTracks.length) return;
+    if (!getActivePlaylistTracks().length) return;
     if (playlistShuffle) {
         playPlaylistTrack(getRandomPlaylistIndex());
         return;
     }
-    const idx = playlistCurrentIndex <= 0 ? playlistTracks.length - 1 : playlistCurrentIndex - 1;
+    const idx = playlistCurrentIndex <= 0 ? getActivePlaylistTracks().length - 1 : playlistCurrentIndex - 1;
     playPlaylistTrack(idx);
 }
 function playlistNextTrack() {
-    if (!playlistTracks.length) return;
+    if (!getActivePlaylistTracks().length) return;
     if (playlistShuffle) {
         playPlaylistTrack(getRandomPlaylistIndex());
         return;
     }
-    const idx = playlistCurrentIndex === -1 || playlistCurrentIndex >= playlistTracks.length - 1 ? 0 : playlistCurrentIndex + 1;
+    const idx = playlistCurrentIndex === -1 || playlistCurrentIndex >= getActivePlaylistTracks().length - 1 ? 0 : playlistCurrentIndex + 1;
     playPlaylistTrack(idx);
 }
 
@@ -2233,13 +2343,20 @@ playlistAudio.addEventListener('ended', () => playlistNextTrack());
 
 // Если мы сейчас хост совместного прослушивания — держим собеседника в курсе
 // пуска/паузы своего плейлиста (смена самого трека шлётся отдельно, из playPlaylistTrack).
-playlistAudio.addEventListener('play', () => { if (listenSession && listenSession.role === 'host') sendListenStateToGuest(); });
-playlistAudio.addEventListener('pause', () => { if (listenSession && listenSession.role === 'host') sendListenStateToGuest(); });
+playlistAudio.addEventListener('play', () => { if (!playlistTrackLoading && listenSession && listenSession.role === 'host') sendListenStateToGuest(); });
+playlistAudio.addEventListener('pause', () => { if (!playlistTrackLoading && listenSession && listenSession.role === 'host') sendListenStateToGuest(); });
 playlistAudio.addEventListener('seeked', () => { if (listenSession && listenSession.role === 'host') sendListenStateToGuest(); });
 
 playlistPlayPauseBtn.addEventListener('click', togglePlaylistPlayPause);
 playlistPrevBtn.addEventListener('click', playlistPrevTrack);
 playlistNextBtn.addEventListener('click', playlistNextTrack);
+if (playlistRewindBtn) {
+    playlistRewindBtn.addEventListener('click', () => {
+        if (playlistCurrentIndex === -1 || !isFinite(playlistAudio.duration)) return;
+        playlistAudio.currentTime = Math.max(0, playlistAudio.currentTime - 10);
+        if (listenSession && listenSession.role === 'host') sendListenStateToGuest();
+    });
+}
 
 // ---------- Перемотка своего плейлиста (владелец плейлиста всегда может перематывать;
 // если сейчас идёт совместное прослушивание и мы хост — перемотка сама уедет
@@ -2320,7 +2437,12 @@ async function addPlaylistTracks(files) {
         const id = `t_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
         try {
             await playlistDbPut(id, file);
-            playlistTracks.push({ id, name: file.name, addedAt: Date.now() });
+            playlistTracks.push({
+                id,
+                name: file.name,
+                addedAt: Date.now(),
+                folderId: playlistActiveFolderId
+            });
             savePlaylistMeta(playlistTracks);
         } catch (e) {
             console.warn('[Плейлист] Не удалось сохранить трек:', e);
@@ -2331,7 +2453,8 @@ async function addPlaylistTracks(files) {
 }
 
 async function removePlaylistTrack(id) {
-    const index = playlistTracks.findIndex(t => t.id === id);
+    const activeTracks = getActivePlaylistTracks();
+    const index = activeTracks.findIndex(t => t.id === id);
     if (index === -1) return;
     const isCurrent = index === playlistCurrentIndex;
     if (isCurrent) {
@@ -2342,7 +2465,7 @@ async function removePlaylistTrack(id) {
     } else if (index < playlistCurrentIndex) {
         playlistCurrentIndex -= 1;
     }
-    playlistTracks.splice(index, 1);
+    playlistTracks = playlistTracks.filter(t => t.id !== id);
     savePlaylistMeta(playlistTracks);
     try { await playlistDbDelete(id); } catch (e) { /* ignore */ }
     refreshPlaylistUi();
@@ -2374,6 +2497,7 @@ const listenGuestAudio = new Audio(); // отдельный аудио-элем�
 listenGuestAudio.volume = Math.min(1, playlistVolumePercent / 100);
 let listenGuestObjectUrl = null;
 let listenGuestTrackMeta = null; // ждём бинарные данные трека после метаданных
+let listenTrackGeneration = 0; // защищает гостя от запоздавших данных старого трека
 let isDraggingListenerSeek = false; // хост сейчас тянет ползунок перемотки — не перетираем его значение
 
 function closeListenInviteBanner() {
@@ -2513,20 +2637,24 @@ function setupListenSession(conn, role, peerId, username) {
 
 async function sendCurrentTrackToListenGuest() {
     if (!listenSession || listenSession.role !== 'host') return;
-    const track = playlistTracks[playlistCurrentIndex];
+    const track = getActivePlaylistTracks()[playlistCurrentIndex];
     if (!track) return;
+    const sessionAtStart = listenSession;
+    const generation = ++listenTrackGeneration;
     try {
         const blob = await playlistDbGet(track.id);
-        if (!blob) return;
+        if (!blob || listenSession !== sessionAtStart || listenTrackGeneration !== generation) return;
         const buffer = await blob.arrayBuffer();
+        if (listenSession !== sessionAtStart || listenTrackGeneration !== generation) return;
         listenSession.conn.send({
             type: 'track-meta',
+            generation,
             name: track.name,
             mime: blob.type || 'audio/mpeg',
             currentTime: playlistAudio.currentTime || 0,
             playing: !playlistAudio.paused
         });
-        listenSession.conn.send(buffer);
+        listenSession.conn.send({ type: 'track-data', generation, buffer });
     } catch (e) {
         console.warn('[Совместное прослушивание] Не удалось отправить трек собеседнику:', e);
     }
@@ -2536,6 +2664,7 @@ function sendListenStateToGuest() {
     if (!listenSession || listenSession.role !== 'host') return;
     listenSession.conn.send({
         type: 'state',
+        generation: listenTrackGeneration,
         playing: !playlistAudio.paused,
         currentTime: playlistAudio.currentTime || 0
     });
@@ -2554,8 +2683,37 @@ function startListenHostSyncLoop() {
 function handleListenSyncMessage(msg) {
     if (!listenSession || listenSession.role !== 'guest') return;
 
-    const isBinary = msg instanceof ArrayBuffer || msg instanceof Uint8Array
-        || (msg && msg.buffer instanceof ArrayBuffer) || msg instanceof Blob;
+    // Новый формат трека: метаданные и бинарные данные имеют один generation.
+    if (msg && typeof msg === 'object' && msg.type === 'track-meta') {
+        listenGuestTrackMeta = msg;
+        return;
+    }
+
+    if (msg && typeof msg === 'object' && msg.type === 'track-data') {
+        const meta = listenGuestTrackMeta;
+        if (!meta || meta.generation !== msg.generation) return;
+        listenGuestTrackMeta = null;
+        try {
+            const blob = new Blob([msg.buffer], { type: meta.mime || 'audio/mpeg' });
+            if (listenGuestObjectUrl) URL.revokeObjectURL(listenGuestObjectUrl);
+            listenGuestObjectUrl = URL.createObjectURL(blob);
+            listenGuestAudio.src = listenGuestObjectUrl;
+            const applyState = () => {
+                listenGuestAudio.currentTime = Number(meta.currentTime) || 0;
+                if (meta.playing) listenGuestAudio.play().catch(() => {});
+                else listenGuestAudio.pause();
+            };
+            if (listenGuestAudio.readyState >= 1) applyState();
+            else listenGuestAudio.addEventListener('loadedmetadata', applyState, { once: true });
+            listenSessionTrackName.textContent = stripExt(meta.name);
+        } catch (e) {
+            console.warn('[Совместное прослушивание] Не удалось воспроизвести полученный трек:', e);
+        }
+        return;
+    }
+
+    // Совместимость со старыми клиентами: обычный ArrayBuffer после track-meta.
+    const isBinary = msg instanceof ArrayBuffer || msg instanceof Uint8Array || msg instanceof Blob;
     if (isBinary) {
         if (!listenGuestTrackMeta) return;
         const meta = listenGuestTrackMeta;
@@ -2566,7 +2724,7 @@ function handleListenSyncMessage(msg) {
             listenGuestObjectUrl = URL.createObjectURL(blob);
             listenGuestAudio.src = listenGuestObjectUrl;
             const applyState = () => {
-                listenGuestAudio.currentTime = meta.currentTime || 0;
+                listenGuestAudio.currentTime = Number(meta.currentTime) || 0;
                 if (meta.playing) listenGuestAudio.play().catch(() => {});
                 else listenGuestAudio.pause();
             };
@@ -2581,12 +2739,9 @@ function handleListenSyncMessage(msg) {
 
     if (!msg || typeof msg !== 'object') return;
 
-    if (msg.type === 'track-meta') {
-        listenGuestTrackMeta = msg;
-        return;
-    }
-
     if (msg.type === 'state') {
+        // Состояние старого трека не должно перематывать новый трек назад.
+        if (msg.generation && listenGuestTrackMeta && msg.generation !== listenGuestTrackMeta.generation) return;
         if (msg.playing && listenGuestAudio.paused) listenGuestAudio.play().catch(() => {});
         if (!msg.playing && !listenGuestAudio.paused) listenGuestAudio.pause();
         if (typeof msg.currentTime === 'number' && Math.abs(listenGuestAudio.currentTime - msg.currentTime) > 1.5) {
@@ -2595,7 +2750,6 @@ function handleListenSyncMessage(msg) {
         return;
     }
 }
-
 function endListenSession(silent) {
     if (!listenSession) return;
     const wasHost = listenSession.role === 'host';
@@ -2603,6 +2757,7 @@ function endListenSession(silent) {
     try { listenSession.conn.close(); } catch (e) {}
     listenSession = null;
     listenGuestTrackMeta = null;
+    listenTrackGeneration++;
     if (listenSyncIntervalId) { clearInterval(listenSyncIntervalId); listenSyncIntervalId = null; }
 
     listenGuestAudio.pause();
