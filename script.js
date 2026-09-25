@@ -2209,11 +2209,11 @@ function renderPlaylistFolders() {
 }
 
 function createPlaylistFolder() {
-    const name = prompt('Название новой папки:');
+    const name = prompt('Название нового плейлиста:');
     const clean = String(name || '').trim();
     if (!clean) return;
     if (playlistFolders.some(f => f.name.toLowerCase() === clean.toLowerCase())) {
-        alert('Папка с таким названием уже существует.');
+        alert('Плейлист с таким названием уже существует.');
         return;
     }
     const folder = { id: `folder_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, name: clean };
@@ -2230,11 +2230,11 @@ function createPlaylistFolder() {
 
 function deleteActivePlaylistFolder() {
     if (playlistFolders.length <= 1) {
-        alert('Нельзя удалить последнюю папку.');
+        alert('Нельзя удалить последний плейлист.');
         return;
     }
     const folder = playlistFolders.find(f => f.id === playlistActiveFolderId);
-    if (!folder || !confirm(`Удалить папку «${folder.name}» вместе со всеми её треками?`)) return;
+    if (!folder || !confirm(`Удалить плейлист «${folder.name}» вместе со всеми его треками?`)) return;
     const ids = new Set(playlistTracks.filter(t => t.folderId === folder.id).map(t => t.id));
     playlistTracks = playlistTracks.filter(t => t.folderId !== folder.id);
     ids.forEach(id => playlistDbDelete(id).catch(() => {}));
