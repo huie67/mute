@@ -408,13 +408,6 @@ const playlistTimeDuration = document.getElementById('playlist-time-duration');
 const playlistVolumeBtn = document.getElementById('playlist-volume-btn');
 
 // Форматирует секунды в "м:сс" для меток времени плейлиста
-function updateSeekFill(el) {
-    const max = parseFloat(el.max) || 1;
-    const val = parseFloat(el.value) || 0;
-    const pct = Math.max(0, Math.min(100, (val / max) * 100));
-    el.style.setProperty('--range-progress', pct + '%');
-}
-
 function formatPlaylistTime(seconds) {
     if (!isFinite(seconds) || seconds < 0) return '0:00';
     const m = Math.floor(seconds / 60);
@@ -2296,7 +2289,6 @@ async function playPlaylistTrack(index) {
         isDraggingListenerSeek = false;
         playlistSeek.value = '0';
         playlistSeek.max = '1000';
-        updateSeekFill(playlistSeek);
         playlistTimeCurrent.textContent = formatPlaylistTime(0);
         playlistTimeDuration.textContent = formatPlaylistTime(0);
         playlistAudio.src = playlistCurrentObjectUrl;
@@ -2371,19 +2363,16 @@ if (playlistRewindBtn) {
 // собеседнику через событие 'seeked' на playlistAudio, см. блок совместного прослушивания) ----------
 playlistAudio.addEventListener('loadedmetadata', () => {
     playlistSeek.max = String(Math.max(1, Math.floor(playlistAudio.duration * 10) || 1));
-    updateSeekFill(playlistSeek);
     playlistTimeDuration.textContent = formatPlaylistTime(playlistAudio.duration);
 });
 playlistAudio.addEventListener('timeupdate', () => {
     if (isDraggingListenerSeek) return;
     playlistSeek.value = String(Math.floor((playlistAudio.currentTime || 0) * 10));
-    updateSeekFill(playlistSeek);
     playlistTimeCurrent.textContent = formatPlaylistTime(playlistAudio.currentTime);
 });
 playlistSeek.addEventListener('mousedown', () => { isDraggingListenerSeek = true; });
 playlistSeek.addEventListener('touchstart', () => { isDraggingListenerSeek = true; }, { passive: true });
 playlistSeek.addEventListener('input', () => {
-    updateSeekFill(playlistSeek);
     const t = parseInt(playlistSeek.value, 10) / 10;
     playlistTimeCurrent.textContent = formatPlaylistTime(t);
     if (playlistCurrentIndex !== -1 && isFinite(playlistAudio.duration)) {
@@ -2776,7 +2765,6 @@ function endListenSession(silent) {
     if (listenGuestObjectUrl) { URL.revokeObjectURL(listenGuestObjectUrl); listenGuestObjectUrl = null; }
     listenSessionTrackName.textContent = 'Нет трека';
     listenSessionSeek.value = '0';
-    updateSeekFill(listenSessionSeek);
     listenSessionTimeCurrent.textContent = '0:00';
     listenSessionTimeDuration.textContent = '0:00';
 
@@ -2795,12 +2783,10 @@ listenSessionBarStop.addEventListener('click', () => endListenSession(false));
 // Прогресс воспроизведения у гостя — только для чтения (перематывает исключительно хост)
 listenGuestAudio.addEventListener('loadedmetadata', () => {
     listenSessionSeek.max = String(Math.max(1, Math.floor(listenGuestAudio.duration * 10) || 1));
-    updateSeekFill(listenSessionSeek);
     listenSessionTimeDuration.textContent = formatPlaylistTime(listenGuestAudio.duration);
 });
 listenGuestAudio.addEventListener('timeupdate', () => {
     listenSessionSeek.value = String(Math.floor((listenGuestAudio.currentTime || 0) * 10));
-    updateSeekFill(listenSessionSeek);
     listenSessionTimeCurrent.textContent = formatPlaylistTime(listenGuestAudio.currentTime);
 });
 
