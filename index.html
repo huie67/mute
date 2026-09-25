@@ -2080,45 +2080,10 @@
             background: transparent;
             height: 18px;
             accent-color: var(--accent);
-            appearance: none;
-            -webkit-appearance: none;
             cursor: pointer;
         }
-        .playlist-seek::-webkit-slider-runnable-track {
-            width: 100%;
-            height: 4px;
-            border-radius: 999px;
-            background: var(--bg-input);
-            border: 1px solid var(--border);
-        }
-        .playlist-seek::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 10px;
-            height: 10px;
-            margin-top: -4px;
-            border-radius: 50%;
-            background: var(--accent);
-            border: none;
-        }
-        .playlist-seek::-moz-range-track {
-            width: 100%;
-            height: 4px;
-            border-radius: 999px;
-            background: var(--bg-input);
-            border: 1px solid var(--border);
-        }
-        .playlist-seek::-moz-range-progress {
-            height: 4px;
-            border-radius: 999px;
-            background: var(--accent);
-        }
-        .playlist-seek::-moz-range-thumb {
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            background: var(--accent);
-            border: none;
+        .playlist-seek:focus {
+            outline: none;
         }
         .playlist-widget-icon {
             flex-shrink: 0;
