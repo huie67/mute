@@ -1163,12 +1163,8 @@ class MuteVoiceChangerProcessor extends AudioWorkletProcessor {
 registerProcessor('${VOICE_CHANGER_PROCESSOR_NAME}', MuteVoiceChangerProcessor);
 `;
 const VOICE_CHANGER_DEFAULT_SEMITONES = 5;   // «девчачий» голос по умолчанию
-// Диапазон включает и понижение тона: -12 полутонов == ratio 0.5 (голос "0.5x",
-// на октаву ниже) — это и есть нижняя граница, которую поддерживает питчшифтер
-// (parameterDescriptors.ratio.minValue === 0.5 в самом ворклете, см. выше).
-const VOICE_CHANGER_MIN_SEMITONES = -12;
+const VOICE_CHANGER_MIN_SEMITONES = 1;
 const VOICE_CHANGER_MAX_SEMITONES = 10;
-const VOICE_CHANGER_HALF_SPEED_SEMITONES = -12; // кнопка "Голос 0.5x"
 let voiceChangerEnabled = false;
 let voiceChangerSemitones = VOICE_CHANGER_DEFAULT_SEMITONES;
 let voiceOutNode = null;        // выход «после эффекта» → исходящий трек и самопрослушивание
@@ -4707,191 +4703,6 @@ function setUserStatusBadges(peerId, micMuted, deafened) {
 }
 
 let activeVideoStream = null;
-let rawCameraStream = null;         // "сырой" поток с камеры/экрана — для onended и остановки треков
-let cameraEffectsPipeline = null;   // { video, canvas, ctx, outStream, stop() }
-let isCameraShareActive = false;    // true — идёт именно вебка (не демонстрация экрана)
-let laserEyesActive = false;
-let lightningActive = false;
-let lightningEndAt = 0;
-
-const laserEyesBtn = document.getElementById('laser-eyes-btn');
-const thunderGodBtn = document.getElementById('thunder-god-btn');
-
-function updateCameraEffectButtons() {
-    if (laserEyesBtn) laserEyesBtn.style.display = isCameraShareActive ? '' : 'none';
-    if (thunderGodBtn) thunderGodBtn.style.display = isCameraShareActive ? '' : 'none';
-    if (laserEyesBtn) laserEyesBtn.classList.toggle('active', laserEyesActive);
-}
-
-// ---------- Эффекты на веб-камере ----------
-// Рисуем кадры камеры на canvas и отдаём собеседникам поток именно с canvas
-// (canvas.captureStream) — так эффекты видно у всех, а не только в локальном превью.
-// Точных координат глаз у нас нет (нет детектора лица), поэтому лазеры бьют из
-// примерной области глаз по центру кадра — расчёт на типичное положение лица
-// перед веб-камерой.
-function createCameraEffectsPipeline(rawStream) {
-    const track = rawStream.getVideoTracks()[0];
-    const settings = (track && track.getSettings) ? track.getSettings() : {};
-    const width = settings.width || 1280;
-    const height = settings.height || 720;
-
-    const video = document.createElement('video');
-    video.muted = true;
-    video.playsInline = true;
-    video.srcObject = rawStream;
-    video.play().catch(() => {});
-
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext('2d');
-
-    function drawLaserEyes(t) {
-        const eyeY = height * 0.40;
-        const eyeXs = [width * 0.40, width * 0.60];
-        const pulse = 0.75 + 0.25 * Math.sin(t / 90);
-        ctx.save();
-        ctx.globalCompositeOperation = 'lighter';
-        eyeXs.forEach((ex) => {
-            const beam = ctx.createLinearGradient(ex, eyeY, ex, height);
-            beam.addColorStop(0, `rgba(255,60,20,${0.95 * pulse})`);
-            beam.addColorStop(1, 'rgba(255,60,20,0)');
-            ctx.fillStyle = beam;
-            ctx.beginPath();
-            ctx.moveTo(ex - 5, eyeY);
-            ctx.lineTo(ex + 5, eyeY);
-            ctx.lineTo(ex + 55, height);
-            ctx.lineTo(ex - 55, height);
-            ctx.closePath();
-            ctx.fill();
-
-            const glow = ctx.createRadialGradient(ex, eyeY, 0, ex, eyeY, 16);
-            glow.addColorStop(0, `rgba(255,255,255,${0.9 * pulse})`);
-            glow.addColorStop(0.4, `rgba(255,90,40,${0.9 * pulse})`);
-            glow.addColorStop(1, 'rgba(255,60,20,0)');
-            ctx.fillStyle = glow;
-            ctx.beginPath();
-            ctx.arc(ex, eyeY, 16, 0, Math.PI * 2);
-            ctx.fill();
-        });
-        ctx.restore();
-    }
-
-    function drawBolt(x1, y1, x2, y2, alpha) {
-        ctx.save();
-        ctx.strokeStyle = `rgba(220,235,255,${alpha})`;
-        ctx.lineWidth = 3;
-        ctx.shadowColor = 'rgba(160,200,255,0.9)';
-        ctx.shadowBlur = 18;
-        ctx.beginPath();
-        ctx.moveTo(x1, y1);
-        const segs = 7;
-        for (let i = 1; i <= segs; i++) {
-            const nx = x1 + (x2 - x1) * (i / segs) + (Math.random() - 0.5) * width * 0.07;
-            const ny = y1 + (y2 - y1) * (i / segs);
-            ctx.lineTo(nx, ny);
-        }
-        ctx.stroke();
-        ctx.restore();
-    }
-
-    function drawLightning(t) {
-        const remain = lightningEndAt - t;
-        if (remain <= 0) { lightningActive = false; return; }
-        const flashAlpha = Math.max(0, Math.min(1, remain / 1400)) * 0.45;
-        ctx.fillStyle = `rgba(255,255,255,${flashAlpha})`;
-        ctx.fillRect(0, 0, width, height);
-        if (Math.floor(t / 90) % 2 === 0) drawBolt(width * 0.25, 0, width * 0.45, height * 0.75, 0.9);
-        if (Math.floor(t / 130) % 3 === 0) drawBolt(width * 0.75, 0, width * 0.55, height * 0.7, 0.85);
-    }
-
-    let rafId = requestAnimationFrame(function loop(t) {
-        if (video.readyState >= 2) {
-            ctx.drawImage(video, 0, 0, width, height);
-        } else {
-            ctx.fillStyle = '#000';
-            ctx.fillRect(0, 0, width, height);
-        }
-        if (laserEyesActive) drawLaserEyes(t);
-        if (lightningActive) drawLightning(t);
-        rafId = requestAnimationFrame(loop);
-    });
-
-    const outStream = canvas.captureStream(30);
-
-    return {
-        video, canvas, ctx, outStream,
-        stop() {
-            if (rafId) cancelAnimationFrame(rafId);
-            try { video.pause(); } catch (e) { /* ignore */ }
-            video.srcObject = null;
-        }
-    };
-}
-
-// Синтезированный "гром" — без внешних аудиофайлов: шумовой взрыв через фильтр
-// с быстрым затуханием плюс низкий рокот.
-function playThunderSound() {
-    try {
-        const ctx = audioContext || new (window.AudioContext || window.webkitAudioContext)();
-        if (!audioContext) audioContext = ctx;
-        if (ctx.state === 'suspended') ctx.resume().catch(() => {});
-
-        const now = ctx.currentTime;
-        const master = ctx.createGain();
-        master.gain.setValueAtTime(0.0001, now);
-        master.gain.exponentialRampToValueAtTime(0.9, now + 0.03);
-        master.gain.exponentialRampToValueAtTime(0.0001, now + 2.2);
-        master.connect(ctx.destination);
-
-        // Шумовой "треск" молнии
-        const bufSize = ctx.sampleRate * 2.2;
-        const noiseBuf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
-        const data = noiseBuf.getChannelData(0);
-        for (let i = 0; i < bufSize; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufSize, 2);
-        const noise = ctx.createBufferSource();
-        noise.buffer = noiseBuf;
-
-        const lowpass = ctx.createBiquadFilter();
-        lowpass.type = 'lowpass';
-        lowpass.frequency.setValueAtTime(3000, now);
-        lowpass.frequency.exponentialRampToValueAtTime(150, now + 2.0);
-
-        noise.connect(lowpass);
-        lowpass.connect(master);
-        noise.start(now);
-        noise.stop(now + 2.2);
-
-        // Низкий "рокот" грома
-        const osc = ctx.createOscillator();
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(70, now);
-        osc.frequency.exponentialRampToValueAtTime(35, now + 1.8);
-        const oscGain = ctx.createGain();
-        oscGain.gain.setValueAtTime(0.0001, now);
-        oscGain.gain.exponentialRampToValueAtTime(0.6, now + 0.05);
-        oscGain.gain.exponentialRampToValueAtTime(0.0001, now + 1.9);
-        osc.connect(oscGain);
-        oscGain.connect(master);
-        osc.start(now);
-        osc.stop(now + 1.9);
-    } catch (e) { console.warn('[Гром] Не удалось воспроизвести звук:', e); }
-}
-
-if (laserEyesBtn) {
-    laserEyesBtn.addEventListener('click', () => {
-        laserEyesActive = !laserEyesActive;
-        updateCameraEffectButtons();
-    });
-}
-if (thunderGodBtn) {
-    thunderGodBtn.addEventListener('click', () => {
-        if (!isCameraShareActive) return;
-        lightningActive = true;
-        lightningEndAt = performance.now() + 1400;
-        playThunderSound();
-    });
-}
 
 screenBtn.addEventListener('click', () => {
     if (!currentUser.room) {
@@ -4931,32 +4742,16 @@ shareCamChoice.addEventListener('click', async () => {
             video: { width: { ideal: preset.width }, height: { ideal: preset.height }, frameRate: { ideal: preset.frameRate } },
             audio: false
         });
-        startVideoStream(stream, /* isCamera */ true);
+        startVideoStream(stream);
     } catch (e) { console.error(e); }
 });
 
-function startVideoStream(stream, isCamera) {
-    isCameraShareActive = !!isCamera;
-
-    // Для веб-камеры (не демонстрации экрана) прогоняем кадры через canvas — это
-    // позволяет рисовать поверх изображения эффекты ("Лазеры из глаз" / "Молния и гром")
-    // прямо в исходящем видео, которое видят собеседники, а не только локально.
-    if (isCameraShareActive) {
-        cameraEffectsPipeline = createCameraEffectsPipeline(stream);
-        activeVideoStream = cameraEffectsPipeline.outStream;
-    } else {
-        cameraEffectsPipeline = null;
-        activeVideoStream = stream;
-    }
-    rawCameraStream = stream;
+function startVideoStream(stream) {
+    activeVideoStream = stream;
     showLocalVideo(activeVideoStream);
-    updateCameraEffectButtons();
 
     const realTrack = activeVideoStream.getVideoTracks()[0];
-    // "ended" у трека, идущего собеседникам, слушаем на сыром треке камеры/экрана —
-    // именно он реально завершается, когда пользователь останавливает демонстрацию
-    // системным диалогом или физически отключает камеру.
-    stream.getVideoTracks()[0].onended = () => stopVideoStream();
+    realTrack.onended = () => stopVideoStream();
 
     // Меняем в локальном потоке заглушку на реальный трек — это важно для тех,
     // кто присоединится к комнате ПОЗЖЕ: им звонок уйдёт уже с реальным видео.
@@ -5017,14 +4812,6 @@ function showLocalVideo(stream) {
 }
 
 function stopVideoStream() {
-    if (cameraEffectsPipeline) {
-        cameraEffectsPipeline.stop();
-        cameraEffectsPipeline = null;
-    }
-    if (rawCameraStream) {
-        rawCameraStream.getTracks().forEach(t => t.stop());
-        rawCameraStream = null;
-    }
     if (activeVideoStream) {
         activeVideoStream.getTracks().forEach(t => t.stop());
         activeVideoStream.getVideoTracks().forEach(t => {
@@ -5039,10 +4826,6 @@ function stopVideoStream() {
         });
     }
     activeVideoStream = null;
-    isCameraShareActive = false;
-    laserEyesActive = false;
-    lightningActive = false;
-    updateCameraEffectButtons();
 
     if (!localMediaStream.getVideoTracks().includes(placeholderVideoTrack)) {
         localMediaStream.addTrack(placeholderVideoTrack);
@@ -5310,44 +5093,6 @@ deafenBtn.addEventListener('click', () => {
     playDeafenSound();
     broadcastMuteState();
 });
-
-// ---------- Быстрая кнопка "Голос 0.5x" ----------
-// Одно нажатие: включает изменение голоса и сразу выставляет питч на -12 полутонов
-// (ratio 0.5 — голос звучит вдвое ниже/медленнее). Повторное нажатие возвращает
-// изменение голоса как было (выключает эффект, если до этого он был выключен).
-let voiceHalfBtnPrevState = null; // { enabled, semitones } — что было до нажатия
-const voiceHalfBtn = document.getElementById('voice-half-btn');
-function syncVoiceHalfBtn() {
-    if (!voiceHalfBtn) return;
-    const isHalf = voiceChangerEnabled && voiceChangerSemitones === VOICE_CHANGER_HALF_SPEED_SEMITONES;
-    voiceHalfBtn.classList.toggle('active', isHalf);
-}
-if (voiceHalfBtn) {
-    voiceHalfBtn.addEventListener('click', () => {
-        const isHalf = voiceChangerEnabled && voiceChangerSemitones === VOICE_CHANGER_HALF_SPEED_SEMITONES;
-        if (!isHalf) {
-            voiceHalfBtnPrevState = { enabled: voiceChangerEnabled, semitones: voiceChangerSemitones };
-            voiceChangerEnabled = true;
-            voiceChangerSemitones = VOICE_CHANGER_HALF_SPEED_SEMITONES;
-        } else if (voiceHalfBtnPrevState) {
-            voiceChangerEnabled = voiceHalfBtnPrevState.enabled;
-            voiceChangerSemitones = voiceHalfBtnPrevState.semitones;
-            voiceHalfBtnPrevState = null;
-        } else {
-            voiceChangerEnabled = false;
-        }
-        saveAudioSettings({ voiceChangerEnabled, voiceChangerSemitones });
-        if (audioContext && audioContext.state === 'suspended') audioContext.resume().catch(() => {});
-        applyVoiceChanger();
-        syncVoiceHalfBtn();
-        // Синхронизируем чекбокс/слайдер в настройках, если панель открыта.
-        const check = document.getElementById('voice-changer-check');
-        const slider = document.getElementById('voice-changer-pitch-slider');
-        if (check) check.checked = voiceChangerEnabled;
-        if (slider) slider.value = voiceChangerSemitones;
-        if (typeof window.__voiceChangerRefresh === 'function') window.__voiceChangerRefresh();
-    });
-}
 
 // ---------- Язык интерфейса (подготовка под будущие переводы) ----------
 // Сейчас переводов нет: выбор просто сохраняется, а интерфейс остаётся на русском.
@@ -5666,13 +5411,11 @@ if (micVolumeSlider) {
     slider.value = voiceChangerSemitones;
     check.checked = voiceChangerEnabled && supported;
     const refresh = () => {
-        if (valueEl) valueEl.innerText = (voiceChangerSemitones > 0 ? '+' : '') + voiceChangerSemitones;
+        if (valueEl) valueEl.innerText = `+${voiceChangerSemitones}`;
         if (group) group.classList.toggle('control-group-disabled', !check.checked);
         slider.disabled = !check.checked;
-        syncVoiceHalfBtn();
     };
     refresh();
-    window.__voiceChangerRefresh = refresh;
 
     if (!supported) {
         check.disabled = true;
