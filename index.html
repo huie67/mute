@@ -2071,7 +2071,7 @@
         }
         .playlist-time { flex-shrink: 0; font-size: 10px; color: var(--text-faint); width: 30px; text-align: center; }
         .playlist-seek {
-            flex: 1;
+            flex: 1 1 auto;
             min-width: 0;
             width: 100%;
             padding: 0;
@@ -2080,6 +2080,46 @@
             background: transparent;
             height: 18px;
             accent-color: var(--accent);
+            cursor: pointer;
+            box-sizing: border-box;
+        }
+        /* Ползунок времени имеет тот же базовый вид, что и ползунок громкости.
+           Убираем встроенные отступы браузера, из-за которых дорожка визуально
+           начиналась не от края самого input. */
+        .playlist-seek::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 4px;
+            border-radius: 999px;
+            background: var(--bg-input);
+        }
+        .playlist-seek::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 12px;
+            height: 12px;
+            margin-top: -4px;
+            border: 0;
+            border-radius: 50%;
+            background: var(--accent);
+            cursor: pointer;
+        }
+        .playlist-seek::-moz-range-track {
+            width: 100%;
+            height: 4px;
+            border-radius: 999px;
+            background: var(--bg-input);
+        }
+        .playlist-seek::-moz-range-progress {
+            height: 4px;
+            border-radius: 999px;
+            background: var(--accent);
+        }
+        .playlist-seek::-moz-range-thumb {
+            width: 12px;
+            height: 12px;
+            border: 0;
+            border-radius: 50%;
+            background: var(--accent);
             cursor: pointer;
         }
         .playlist-seek:focus {
