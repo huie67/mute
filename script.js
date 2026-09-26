@@ -1206,8 +1206,8 @@ class MuteVoiceChangerProcessor extends AudioWorkletProcessor {
 }
 registerProcessor('${VOICE_CHANGER_PROCESSOR_NAME}', MuteVoiceChangerProcessor);
 `;
-const VOICE_CHANGER_DEFAULT_SEMITONES = 5;   // «девчачий» голос по умолчанию
-const VOICE_CHANGER_MIN_SEMITONES = 1;
+const VOICE_CHANGER_DEFAULT_SEMITONES = 5;   // выше по тону по умолчанию
+const VOICE_CHANGER_MIN_SEMITONES = -10;     // отрицательные значения — ниже по тону
 const VOICE_CHANGER_MAX_SEMITONES = 10;
 let voiceChangerEnabled = false;
 let voiceChangerSemitones = VOICE_CHANGER_DEFAULT_SEMITONES;
@@ -5354,11 +5354,12 @@ const KEYBIND_ACTIONS = [
     { id: 'mute', label: 'Включить / выключить микрофон' },
     { id: 'deafen', label: 'Включить / выключить наушники' },
     { id: 'leave', label: 'Покинуть звонок' },
+    { id: 'voicechanger', label: 'Включить / выключить изменение голоса' },
     { id: 'playpause', label: 'Плеер: старт / пауза' },
     { id: 'prevtrack', label: 'Плеер: предыдущий трек' },
     { id: 'nexttrack', label: 'Плеер: следующий трек' }
 ];
-let keybinds = { mute: '', deafen: '', leave: '', playpause: '', prevtrack: '', nexttrack: '', global: true };
+let keybinds = { mute: '', deafen: '', leave: '', voicechanger: '', playpause: '', prevtrack: '', nexttrack: '', global: true };
 try {
     const raw = localStorage.getItem(KEYBINDS_KEY);
     if (raw) keybinds = { ...keybinds, ...JSON.parse(raw) };
@@ -5374,6 +5375,10 @@ function runKeybindAction(id) {
     if (id === 'mute') { if (!muteBtn.disabled) muteBtn.click(); }
     else if (id === 'deafen') deafenBtn.click();
     else if (id === 'leave') { if (currentUser.room) leaveVoiceChannel(); }
+    else if (id === 'voicechanger') {
+        const check = document.getElementById('voice-changer-check');
+        if (check && !check.disabled) check.click(); // сам click() вызовет 'change' → пересчёт applyVoiceChanger()
+    }
     else if (id === 'playpause') togglePlaylistPlayPause();
     else if (id === 'prevtrack') playlistPrevTrack();
     else if (id === 'nexttrack') playlistNextTrack();
@@ -5624,7 +5629,9 @@ if (micVolumeSlider) {
     slider.value = voiceChangerSemitones;
     check.checked = voiceChangerEnabled && supported;
     const refresh = () => {
-        if (valueEl) valueEl.innerText = `+${voiceChangerSemitones}`;
+        // Math.sign даёт корректный "+"/"-"/пустую строку для 0, отрицательные числа
+        // сами несут свой минус — вручную дописывать нужно только "+" для положительных.
+        if (valueEl) valueEl.innerText = `${voiceChangerSemitones > 0 ? '+' : ''}${voiceChangerSemitones}`;
         if (group) group.classList.toggle('control-group-disabled', !check.checked);
         slider.disabled = !check.checked;
     };

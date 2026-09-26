@@ -612,10 +612,23 @@ function customRoomInfoFor(room, socket) {
 // чужой ник, хотя на самом деле сервер просто никогда не сверял ники между уже
 // подключёнными сокетами. Эта функция проверяет живую занятость ника среди ВСЕХ сейчас
 // подключённых сокетов (не только в одной комнате — чат общий на все комнаты).
-function isUsernameActiveElsewhere(username, excludeSocketId) {
+// excludePeerId — это peerId ПЕРЕПОДКЛЮЧАЮЩЕГОСЯ клиента (стабилен в рамках одной
+// вкладки при обрыве связи, см. myPeer.reconnect() на клиенте). Без этого параметра
+// при обрыве связи (сон ноутбука, сворачивание приложения, скачок Wi-Fi) сокет.io
+// создаёт НОВЫЙ socket.id ещё ДО того, как сервер получит 'disconnect' старого —
+// какое-то время оба сокета одного и того же человека "живы" одновременно.
+// Раньше в этот момент isUsernameActiveElsewhere видела старый (умирающий) сокет
+// с тем же именем как "занято другим", и гостю на пустом месте подставлялся ник
+// со случайным суффиксом (Гость_1234). Дальше это новое имя расходилось с тем,
+// что записано в custom_room_members, и при следующем 'select chat room' проверка
+// членства проваливалась — человека без всякого кика выкидывало из чата/канала
+// с сообщением 'kicked from server'. Сверяя peerId, не считаем старую сессию
+// самого себя конфликтом.
+function isUsernameActiveElsewhere(username, excludeSocketId, excludePeerId) {
     const lower = username.toLowerCase();
     for (const [id, s] of io.sockets.sockets) {
         if (id === excludeSocketId) continue;
+        if (excludePeerId && s.data && s.data.peerId === excludePeerId) continue;
         if (s.data && typeof s.data.username === 'string' && s.data.username.toLowerCase() === lower) {
             return true;
         }
@@ -625,12 +638,12 @@ function isUsernameActiveElsewhere(username, excludeSocketId) {
 
 // Подбирает свободный (не занятый ни в БД зарегистрированным аккаунтом, ни живым
 // сокетом прямо сейчас) вариант ника на основе requested, добавляя случайный суффикс.
-async function resolveFreeGuestUsername(requested, excludeSocketId) {
+async function resolveFreeGuestUsername(requested, excludeSocketId, excludePeerId) {
     let candidate = requested;
     for (let attempt = 0; attempt < 5; attempt++) {
         const owner = await findUserByUsername(candidate);
         const takenByAccount = !!(owner && owner.password_hash);
-        const takenLive = isUsernameActiveElsewhere(candidate, excludeSocketId);
+        const takenLive = isUsernameActiveElsewhere(candidate, excludeSocketId, excludePeerId);
         if (!takenByAccount && !takenLive) {
             return { username: candidate, changed: candidate !== requested };
         }
@@ -1260,6 +1273,20 @@ io.on('connection', (socket) => {
         const token = userData && userData.token;
         let verified = false; // ник подтверждён токеном аккаунта — можно доверять для синхронизации между устройствами
 
+        const peerId = userData && userData.peerId;
+
+        // Если тот же клиент (тот же peerId) уже числится под другим socket.id —
+        // это хвост от разрыва связи, который сервер ещё не успел отключить сам
+        // (ping-timeout). Закрываем его сразу, не дожидаясь таймаута: иначе он
+        // мешает проверке ника ниже и может задвоиться в списках участников.
+        if (peerId) {
+            for (const [id, s] of io.sockets.sockets) {
+                if (id !== socket.id && s.data && s.data.peerId === peerId) {
+                    s.disconnect(true);
+                }
+            }
+        }
+
         try {
             if (token) {
                 const decoded = verifyToken(token);
@@ -1268,7 +1295,7 @@ io.on('connection', (socket) => {
                     verified = true;
                 }
             } else {
-                const resolved = await resolveFreeGuestUsername(requested, socket.id);
+                const resolved = await resolveFreeGuestUsername(requested, socket.id, peerId);
                 username = resolved.username;
                 if (resolved.changed) {
                     socket.emit('username protected', { requested, assignedUsername: username });
@@ -1278,7 +1305,7 @@ io.on('connection', (socket) => {
             console.error('❌ Ошибка проверки ника при регистрации сокета:', err);
         }
 
-        socket.data = { username, avatar, peerId: userData && userData.peerId, verified };
+        socket.data = { username, avatar, peerId, verified };
 
         // Клиент при переподключении ждёт подтверждения, прежде чем заново входить в канал —
         // иначе 'join room' может обработаться раньше, чем сокет получит ник, и человек
