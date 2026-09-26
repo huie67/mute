@@ -328,6 +328,7 @@ socket.on('kicked from server', ({ code, name } = {}) => {
     // для того же roomName, из-за чего кик "не держался" (см. серверную часть).
     if (selectedRoom === roomName) {
         selectedRoom = null;
+        saveLastRoom(null);
         setChatEnabled(false);
         roomTitle.innerText = 'Выберите канал';
         connectRoomBtn.style.display = 'none';
@@ -1064,6 +1065,31 @@ document.addEventListener('DOMContentLoaded', () => {
     if (bgResetBtn) bgResetBtn.addEventListener('click', () => setThemeBg(DEFAULT_THEME.bgColor));
 });
 let selectedRoom = null; 
+
+// Запоминаем последний открытый канал/сервер, чтобы после обновления страницы (F5)
+// снова открылась та же вкладка, а не пустой экран без выбранного канала.
+const LAST_ROOM_KEY = 'lastSelectedRoom';
+function saveLastRoom(room) {
+    try {
+        if (room) localStorage.setItem(LAST_ROOM_KEY, room);
+        else localStorage.removeItem(LAST_ROOM_KEY);
+    } catch (e) { /* ignore */ }
+}
+function loadLastRoom() {
+    try { return localStorage.getItem(LAST_ROOM_KEY); } catch (e) { return null; }
+}
+// Восстанавливаем только один раз за загрузку страницы — как только пользователь
+// сам кликнет по какому-то каналу, автоматическое восстановление больше не нужно.
+let lastRoomRestored = false;
+function tryRestoreLastRoom() {
+    if (lastRoomRestored || selectedRoom) return;
+    const room = loadLastRoom();
+    if (!room) return;
+    const btn = document.querySelector(`[data-room="${CSS.escape(room)}"]`);
+    if (!btn) return;
+    lastRoomRestored = true;
+    selectRoomButton(btn);
+}
 
 let localMediaStream = null; 
 let rawAudioStream = null;
@@ -3742,6 +3768,7 @@ function selectRoomButton(btn) {
     const previousRoom = selectedRoom;
     const roomChanged = selectedRoom !== roomName;
     selectedRoom = roomName;
+    saveLastRoom(roomName);
 
     if (currentUser.room === roomName) {
         setConnectRoomButtonState(true);
@@ -3931,6 +3958,9 @@ socket.on('custom rooms list', (rooms) => {
         if (sel) sel.classList.add('active');
     }
     if (typeof renderSoundChannelLists === 'function') renderSoundChannelLists();
+    // Список серверов только что отрисован — самое время открыть тот канал,
+    // который был открыт до обновления страницы (если он ещё существует).
+    tryRestoreLastRoom();
 });
 
 function addCustomServerButton(data) {
@@ -6457,6 +6487,7 @@ document.addEventListener('keydown', (e) => {
 logoutConfirmBtn.addEventListener('click', () => {
     closeLogoutConfirm();
     clearProfileStorage();
+    saveLastRoom(null);
     location.reload();
 });
 
