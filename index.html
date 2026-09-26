@@ -742,68 +742,20 @@
         }
         .listen-session-seek:disabled { opacity: 0.7; cursor: default; }
 
-        /* Кастомный таймлайн: полоса без внутренних отступов, начинается точно с края */
+        /* Таймлайн оформлен так же, как остальные ползунки в приложении:
+           нативный рендер браузера, без кастомных track/thumb — только accent-color. */
         .listen-session-seek,
         .playlist-seek {
-            -webkit-appearance: none;
-            appearance: none;
+            width: 100%;
+            padding: 0;
+            margin: 0;
+            border: none;
             background: transparent;
+            accent-color: var(--accent);
             cursor: pointer;
         }
-        .listen-session-seek::-webkit-slider-runnable-track,
-        .playlist-seek::-webkit-slider-runnable-track {
-            width: 100%;
-            height: 4px;
-            border-radius: 2px;
-            background: linear-gradient(to right,
-                var(--accent) 0%, var(--accent) var(--fill, 0%),
-                var(--bg-elevated-hover) var(--fill, 0%), var(--bg-elevated-hover) 100%);
-        }
-        .listen-session-seek::-moz-range-track,
-        .playlist-seek::-moz-range-track {
-            width: 100%;
-            height: 4px;
-            border-radius: 2px;
-            background: var(--bg-elevated-hover);
-        }
-        .listen-session-seek::-moz-range-progress,
-        .playlist-seek::-moz-range-progress {
-            height: 4px;
-            border-radius: 2px;
-            background: var(--accent);
-        }
-        .listen-session-seek::-webkit-slider-thumb,
-        .playlist-seek::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            width: 11px;
-            height: 11px;
-            border: none;
-            border-radius: 50%;
-            background: var(--accent);
-            margin-top: -3.5px;
-            box-shadow: none;
-        }
-        .listen-session-seek::-moz-range-thumb,
-        .playlist-seek::-moz-range-thumb {
-            width: 11px;
-            height: 11px;
-            border: none;
-            border-radius: 50%;
-            background: var(--accent);
-            box-shadow: none;
-        }
-        .listen-session-seek:disabled::-webkit-slider-thumb,
-        .playlist-seek:disabled::-webkit-slider-thumb { background: var(--text-faint); }
-        .listen-session-seek:disabled::-moz-range-thumb,
-        .playlist-seek:disabled::-moz-range-thumb { background: var(--text-faint); }
-        .listen-session-seek,
-        .playlist-seek { outline: none; }
-        .listen-session-seek:focus,
-        .playlist-seek:focus,
-        .listen-session-seek:focus-visible,
-        .playlist-seek:focus-visible { outline: none; box-shadow: none; }
-        .listen-session-seek::-moz-focus-outer,
-        .playlist-seek::-moz-focus-outer { border: 0; }
+        .listen-session-seek:disabled,
+        .playlist-seek:disabled { opacity: 0.7; cursor: default; }
 
         .user-avatar {
             width: 28px;
@@ -1296,7 +1248,8 @@
             border-radius: 6px;
             outline: none;
         }
-        /* Таймлайн — не обычный input, сбрасываем всё, что задал общий select/range стиль выше */
+        /* Таймлайн теперь оформлен как остальные ползунки — единый нативный стиль,
+           отдельного сброса не требуется (правило оставлено для ясности/совместимости). */
         input[type="range"].listen-session-seek,
         input[type="range"].playlist-seek {
             background: transparent !important;
