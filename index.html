@@ -775,10 +775,11 @@
             -webkit-appearance: none;
             width: 11px;
             height: 11px;
+            border: none;
             border-radius: 50%;
             background: var(--accent);
             margin-top: -3.5px;
-            box-shadow: 0 0 0 2px var(--bg-elevated, #fff);
+            box-shadow: none;
         }
         .listen-session-seek::-moz-range-thumb,
         .playlist-seek::-moz-range-thumb {
@@ -787,12 +788,20 @@
             border: none;
             border-radius: 50%;
             background: var(--accent);
-            box-shadow: 0 0 0 2px var(--bg-elevated, #fff);
+            box-shadow: none;
         }
         .listen-session-seek:disabled::-webkit-slider-thumb,
         .playlist-seek:disabled::-webkit-slider-thumb { background: var(--text-faint); }
         .listen-session-seek:disabled::-moz-range-thumb,
         .playlist-seek:disabled::-moz-range-thumb { background: var(--text-faint); }
+        .listen-session-seek,
+        .playlist-seek { outline: none; }
+        .listen-session-seek:focus,
+        .playlist-seek:focus,
+        .listen-session-seek:focus-visible,
+        .playlist-seek:focus-visible { outline: none; box-shadow: none; }
+        .listen-session-seek::-moz-focus-outer,
+        .playlist-seek::-moz-focus-outer { border: 0; }
 
         .user-avatar {
             width: 28px;
