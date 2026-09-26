@@ -742,6 +742,58 @@
         }
         .listen-session-seek:disabled { opacity: 0.7; cursor: default; }
 
+        /* Кастомный таймлайн: полоса без внутренних отступов, начинается точно с края */
+        .listen-session-seek,
+        .playlist-seek {
+            -webkit-appearance: none;
+            appearance: none;
+            background: transparent;
+            cursor: pointer;
+        }
+        .listen-session-seek::-webkit-slider-runnable-track,
+        .playlist-seek::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 4px;
+            border-radius: 2px;
+            background: var(--bg-elevated-hover);
+        }
+        .listen-session-seek::-moz-range-track,
+        .playlist-seek::-moz-range-track {
+            width: 100%;
+            height: 4px;
+            border-radius: 2px;
+            background: var(--bg-elevated-hover);
+        }
+        .listen-session-seek::-moz-range-progress,
+        .playlist-seek::-moz-range-progress {
+            height: 4px;
+            border-radius: 2px;
+            background: var(--accent);
+        }
+        .listen-session-seek::-webkit-slider-thumb,
+        .playlist-seek::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 11px;
+            height: 11px;
+            border-radius: 50%;
+            background: var(--accent);
+            margin-top: -3.5px;
+            box-shadow: 0 0 0 2px var(--bg-elevated, #fff);
+        }
+        .listen-session-seek::-moz-range-thumb,
+        .playlist-seek::-moz-range-thumb {
+            width: 11px;
+            height: 11px;
+            border: none;
+            border-radius: 50%;
+            background: var(--accent);
+            box-shadow: 0 0 0 2px var(--bg-elevated, #fff);
+        }
+        .listen-session-seek:disabled::-webkit-slider-thumb,
+        .playlist-seek:disabled::-webkit-slider-thumb { background: var(--text-faint); }
+        .listen-session-seek:disabled::-moz-range-thumb,
+        .playlist-seek:disabled::-moz-range-thumb { background: var(--text-faint); }
+
         .user-avatar {
             width: 28px;
             height: 28px;
@@ -2071,7 +2123,7 @@
         }
         .playlist-time { flex-shrink: 0; font-size: 10px; color: var(--text-faint); width: 30px; text-align: center; }
         .playlist-seek {
-            flex: 1 1 auto;
+            flex: 1;
             min-width: 0;
             width: 100%;
             padding: 0;
@@ -2080,46 +2132,6 @@
             background: transparent;
             height: 18px;
             accent-color: var(--accent);
-            cursor: pointer;
-            box-sizing: border-box;
-        }
-        /* Ползунок времени имеет тот же базовый вид, что и ползунок громкости.
-           Убираем встроенные отступы браузера, из-за которых дорожка визуально
-           начиналась не от края самого input. */
-        .playlist-seek::-webkit-slider-runnable-track {
-            width: 100%;
-            height: 4px;
-            border-radius: 999px;
-            background: var(--bg-input);
-        }
-        .playlist-seek::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 12px;
-            height: 12px;
-            margin-top: -4px;
-            border: 0;
-            border-radius: 50%;
-            background: var(--accent);
-            cursor: pointer;
-        }
-        .playlist-seek::-moz-range-track {
-            width: 100%;
-            height: 4px;
-            border-radius: 999px;
-            background: var(--bg-input);
-        }
-        .playlist-seek::-moz-range-progress {
-            height: 4px;
-            border-radius: 999px;
-            background: var(--accent);
-        }
-        .playlist-seek::-moz-range-thumb {
-            width: 12px;
-            height: 12px;
-            border: 0;
-            border-radius: 50%;
-            background: var(--accent);
             cursor: pointer;
         }
         .playlist-seek:focus {
