@@ -755,7 +755,9 @@
             width: 100%;
             height: 4px;
             border-radius: 2px;
-            background: var(--bg-elevated-hover);
+            background: linear-gradient(to right,
+                var(--accent) 0%, var(--accent) var(--fill, 0%),
+                var(--bg-elevated-hover) var(--fill, 0%), var(--bg-elevated-hover) 100%);
         }
         .listen-session-seek::-moz-range-track,
         .playlist-seek::-moz-range-track {
@@ -1293,6 +1295,14 @@
             padding: 10px;
             border-radius: 6px;
             outline: none;
+        }
+        /* Таймлайн — не обычный input, сбрасываем всё, что задал общий select/range стиль выше */
+        input[type="range"].listen-session-seek,
+        input[type="range"].playlist-seek {
+            background: transparent !important;
+            border: none !important;
+            padding: 0 !important;
+            border-radius: 0 !important;
         }
 
         .checkbox-label {
