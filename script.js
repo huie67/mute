@@ -3130,55 +3130,43 @@ async function completeLogin() {
 
 // Список ICE-серверов (STUN + TURN) для установки соединения между собеседниками.
 // БЕЗ ЭТОГО у new Peer() используются только серверы по умолчанию из PeerJS
-// (google-STUN + один бесплатный общий TURN на peerjs.com), которых для part
+// (google-STUN + один бесплатный общий TURN на peerjs.com), которых для
 // прямого P2P-соединения вроде между двумя друзьями в одной сети — достаточно,
-// но если третий человек сидит за более строгим NAT/firewall (мобильный интернет,
-// корпоративная/учебная сеть, некоторые роутеры) и прямое соединение невозможно,
-// а единственный бесплатный TURN-сервер PeerJS перегружен или недоступен —
+// но если собеседник сидит за более строгим NAT/firewall (мобильный интернет,
+// корпоративная сеть, дальняя страна/провайдер) и прямое соединение невозможно —
 // его WebRTC-соединение с остальными вообще не устанавливается: он никого не
-// слышит, его не слышно и не видно демку (потому что медиапоток просто никогда
-// не доходит), а связанные с этим соединением ползунки громкости не действуют
-// (не на что влиять — аудиоузлы создаются только после реального прихода потока).
-// Добавляем несколько независимых STUN/TURN-серверов, чтобы у браузера было
-// больше путей для установления соединения.
-// Запасной вариант, если свой аккаунт на dashboard.metered.ca не настроен на сервере
-// (не заданы METERED_APP_NAME/METERED_API_KEY в .env) или запрос к /api/ice-servers
-// не удался (сеть, сервер недоступен и т.п.) — общедоступный бесплатный
-// Open Relay Project TURN, независимый от инфраструктуры PeerJS.
+// слышит, его не слышно и не видно демку (медиапоток просто никогда не доходит).
+// Список серверов целиком бесплатный и не требует никакого аккаунта/ключа:
+// публичные Google STUN + два независимых бесплатных TURN-провайдера (см.
+// FREE_ICE_SERVERS на сервере) — если один недоступен/исчерпал квоту, браузер
+// попробует другой. Именно TURN даёт соединению работать между людьми,
+// находящимися очень далеко друг от друга и в разных сетях.
 const FALLBACK_ICE_SERVERS = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun.relay.metered.ca:80' },
-    { urls: 'turn:global.relay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turn:global.relay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
+    { urls: 'stun:openrelay.metered.ca:80' },
+    { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turns:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'stun:freestun.net:3478' },
+    { urls: 'turn:freestun.net:3478', username: 'free', credential: 'free' }
 ];
 
-// Список ICE-серверов (STUN + TURN) для установки соединения между собеседниками.
-// Берём его с бэкенда (/api/ice-servers), который при настроенном своём аккаунте
-// dashboard.metered.ca отдаёт свежие TURN-креды из твоего проекта — это надёжнее
-// общего бесплатного openrelayproject, который часто перегружен/недоступен.
-// Если бэкенд не настроен или недоступен — используем FALLBACK_ICE_SERVERS.
+// Берём список ICE-серверов с бэкенда (/api/ice-servers) — он всегда отдаёт
+// бесплатный статический список (никакого приватного аккаунта не требуется).
+// Если бэкенд почему-то недоступен — используем тот же список локально
+// (FALLBACK_ICE_SERVERS), так что звонок работает даже без сервера настроек.
 async function loadIceServersConfig() {
     try {
         const res = await fetch('/api/ice-servers');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        if (data && data.configured && Array.isArray(data.iceServers) && data.iceServers.length) {
-            console.log('[ICE] Используются TURN/STUN-серверы из dashboard.metered.ca:',
-                data.iceServers.map(s => Array.isArray(s.urls) ? s.urls.join(',') : s.urls).join(' | '));
-            // Публичный STUN добавляем на всякий случай — он бесплатный и не расходует трафик TURN.
-            const hasGoogleStun = data.iceServers.some(s => String(s.urls).includes('stun.l.google.com'));
-            const servers = hasGoogleStun ? data.iceServers : [...data.iceServers, { urls: 'stun:stun.l.google.com:19302' }];
-            return { iceServers: servers, sdpSemantics: 'unified-plan', iceCandidatePoolSize: 2 };
+        if (data && Array.isArray(data.iceServers) && data.iceServers.length) {
+            return { iceServers: data.iceServers, sdpSemantics: 'unified-plan', iceCandidatePoolSize: 2 };
         }
-        console.warn('[ICE] Причина от сервера:', data && data.reason, data && data.env);
-        console.warn('[ICE] Сервер сообщил, что Metered НЕ настроен (нет METERED_APP_NAME / METERED_API_KEY, ' +
-            'либо запрос к Metered упал — смотри логи сервера). Используем общий openrelayproject — ' +
-            'он часто не работает, и участники из разных сетей могут не слышать друг друга.');
     } catch (err) {
-        console.warn('[ICE] Не удалось получить ICE-серверы с сервера, используем запасной список:', err);
+        console.warn('[ICE] Не удалось получить ICE-серверы с сервера, используем локальный список:', err);
     }
     return { iceServers: FALLBACK_ICE_SERVERS, sdpSemantics: 'unified-plan', iceCandidatePoolSize: 2 };
 }

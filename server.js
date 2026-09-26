@@ -17,54 +17,37 @@ const io = new Server(server);
 app.use(express.static(__dirname)); // Клиентские файлы лежат в корне репозитория
 app.use(express.json());
 
-// ---------- TURN/STUN-серверы: dashboard.metered.ca ----------
-// Раньше клиент был зашит на бесплатные общие TURN-креды openrelayproject —
-// они часто перегружены и могут просто не работать. Теперь, если задан свой
-// аккаунт Metered (APP NAME + TURN Credential API Key из дашборда), сервер
-// сам ходит в Metered TURN REST API и отдаёт клиенту актуальный список
-// iceServers. Ключ Metered остаётся на сервере и не попадает в браузер.
-// Короткий кэш (60 сек) — чтобы не дёргать Metered на каждый вход в звонок.
-let meteredIceCache = { data: null, fetchedAt: 0 };
-const METERED_ICE_CACHE_MS = 60 * 1000;
+// ---------- TURN/STUN-серверы: полностью бесплатные, без стороннего аккаунта ----------
+// Раньше сервер ходил в приватный TURN REST API dashboard.metered.ca (требовал
+// свой платный/зарегистрированный аккаунт: APP NAME + API KEY в .env). Теперь
+// вместо этого отдаём клиенту готовый статический список: публичные Google
+// STUN-серверы (для прямого P2P — большинство звонков идут именно так) плюс
+// общедоступный бесплатный TURN-релей Open Relay Project (credentials
+// "openrelayproject" — открытые, без регистрации, не привязаны ни к чьему
+// аккаунту). TURN используется браузером только как запасной путь, когда
+// прямое P2P-соединение невозможно из-за строгого NAT/firewall — именно
+// это чаще всего случается, когда собеседники далеко друг от друга и
+// сидят в разных сетях (мобильный интернет, корпоративные сети и т.п.).
+// Никаких внешних запросов и ключей — endpoint отвечает мгновенно и всегда.
+// Два независимых бесплатных TURN-провайдера (разные хостинги) — если у одного
+// закончилась квота или он временно недоступен, браузер попробует другой.
+// Открытые публичные креды, никакого приватного аккаунта/ключа не требуется.
+const FREE_ICE_SERVERS = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    // Open Relay Project — 20 ГБ бесплатного TURN-трафика в месяц, без регистрации
+    { urls: 'stun:openrelay.metered.ca:80' },
+    { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turns:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+    // FreeSTUN — второй независимый бесплатный TURN, тоже без регистрации
+    { urls: 'stun:freestun.net:3478' },
+    { urls: 'turn:freestun.net:3478', username: 'free', credential: 'free' }
+];
 
-async function fetchMeteredIceServers() {
-    const appName = (process.env.METERED_APP_NAME || '').trim().replace(/^https?:\/\//, '').replace(/\.metered\.live.*$/, '');
-    const apiKey = (process.env.METERED_API_KEY || '').trim();
-    if (!appName || !apiKey) return null; // свой аккаунт не настроен
-
-    const now = Date.now();
-    if (meteredIceCache.data && (now - meteredIceCache.fetchedAt) < METERED_ICE_CACHE_MS) {
-        return meteredIceCache.data;
-    }
-
-    const url = `https://${appName}.metered.live/api/v1/turn/credentials?apiKey=${encodeURIComponent(apiKey)}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Metered TURN API ответил ${res.status}`);
-    const iceServers = await res.json();
-    meteredIceCache = { data: iceServers, fetchedAt: now };
-    return iceServers;
-}
-
-app.get('/api/ice-servers', async (req, res) => {
-    const envState = {
-        METERED_APP_NAME: !!(process.env.METERED_APP_NAME || '').trim(),
-        METERED_API_KEY: !!(process.env.METERED_API_KEY || '').trim()
-    };
-    try {
-        const iceServers = await fetchMeteredIceServers();
-        if (!iceServers) {
-            console.warn('⚠️ /api/ice-servers: METERED_APP_NAME / METERED_API_KEY не заданы', envState);
-            return res.json({ configured: false, reason: 'env-missing', env: envState, iceServers: [] });
-        }
-        if (!Array.isArray(iceServers) || !iceServers.length) {
-            console.error('❌ Metered вернул неожиданный ответ:', JSON.stringify(iceServers).slice(0, 300));
-            return res.json({ configured: false, reason: 'metered-bad-response', env: envState, iceServers: [] });
-        }
-        res.json({ configured: true, iceServers });
-    } catch (err) {
-        console.error('❌ Ошибка получения ICE-серверов от Metered:', err.message);
-        res.json({ configured: false, reason: `metered-error: ${err.message}`, env: envState, iceServers: [] });
-    }
+app.get('/api/ice-servers', (req, res) => {
+    res.json({ configured: true, iceServers: FREE_ICE_SERVERS });
 });
 
 // ---------- База данных: Postgres (Neon) — общий чат хранится тут, не на диске сервера ----------
