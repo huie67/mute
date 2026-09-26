@@ -341,6 +341,7 @@ socket.on('kicked from server', ({ code, name } = {}) => {
         connectedUsers = {};
         updateVoiceUsersList();
         renderCallHeader();
+        renderPreviewUsers(); // сбрасывает заголовок "Ваш звонок" обратно, если он был показан
         setConnectRoomButtonState(false);
         screenBtn.disabled = true;
         screenBtn.title = 'Сначала подключитесь к голосовому каналу';
@@ -4772,17 +4773,37 @@ function buildVoiceUserRow(id, user, interactive = true) {
 }
 
 // Участники голосового канала, который мы ПРОСМАТРИВАЕМ, пока сидим в звонке другого.
+// ВАЖНО: раньше этот блок прятался целиком, если в просматриваемом канале никого
+// не было — тогда на экране оставался только основной список (voice-users-container),
+// а он всегда показывает именно ВАШ звонок, а не просматриваемый канал. Из-за этого
+// казалось, будто при переходе в другой канал там "те же люди, что и в своём" —
+// на самом деле это и были участники своего звонка, просто блок "Просмотр" с
+// (пустым) списком другого канала был не виден. Теперь блок всегда показывается,
+// пока открыт чужой канал, и заголовок над основным списком тоже меняется, чтобы
+// не путать "свой звонок" с "просматриваемым каналом".
 function renderPreviewUsers() {
     const wrap = document.getElementById('voice-preview');
     const title = document.getElementById('voice-preview-title');
     const cont = document.getElementById('voice-preview-container');
+    const heading = document.getElementById('voice-users-heading');
     if (!wrap || !title || !cont) return;
     const ids = Object.keys(previewUsers || {});
-    const show = !!currentUser.room && !!selectedRoom && currentUser.room !== selectedRoom && ids.length > 0;
-    cont.innerHTML = '';
-    if (!show) { wrap.style.display = 'none'; return; }
+    const viewingElsewhere = !!currentUser.room && !!selectedRoom && currentUser.room !== selectedRoom;
+
+    if (heading) heading.textContent = viewingElsewhere ? 'Ваш звонок' : 'Участники канала';
+
+    if (!viewingElsewhere) { wrap.style.display = 'none'; cont.innerHTML = ''; return; }
+
     title.textContent = `Просмотр: ${roomDisplayName(selectedRoom)} — ${ids.length}`;
-    ids.forEach(id => cont.appendChild(buildVoiceUserRow(id, previewUsers[id], false)));
+    cont.innerHTML = '';
+    if (ids.length) {
+        ids.forEach(id => cont.appendChild(buildVoiceUserRow(id, previewUsers[id], false)));
+    } else {
+        const empty = document.createElement('div');
+        empty.className = 'voice-preview-empty';
+        empty.textContent = 'Никого нет в голосовом канале';
+        cont.appendChild(empty);
+    }
     wrap.style.display = '';
 }
 
