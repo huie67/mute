@@ -12,7 +12,13 @@ const crypto = require('crypto');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, {
+    // Более щадящие тайминги: на нестабильной сети или когда вкладка/приложение
+    // уходит в фон, стандартные 20с/25с иногда рвут соединение раньше, чем нужно,
+    // и человека "выкидывает" из звонка без причины.
+    pingTimeout: 60000,
+    pingInterval: 25000
+});
 
 app.use(express.static(__dirname)); // Клиентские файлы лежат в корне репозитория
 app.use(express.json());
@@ -863,18 +869,6 @@ io.on('connection', (socket) => {
     let currentUserRoom = null;
     let currentUserData = null;
     let currentChatRoom = null; // какой сервер сейчас открыт в чате у этого сокета
-    let currentStatus = '';     // свой статус (спец. возможности), виден рядом с ником в звонке
-
-    // Пользователь задал/изменил свой статус. Храним на сокете и, если человек сейчас
-    // в голосовом канале, сразу обновляем его строку у всех остальных.
-    socket.on('set status', ({ status } = {}) => {
-        currentStatus = String(status || '').trim().slice(0, 60);
-        socket.data.status = currentStatus;
-        if (currentUserRoom && rooms[currentUserRoom] && rooms[currentUserRoom][socket.id]) {
-            rooms[currentUserRoom][socket.id].status = currentStatus;
-            broadcastRoomUsersToWatchers(currentUserRoom);
-        }
-    });
 
     // Чат теперь свой для каждого сервера — история грузится только когда клиент
     // говорит, какую комнату он открыл (см. 'select chat room' ниже).
@@ -1388,8 +1382,7 @@ io.on('connection', (socket) => {
             peerId: peerId,
             sharing: false,
             micMuted: !!micMuted,
-            deafened: !!deafened,
-            status: currentStatus
+            deafened: !!deafened
         };
 
         currentUserData = rooms[room][socket.id];
@@ -1478,7 +1471,33 @@ io.on('connection', (socket) => {
     });
 
     socket.on('disconnect', () => {
-        leaveCurrentRoom(socket);
+        // Разрыв связи (сон ноутбука, недолгий обрыв интернета, фоновая вкладка на
+        // телефоне) раньше выкидывал из звонка МГНОВЕННО — леталась запись из
+        // комнаты и всем остальным сразу летело 'user disconnected', обрывая им
+        // соединение с этим человеком, хотя через секунду-две клиент сам успешно
+        // переподключался и заново заходил в канал. Со стороны это выглядело как
+        // случайный кик "просто так". Теперь при обрыве даём паузу на переподключение
+        // и убираем из комнаты только если за это время оно так и не произошло.
+        if (currentUserRoom && rooms[currentUserRoom] && rooms[currentUserRoom][socket.id]) {
+            const room = currentUserRoom;
+            const sockId = socket.id;
+            const peerId = socket.data && socket.data.peerId;
+            setTimeout(() => {
+                if (!rooms[room] || !rooms[room][sockId]) return; // уже убрано или комнаты нет
+                // Успел переподключиться и зайти заново (новый сокет, тот же peerId) —
+                // просто чистим старую запись, без 'user disconnected' по свежему звонку.
+                const reconnected = peerId && Object.entries(rooms[room])
+                    .some(([id, u]) => id !== sockId && u && u.peerId === peerId);
+                delete rooms[room][sockId];
+                if (!reconnected && peerId) {
+                    io.to(room).emit('user disconnected', peerId);
+                }
+                if (Object.keys(rooms[room]).length === 0) delete rooms[room];
+                broadcastRoomUsers(room);
+            }, 8000);
+        } else {
+            leaveCurrentRoom(socket);
+        }
         // К моменту 'disconnect' сокет уже вышел из всех комнат (socket.io чистит их
         // сам перед этим событием), поэтому getServerMembers внутри уже не посчитает
         // отключившегося как онлайн — рассылаем обновление тем, кто остался.
@@ -1642,8 +1661,7 @@ function getRoomUsers(room) {
                 avatar: u.avatar,
                 sharing: !!u.sharing,
                 micMuted: !!u.micMuted,
-                deafened: !!u.deafened,
-                status: u.status || ''
+                deafened: !!u.deafened
             };
         }
     }

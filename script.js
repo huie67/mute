@@ -3136,7 +3136,6 @@ socket.on('connect', () => {
             token: currentUser.token || null
         }, () => {
             requestMyServers();
-            sendCustomStatus();
             restoreSubscriptions();
         });
     } else {
@@ -3243,7 +3242,7 @@ async function initPeer() {
             avatar: currentUser.avatar,
             peerId: id,
             token: currentUser.token || null
-        }, () => { requestMyServers(); sendCustomStatus(); });
+        }, () => requestMyServers());
     });
 
     myPeer.on('call', (call) => {
@@ -4808,10 +4807,7 @@ function buildVoiceUserRow(id, user, interactive = true) {
             <span class="status-badge mic-mute-badge${(user.micMuted || user.deafened) ? ' visible' : ''}" ${ids('mic-badge')} title="Микрофон выключен">${MIC_OFF_ICON_SVG}</span>
             <span class="status-badge deafen-badge${user.deafened ? ' visible' : ''}" ${ids('deafen-badge')} title="Наушники выключены">${DEAFEN_OFF_ICON_SVG}</span>
         </div>
-        <div class="voice-user-namecol">
-            <span class="voice-user-name" title="${escapeHtml(user.username || 'Участник')}" style="color:${getUserColor(user.username)}">${escapeHtml(user.username || 'Участник')}</span>
-            ${user.status ? `<span class="voice-user-status" title="${escapeHtml(user.status)}">${escapeHtml(user.status)}</span>` : ''}
-        </div>
+        <span class="voice-user-name" title="${escapeHtml(user.username || 'Участник')}" style="color:${getUserColor(user.username)}">${escapeHtml(user.username || 'Участник')}</span>
     `;
     // Громкость каждого собеседника можно менять только у себя — по клику на его
     // строку в списке. На себя самого это не вешаем.
@@ -4926,7 +4922,7 @@ function openUserVolumePopover(peerId, anchorEl, username) {
     pop.className = 'user-volume-popover fade-in';
     pop.innerHTML = `
         <div class="user-volume-popover-title">Громкость: <span style="color:${getUserColor(username)}">${escapeHtml(username)}</span></div>
-        <input type="range" id="user-volume-range" min="0" max="200" step="5" value="${percent}">
+        <input type="range" id="user-volume-range" min="0" max="500" step="5" value="${percent}">
         <div class="user-volume-popover-value">${percent}%</div>
         <span class="profile-hint">Меняется только у вас — собеседник об этом не узнает</span>
         <div class="user-volume-popover-divider"></div>
@@ -5722,43 +5718,6 @@ if (micVolumeSlider) {
             voiceChain.node.parameters.get('ratio').value = semitonesToRatio(voiceChangerSemitones);
         }
     });
-})();
-
-// ---------- Спец. возможности: свой статус ----------
-// Показывается у остальных рядом с вашим ником, пока вы в голосовом канале.
-// Хранится на устройстве и переотправляется серверу при каждом подключении.
-const CUSTOM_STATUS_KEY = 'mute_custom_status';
-let myCustomStatus = '';
-try { myCustomStatus = localStorage.getItem(CUSTOM_STATUS_KEY) || ''; } catch (e) { /* ignore */ }
-
-function sendCustomStatus() {
-    if (typeof socket !== 'undefined' && socket) socket.emit('set status', { status: myCustomStatus });
-}
-
-(function initCustomStatusControl() {
-    const input = document.getElementById('custom-status-input');
-    const clearBtn = document.getElementById('custom-status-clear-btn');
-    if (!input) return;
-    input.value = myCustomStatus;
-
-    let debounceTimer = null;
-    const commit = () => {
-        myCustomStatus = input.value.trim().slice(0, 60);
-        try { localStorage.setItem(CUSTOM_STATUS_KEY, myCustomStatus); } catch (e) { /* ignore */ }
-        sendCustomStatus();
-    };
-    input.addEventListener('input', () => {
-        clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(commit, 400);
-    });
-    input.addEventListener('blur', () => { clearTimeout(debounceTimer); commit(); });
-    if (clearBtn) {
-        clearBtn.addEventListener('click', () => {
-            input.value = '';
-            clearTimeout(debounceTimer);
-            commit();
-        });
-    }
 })();
 
 // ---------- UI: трансляция изменённого голоса в другие программы ----------
