@@ -1741,6 +1741,19 @@
         }
         @keyframes connection-banner-spin { to { transform: rotate(360deg); } }
 
+        /* Режим низкой производительности: когда включена настройка И окно сейчас
+           свёрнуто/скрыто, на <html> навешивается этот класс. Ставим все анимации на
+           паузу (а не "animation: none" — так бесконечные, вроде спиннера реконнекта,
+           просто замирают на текущем кадре, а не сбрасываются) и убираем переходы.
+           Это только визуальный слой — звонок, микрофон, гейт и сеть не трогаем,
+           см. lowPerfActive() в script.js. */
+        html.low-perf-active *,
+        html.low-perf-active *::before,
+        html.low-perf-active *::after {
+            animation-play-state: paused !important;
+            transition: none !important;
+        }
+
         /* Всплывающие уведомления */
         #toast-container {
             position: fixed;
@@ -3147,6 +3160,19 @@
                         </label>
                     </div>
                     <span class="profile-hint" id="keybind-hint">Нажмите на кнопку справа от действия, затем — нужную комбинацию клавиш. Esc — отмена.</span>
+                </div>
+
+                <div class="settings-section">
+                    <div class="settings-section-title">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+                        Производительность
+                    </div>
+                    <div class="control-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="low-perf-mode-check"> Режим низкой производительности
+                        </label>
+                        <span class="profile-hint">Пока окно свёрнуто или скрыто (другая вкладка/приложение поверх) — полностью останавливаются все анимации и визуальные эффекты: свечение говорящего, переходы, спиннеры и т.д. На звонок, микрофон, гейт и получение сообщений это не влияет — они продолжают работать как обычно, и всё восстанавливается сразу, как только вы вернётесь к окну.</span>
+                    </div>
                 </div>
 
                 <div class="settings-section">
