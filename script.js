@@ -275,30 +275,6 @@ function setConnectionBanner(visible, text) {
     connectionBanner.classList.toggle('visible', !!visible);
 }
 
-// Режим низкой производительности: пользовательская настройка (хранится на устройстве)
-// + фактическая видимость окна. Активен ТОЛЬКО когда оба условия верны — включена
-// настройка И окно сейчас свёрнуто/скрыто (document.visibilityState === 'hidden').
-// В Tauri сворачивание окна тоже даёт 'hidden' — это тот же WebView2, что и вкладка
-// браузера, отдельного API дёргать не нужно.
-const LOW_PERF_MODE_KEY = 'mute_low_perf_mode';
-let lowPerfModeEnabled = false;
-try { lowPerfModeEnabled = localStorage.getItem(LOW_PERF_MODE_KEY) === '1'; } catch (e) { /* ignore */ }
-
-function lowPerfActive() {
-    return lowPerfModeEnabled && document.visibilityState === 'hidden';
-}
-
-// Только визуальный слой: ставит/убирает CSS-класс, который глушит анимации и
-// переходы (см. правило .low-perf-active в index.html). Никак не влияет на
-// WebRTC-звонок, микрофон, Voice Gate, сокет — они продолжают работать в фоне,
-// иначе звонок бы "замолкал" при простом сворачивании окна, что не нужно.
-function applyLowPerfState() {
-    document.documentElement.classList.toggle('low-perf-active', lowPerfActive());
-}
-
-document.addEventListener('visibilitychange', applyLowPerfState);
-applyLowPerfState();
-
 // Настройка «показывать всех участников сервера» (Кастомизация → Список участников), хранится на устройстве.
 const SHOW_OFFCALL_KEY = 'mute_show_offcall_members';
 let showOffCallMembers = false;
@@ -476,7 +452,6 @@ const thresholdSlider = document.getElementById('threshold-slider');
 const thresholdValueDisplay = document.getElementById('threshold-value');
 const thresholdIndicator = document.getElementById('threshold-indicator');
 
-const lowPerfModeCheck = document.getElementById('low-perf-mode-check');
 const gateEnabledCheck = document.getElementById('gate-enabled-check');
 const gateHangoverSlider = document.getElementById('gate-hangover-slider');
 const gateHangoverValueDisplay = document.getElementById('gate-hangover-value');
@@ -3593,9 +3568,7 @@ function processAudioLevel(node) {
         // глазом разницы с каждым отчётом (~50мс) не видно, а лишних стилевых
         // пересчётов вдвое меньше. Саму логику гейта ниже это не касается — она
         // считается на каждом отчёте, чтобы отклик оставался быстрым.
-        // В режиме низкой производительности (окно свёрнуто) полоску/текст вообще
-        // не трогаем — их всё равно никто не видит.
-        if (messageCount % 2 === 0 && !lowPerfActive()) {
+        if (messageCount % 2 === 0) {
             let meterPercent = Math.max(0, Math.min(100, ((volumeDb + 70) / 60) * 100));
             micMeter.style.width = `${meterPercent}%`;
 
@@ -3625,11 +3598,9 @@ function processAudioLevel(node) {
         const isSpeaking = !isMuted && !isDeafened && (!gateEnabled || gateOpen);
         if (isSpeaking !== lastIsSpeaking) {
             lastIsSpeaking = isSpeaking;
-            applyGateToMicTrack(); // функциональная часть — работает всегда, даже в низкой производительности
-            if (!lowPerfActive()) {
-                if (!myAvatarElem || !myAvatarElem.isConnected) myAvatarElem = document.getElementById(`avatar-${myPeerId}`);
-                if (myAvatarElem) myAvatarElem.classList.toggle('speaking', isSpeaking);
-            }
+            applyGateToMicTrack();
+            if (!myAvatarElem || !myAvatarElem.isConnected) myAvatarElem = document.getElementById(`avatar-${myPeerId}`);
+            if (myAvatarElem) myAvatarElem.classList.toggle('speaking', isSpeaking);
         }
     };
 }
@@ -3657,7 +3628,7 @@ function processAudioLevelFallback(node) {
         }
         let volumeDb = getRmsDb(localAnalyser, dataArray);
         tickCount++;
-        const shouldRedraw = (tickCount % 2 === 0) && !lowPerfActive();
+        const shouldRedraw = (tickCount % 2 === 0);
 
         if (shouldRedraw) {
             let meterPercent = Math.max(0, Math.min(100, ((volumeDb + 70) / 60) * 100));
@@ -3687,11 +3658,9 @@ function processAudioLevelFallback(node) {
         const isSpeaking = !isMuted && !isDeafened && (!gateEnabled || gateOpen);
         if (isSpeaking !== lastIsSpeaking) {
             lastIsSpeaking = isSpeaking;
-            applyGateToMicTrack(); // функциональная часть — работает всегда, даже в низкой производительности
-            if (!lowPerfActive()) {
-                if (!myAvatarElem || !myAvatarElem.isConnected) myAvatarElem = document.getElementById(`avatar-${myPeerId}`);
-                if (myAvatarElem) myAvatarElem.classList.toggle('speaking', isSpeaking);
-            }
+            applyGateToMicTrack();
+            if (!myAvatarElem || !myAvatarElem.isConnected) myAvatarElem = document.getElementById(`avatar-${myPeerId}`);
+            if (myAvatarElem) myAvatarElem.classList.toggle('speaking', isSpeaking);
         }
     }
     check();
@@ -3832,7 +3801,6 @@ function processRemoteAudioLevel(peerId, node) {
             localNode.port.onmessage = null;
             return;
         }
-        if (lowPerfActive()) return; // индикатор говорящего у собеседника — чисто визуальный, никто его сейчас не видит
         const volumeDb = event.data;
         const isSpeaking = volumeDb > gateThreshold && !isDeafened;
 
@@ -3860,7 +3828,6 @@ function processRemoteAudioLevelFallback(peerId, node) {
             clearInterval(intervalId);
             return;
         }
-        if (lowPerfActive()) return; // индикатор говорящего у собеседника — чисто визуальный, никто его сейчас не видит
         let volumeDb = getRmsDb(analyser, dataArray);
         const isSpeaking = volumeDb > gateThreshold && !isDeafened;
 
@@ -5727,15 +5694,6 @@ noiseCheck.addEventListener('change', () => {
 
 // "Слышать себя": просто крутим громкость постоянного gain-узла — не нужно
 // пересоздавать поток или трогать анализатор/индикатор уровня.
-if (lowPerfModeCheck) {
-    lowPerfModeCheck.checked = lowPerfModeEnabled;
-    lowPerfModeCheck.addEventListener('change', () => {
-        lowPerfModeEnabled = lowPerfModeCheck.checked;
-        try { localStorage.setItem(LOW_PERF_MODE_KEY, lowPerfModeEnabled ? '1' : '0'); } catch (e) { /* ignore */ }
-        applyLowPerfState(); // применится сразу, если окно как раз сейчас свёрнуто
-    });
-}
-
 micMonitorCheck.addEventListener('change', () => {
     micMonitorEnabled = micMonitorCheck.checked;
     applyGateToMicTrack();
