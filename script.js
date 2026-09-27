@@ -1206,8 +1206,8 @@ class MuteVoiceChangerProcessor extends AudioWorkletProcessor {
 }
 registerProcessor('${VOICE_CHANGER_PROCESSOR_NAME}', MuteVoiceChangerProcessor);
 `;
-const VOICE_CHANGER_DEFAULT_SEMITONES = 5;   // выше по тону по умолчанию
-const VOICE_CHANGER_MIN_SEMITONES = -10;     // отрицательные значения — ниже по тону
+const VOICE_CHANGER_DEFAULT_SEMITONES = 5;   // «девчачий» голос по умолчанию
+const VOICE_CHANGER_MIN_SEMITONES = -10;
 const VOICE_CHANGER_MAX_SEMITONES = 10;
 let voiceChangerEnabled = false;
 let voiceChangerSemitones = VOICE_CHANGER_DEFAULT_SEMITONES;
@@ -3130,43 +3130,55 @@ async function completeLogin() {
 
 // Список ICE-серверов (STUN + TURN) для установки соединения между собеседниками.
 // БЕЗ ЭТОГО у new Peer() используются только серверы по умолчанию из PeerJS
-// (google-STUN + один бесплатный общий TURN на peerjs.com), которых для
+// (google-STUN + один бесплатный общий TURN на peerjs.com), которых для part
 // прямого P2P-соединения вроде между двумя друзьями в одной сети — достаточно,
-// но если собеседник сидит за более строгим NAT/firewall (мобильный интернет,
-// корпоративная сеть, дальняя страна/провайдер) и прямое соединение невозможно —
+// но если третий человек сидит за более строгим NAT/firewall (мобильный интернет,
+// корпоративная/учебная сеть, некоторые роутеры) и прямое соединение невозможно,
+// а единственный бесплатный TURN-сервер PeerJS перегружен или недоступен —
 // его WebRTC-соединение с остальными вообще не устанавливается: он никого не
-// слышит, его не слышно и не видно демку (медиапоток просто никогда не доходит).
-// Список серверов целиком бесплатный и не требует никакого аккаунта/ключа:
-// публичные Google STUN + два независимых бесплатных TURN-провайдера (см.
-// FREE_ICE_SERVERS на сервере) — если один недоступен/исчерпал квоту, браузер
-// попробует другой. Именно TURN даёт соединению работать между людьми,
-// находящимися очень далеко друг от друга и в разных сетях.
+// слышит, его не слышно и не видно демку (потому что медиапоток просто никогда
+// не доходит), а связанные с этим соединением ползунки громкости не действуют
+// (не на что влиять — аудиоузлы создаются только после реального прихода потока).
+// Добавляем несколько независимых STUN/TURN-серверов, чтобы у браузера было
+// больше путей для установления соединения.
+// Запасной вариант, если свой аккаунт на dashboard.metered.ca не настроен на сервере
+// (не заданы METERED_APP_NAME/METERED_API_KEY в .env) или запрос к /api/ice-servers
+// не удался (сеть, сервер недоступен и т.п.) — общедоступный бесплатный
+// Open Relay Project TURN, независимый от инфраструктуры PeerJS.
 const FALLBACK_ICE_SERVERS = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:openrelay.metered.ca:80' },
-    { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turn:openrelay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turns:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'stun:freestun.net:3478' },
-    { urls: 'turn:freestun.net:3478', username: 'free', credential: 'free' }
+    { urls: 'stun:stun.relay.metered.ca:80' },
+    { urls: 'turn:global.relay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:global.relay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
 ];
 
-// Берём список ICE-серверов с бэкенда (/api/ice-servers) — он всегда отдаёт
-// бесплатный статический список (никакого приватного аккаунта не требуется).
-// Если бэкенд почему-то недоступен — используем тот же список локально
-// (FALLBACK_ICE_SERVERS), так что звонок работает даже без сервера настроек.
+// Список ICE-серверов (STUN + TURN) для установки соединения между собеседниками.
+// Берём его с бэкенда (/api/ice-servers), который при настроенном своём аккаунте
+// dashboard.metered.ca отдаёт свежие TURN-креды из твоего проекта — это надёжнее
+// общего бесплатного openrelayproject, который часто перегружен/недоступен.
+// Если бэкенд не настроен или недоступен — используем FALLBACK_ICE_SERVERS.
 async function loadIceServersConfig() {
     try {
         const res = await fetch('/api/ice-servers');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        if (data && Array.isArray(data.iceServers) && data.iceServers.length) {
-            return { iceServers: data.iceServers, sdpSemantics: 'unified-plan', iceCandidatePoolSize: 2 };
+        if (data && data.configured && Array.isArray(data.iceServers) && data.iceServers.length) {
+            console.log('[ICE] Используются TURN/STUN-серверы из dashboard.metered.ca:',
+                data.iceServers.map(s => Array.isArray(s.urls) ? s.urls.join(',') : s.urls).join(' | '));
+            // Публичный STUN добавляем на всякий случай — он бесплатный и не расходует трафик TURN.
+            const hasGoogleStun = data.iceServers.some(s => String(s.urls).includes('stun.l.google.com'));
+            const servers = hasGoogleStun ? data.iceServers : [...data.iceServers, { urls: 'stun:stun.l.google.com:19302' }];
+            return { iceServers: servers, sdpSemantics: 'unified-plan', iceCandidatePoolSize: 2 };
         }
+        console.warn('[ICE] Причина от сервера:', data && data.reason, data && data.env);
+        console.warn('[ICE] Сервер сообщил, что Metered НЕ настроен (нет METERED_APP_NAME / METERED_API_KEY, ' +
+            'либо запрос к Metered упал — смотри логи сервера). Используем общий openrelayproject — ' +
+            'он часто не работает, и участники из разных сетей могут не слышать друг друга.');
     } catch (err) {
-        console.warn('[ICE] Не удалось получить ICE-серверы с сервера, используем локальный список:', err);
+        console.warn('[ICE] Не удалось получить ICE-серверы с сервера, используем запасной список:', err);
     }
     return { iceServers: FALLBACK_ICE_SERVERS, sdpSemantics: 'unified-plan', iceCandidatePoolSize: 2 };
 }
@@ -5354,12 +5366,12 @@ const KEYBIND_ACTIONS = [
     { id: 'mute', label: 'Включить / выключить микрофон' },
     { id: 'deafen', label: 'Включить / выключить наушники' },
     { id: 'leave', label: 'Покинуть звонок' },
-    { id: 'voicechanger', label: 'Включить / выключить изменение голоса' },
     { id: 'playpause', label: 'Плеер: старт / пауза' },
     { id: 'prevtrack', label: 'Плеер: предыдущий трек' },
-    { id: 'nexttrack', label: 'Плеер: следующий трек' }
+    { id: 'nexttrack', label: 'Плеер: следующий трек' },
+    { id: 'voicechanger', label: 'Изменение голоса' }
 ];
-let keybinds = { mute: '', deafen: '', leave: '', voicechanger: '', playpause: '', prevtrack: '', nexttrack: '', global: true };
+let keybinds = { mute: '', deafen: '', leave: '', playpause: '', prevtrack: '', nexttrack: '', voicechanger: '', global: true };
 try {
     const raw = localStorage.getItem(KEYBINDS_KEY);
     if (raw) keybinds = { ...keybinds, ...JSON.parse(raw) };
@@ -5375,13 +5387,16 @@ function runKeybindAction(id) {
     if (id === 'mute') { if (!muteBtn.disabled) muteBtn.click(); }
     else if (id === 'deafen') deafenBtn.click();
     else if (id === 'leave') { if (currentUser.room) leaveVoiceChannel(); }
-    else if (id === 'voicechanger') {
-        const check = document.getElementById('voice-changer-check');
-        if (check && !check.disabled) check.click(); // сам click() вызовет 'change' → пересчёт applyVoiceChanger()
-    }
     else if (id === 'playpause') togglePlaylistPlayPause();
     else if (id === 'prevtrack') playlistPrevTrack();
     else if (id === 'nexttrack') playlistNextTrack();
+    else if (id === 'voicechanger') {
+        const check = document.getElementById('voice-changer-check');
+        if (check && !check.disabled) {
+            check.checked = !check.checked;
+            check.dispatchEvent(new Event('change'));
+        }
+    }
 }
 
 function keyEventToCombo(e) {
@@ -5629,9 +5644,7 @@ if (micVolumeSlider) {
     slider.value = voiceChangerSemitones;
     check.checked = voiceChangerEnabled && supported;
     const refresh = () => {
-        // Math.sign даёт корректный "+"/"-"/пустую строку для 0, отрицательные числа
-        // сами несут свой минус — вручную дописывать нужно только "+" для положительных.
-        if (valueEl) valueEl.innerText = `${voiceChangerSemitones > 0 ? '+' : ''}${voiceChangerSemitones}`;
+        if (valueEl) valueEl.innerText = voiceChangerSemitones > 0 ? `+${voiceChangerSemitones}` : `${voiceChangerSemitones}`;
         if (group) group.classList.toggle('control-group-disabled', !check.checked);
         slider.disabled = !check.checked;
     };

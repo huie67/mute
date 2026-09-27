@@ -17,37 +17,54 @@ const io = new Server(server);
 app.use(express.static(__dirname)); // Клиентские файлы лежат в корне репозитория
 app.use(express.json());
 
-// ---------- TURN/STUN-серверы: полностью бесплатные, без стороннего аккаунта ----------
-// Раньше сервер ходил в приватный TURN REST API dashboard.metered.ca (требовал
-// свой платный/зарегистрированный аккаунт: APP NAME + API KEY в .env). Теперь
-// вместо этого отдаём клиенту готовый статический список: публичные Google
-// STUN-серверы (для прямого P2P — большинство звонков идут именно так) плюс
-// общедоступный бесплатный TURN-релей Open Relay Project (credentials
-// "openrelayproject" — открытые, без регистрации, не привязаны ни к чьему
-// аккаунту). TURN используется браузером только как запасной путь, когда
-// прямое P2P-соединение невозможно из-за строгого NAT/firewall — именно
-// это чаще всего случается, когда собеседники далеко друг от друга и
-// сидят в разных сетях (мобильный интернет, корпоративные сети и т.п.).
-// Никаких внешних запросов и ключей — endpoint отвечает мгновенно и всегда.
-// Два независимых бесплатных TURN-провайдера (разные хостинги) — если у одного
-// закончилась квота или он временно недоступен, браузер попробует другой.
-// Открытые публичные креды, никакого приватного аккаунта/ключа не требуется.
-const FREE_ICE_SERVERS = [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    // Open Relay Project — 20 ГБ бесплатного TURN-трафика в месяц, без регистрации
-    { urls: 'stun:openrelay.metered.ca:80' },
-    { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turn:openrelay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turns:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-    // FreeSTUN — второй независимый бесплатный TURN, тоже без регистрации
-    { urls: 'stun:freestun.net:3478' },
-    { urls: 'turn:freestun.net:3478', username: 'free', credential: 'free' }
-];
+// ---------- TURN/STUN-серверы: dashboard.metered.ca ----------
+// Раньше клиент был зашит на бесплатные общие TURN-креды openrelayproject —
+// они часто перегружены и могут просто не работать. Теперь, если задан свой
+// аккаунт Metered (APP NAME + TURN Credential API Key из дашборда), сервер
+// сам ходит в Metered TURN REST API и отдаёт клиенту актуальный список
+// iceServers. Ключ Metered остаётся на сервере и не попадает в браузер.
+// Короткий кэш (60 сек) — чтобы не дёргать Metered на каждый вход в звонок.
+let meteredIceCache = { data: null, fetchedAt: 0 };
+const METERED_ICE_CACHE_MS = 60 * 1000;
 
-app.get('/api/ice-servers', (req, res) => {
-    res.json({ configured: true, iceServers: FREE_ICE_SERVERS });
+async function fetchMeteredIceServers() {
+    const appName = (process.env.METERED_APP_NAME || '').trim().replace(/^https?:\/\//, '').replace(/\.metered\.live.*$/, '');
+    const apiKey = (process.env.METERED_API_KEY || '').trim();
+    if (!appName || !apiKey) return null; // свой аккаунт не настроен
+
+    const now = Date.now();
+    if (meteredIceCache.data && (now - meteredIceCache.fetchedAt) < METERED_ICE_CACHE_MS) {
+        return meteredIceCache.data;
+    }
+
+    const url = `https://${appName}.metered.live/api/v1/turn/credentials?apiKey=${encodeURIComponent(apiKey)}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Metered TURN API ответил ${res.status}`);
+    const iceServers = await res.json();
+    meteredIceCache = { data: iceServers, fetchedAt: now };
+    return iceServers;
+}
+
+app.get('/api/ice-servers', async (req, res) => {
+    const envState = {
+        METERED_APP_NAME: !!(process.env.METERED_APP_NAME || '').trim(),
+        METERED_API_KEY: !!(process.env.METERED_API_KEY || '').trim()
+    };
+    try {
+        const iceServers = await fetchMeteredIceServers();
+        if (!iceServers) {
+            console.warn('⚠️ /api/ice-servers: METERED_APP_NAME / METERED_API_KEY не заданы', envState);
+            return res.json({ configured: false, reason: 'env-missing', env: envState, iceServers: [] });
+        }
+        if (!Array.isArray(iceServers) || !iceServers.length) {
+            console.error('❌ Metered вернул неожиданный ответ:', JSON.stringify(iceServers).slice(0, 300));
+            return res.json({ configured: false, reason: 'metered-bad-response', env: envState, iceServers: [] });
+        }
+        res.json({ configured: true, iceServers });
+    } catch (err) {
+        console.error('❌ Ошибка получения ICE-серверов от Metered:', err.message);
+        res.json({ configured: false, reason: `metered-error: ${err.message}`, env: envState, iceServers: [] });
+    }
 });
 
 // ---------- База данных: Postgres (Neon) — общий чат хранится тут, не на диске сервера ----------
@@ -612,23 +629,10 @@ function customRoomInfoFor(room, socket) {
 // чужой ник, хотя на самом деле сервер просто никогда не сверял ники между уже
 // подключёнными сокетами. Эта функция проверяет живую занятость ника среди ВСЕХ сейчас
 // подключённых сокетов (не только в одной комнате — чат общий на все комнаты).
-// excludePeerId — это peerId ПЕРЕПОДКЛЮЧАЮЩЕГОСЯ клиента (стабилен в рамках одной
-// вкладки при обрыве связи, см. myPeer.reconnect() на клиенте). Без этого параметра
-// при обрыве связи (сон ноутбука, сворачивание приложения, скачок Wi-Fi) сокет.io
-// создаёт НОВЫЙ socket.id ещё ДО того, как сервер получит 'disconnect' старого —
-// какое-то время оба сокета одного и того же человека "живы" одновременно.
-// Раньше в этот момент isUsernameActiveElsewhere видела старый (умирающий) сокет
-// с тем же именем как "занято другим", и гостю на пустом месте подставлялся ник
-// со случайным суффиксом (Гость_1234). Дальше это новое имя расходилось с тем,
-// что записано в custom_room_members, и при следующем 'select chat room' проверка
-// членства проваливалась — человека без всякого кика выкидывало из чата/канала
-// с сообщением 'kicked from server'. Сверяя peerId, не считаем старую сессию
-// самого себя конфликтом.
-function isUsernameActiveElsewhere(username, excludeSocketId, excludePeerId) {
+function isUsernameActiveElsewhere(username, excludeSocketId) {
     const lower = username.toLowerCase();
     for (const [id, s] of io.sockets.sockets) {
         if (id === excludeSocketId) continue;
-        if (excludePeerId && s.data && s.data.peerId === excludePeerId) continue;
         if (s.data && typeof s.data.username === 'string' && s.data.username.toLowerCase() === lower) {
             return true;
         }
@@ -638,12 +642,12 @@ function isUsernameActiveElsewhere(username, excludeSocketId, excludePeerId) {
 
 // Подбирает свободный (не занятый ни в БД зарегистрированным аккаунтом, ни живым
 // сокетом прямо сейчас) вариант ника на основе requested, добавляя случайный суффикс.
-async function resolveFreeGuestUsername(requested, excludeSocketId, excludePeerId) {
+async function resolveFreeGuestUsername(requested, excludeSocketId) {
     let candidate = requested;
     for (let attempt = 0; attempt < 5; attempt++) {
         const owner = await findUserByUsername(candidate);
         const takenByAccount = !!(owner && owner.password_hash);
-        const takenLive = isUsernameActiveElsewhere(candidate, excludeSocketId, excludePeerId);
+        const takenLive = isUsernameActiveElsewhere(candidate, excludeSocketId);
         if (!takenByAccount && !takenLive) {
             return { username: candidate, changed: candidate !== requested };
         }
@@ -1273,20 +1277,6 @@ io.on('connection', (socket) => {
         const token = userData && userData.token;
         let verified = false; // ник подтверждён токеном аккаунта — можно доверять для синхронизации между устройствами
 
-        const peerId = userData && userData.peerId;
-
-        // Если тот же клиент (тот же peerId) уже числится под другим socket.id —
-        // это хвост от разрыва связи, который сервер ещё не успел отключить сам
-        // (ping-timeout). Закрываем его сразу, не дожидаясь таймаута: иначе он
-        // мешает проверке ника ниже и может задвоиться в списках участников.
-        if (peerId) {
-            for (const [id, s] of io.sockets.sockets) {
-                if (id !== socket.id && s.data && s.data.peerId === peerId) {
-                    s.disconnect(true);
-                }
-            }
-        }
-
         try {
             if (token) {
                 const decoded = verifyToken(token);
@@ -1295,7 +1285,7 @@ io.on('connection', (socket) => {
                     verified = true;
                 }
             } else {
-                const resolved = await resolveFreeGuestUsername(requested, socket.id, peerId);
+                const resolved = await resolveFreeGuestUsername(requested, socket.id);
                 username = resolved.username;
                 if (resolved.changed) {
                     socket.emit('username protected', { requested, assignedUsername: username });
@@ -1305,7 +1295,7 @@ io.on('connection', (socket) => {
             console.error('❌ Ошибка проверки ника при регистрации сокета:', err);
         }
 
-        socket.data = { username, avatar, peerId, verified };
+        socket.data = { username, avatar, peerId: userData && userData.peerId, verified };
 
         // Клиент при переподключении ждёт подтверждения, прежде чем заново входить в канал —
         // иначе 'join room' может обработаться раньше, чем сокет получит ник, и человек
