@@ -1709,6 +1709,38 @@
             #settings-tabs .settings-tab span { display: none; }
         }
 
+        /* Баннер разрыва соединения — в отличие от тостов НЕ исчезает сам по себе,
+           а висит, пока идёт восстановление (например, во время деплоя сервера). */
+        #connection-status-banner {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 9000;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            padding: 10px 16px;
+            background: #4a3510;
+            color: #ffe4a3;
+            font-size: 13px;
+            text-align: center;
+            box-shadow: var(--shadow-card);
+        }
+        html.tauri-app #connection-status-banner { top: 36px; }
+        #connection-status-banner.visible { display: flex; }
+        #connection-status-banner .spinner {
+            width: 13px;
+            height: 13px;
+            border-radius: 50%;
+            border: 2px solid rgba(255, 228, 163, 0.35);
+            border-top-color: #ffe4a3;
+            animation: connection-banner-spin 0.8s linear infinite;
+            flex-shrink: 0;
+        }
+        @keyframes connection-banner-spin { to { transform: rotate(360deg); } }
+
         /* Всплывающие уведомления */
         #toast-container {
             position: fixed;
@@ -2312,6 +2344,12 @@
     </style>
 </head>
 <body>
+    <!-- Баннер "переподключение" — виден при разрыве socket.io (сон ПК, обрыв сети,
+         обновление/рестарт сервера). См. socket.on('disconnect'/'connect') в script.js. -->
+    <div id="connection-status-banner">
+        <span class="spinner"></span>
+        <span id="connection-status-text">Соединение потеряно — переподключаемся…</span>
+    </div>
     <!-- Своя шапка окна — показывается только внутри десктоп-приложения (Tauri),
          т.к. там системная рамка окна отключена (decorations:false в tauri.conf.json).
          В обычном браузере остаётся скрытой (см. .tauri-app в CSS). -->

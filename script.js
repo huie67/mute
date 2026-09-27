@@ -265,6 +265,16 @@ function showToast(text, ms = 4500) {
     }, ms);
 }
 
+// Баннер "переподключение" — в отличие от showToast() не исчезает сам по себе,
+// висит ровно пока соединение реально не в порядке (см. socket 'disconnect'/'connect' ниже).
+const connectionBanner = document.getElementById('connection-status-banner');
+const connectionBannerText = document.getElementById('connection-status-text');
+function setConnectionBanner(visible, text) {
+    if (!connectionBanner) return;
+    if (text && connectionBannerText) connectionBannerText.textContent = text;
+    connectionBanner.classList.toggle('visible', !!visible);
+}
+
 // Настройка «показывать всех участников сервера» (Кастомизация → Список участников), хранится на устройстве.
 const SHOW_OFFCALL_KEY = 'mute_show_offcall_members';
 let showOffCallMembers = false;
@@ -3110,12 +3120,34 @@ socket.on('username protected', ({ requested, assignedUsername }) => {
 // уже присутствующих в муте/дефене. Теперь при восстановлении соединения заново
 // регистрируемся и, если были в голосовом канале, заново в него заходим.
 let hasConnectedBefore = false;
+let wasEverDisconnected = false; // отличаем "первое подключение" от "реконнект после обрыва"
+
+// Сам разрыв socket.io: сон ноутбука, обрыв Wi-Fi, сворачивание в фон, а также рестарт/
+// деплой сервера (Render убивает старый процесс — все сокеты на нём рвутся разом).
+// Показываем баннер сразу — иначе выглядит так, будто приложение "просто перестало
+// отвечать", хотя socket.io-client уже в фоне сам пытается переподключиться.
+socket.on('disconnect', (reason) => {
+    console.warn('[Соединение] Разрыв:', reason);
+    wasEverDisconnected = true;
+    // 'io client disconnect' — это наш собственный вызов socket.disconnect() (например, logout),
+    // баннер тут не нужен: мы сами закрыли соединение и ничего восстанавливать не будем.
+    if (reason === 'io client disconnect') return;
+    setConnectionBanner(true, 'Соединение потеряно — переподключаемся…');
+});
+
+// На каждую попытку реконнекта socket.io обновляем текст баннера, чтобы было видно,
+// что клиент не завис, а реально пытается достучаться до сервера.
+socket.io.on('reconnect_attempt', (attempt) => {
+    setConnectionBanner(true, `Переподключение… (попытка ${attempt})`);
+});
+
 socket.on('connect', () => {
     if (!hasConnectedBefore) {
         hasConnectedBefore = true;
         return; // первое подключение — обычная инициализация и так идёт по остальному коду
     }
     console.log('[Соединение] Восстановлено после разрыва — заново регистрируемся на сервере.');
+    setConnectionBanner(true, 'Соединение восстановлено — синхронизируем комнату…');
 
     // Новый сокет на сервере «чистый»: он не в голосовой комнате и не в комнате чата
     // (та, из которой приходят обновления списка участников и сообщения). Поэтому после
@@ -3129,6 +3161,16 @@ socket.on('connect', () => {
             socket.emit('select chat room', { room: selectedRoom });
             socket.emit('get room users', selectedRoom);
         }
+        // Сигнальное WebSocket-соединение PeerJS — отдельное от socket.io и от этого
+        // разрыва не лечится автоматически. Если оно тоже отвалилось, поднимаем его,
+        // иначе после реконнекта чат работает, а входящие/исходящие звонки — нет.
+        if (myPeer && !myPeer.destroyed && myPeer.disconnected) {
+            try { myPeer.reconnect(); } catch (e) { /* ignore */ }
+        }
+        // Баннер прячем не сразу по факту TCP-коннекта, а только теперь, когда
+        // реально отправлены все запросы на восстановление комнаты/чата/звонков.
+        setConnectionBanner(false);
+        if (wasEverDisconnected) showToast('Соединение восстановлено', 3000);
     };
 
     if (myPeerId) {
