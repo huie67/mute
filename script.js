@@ -1123,6 +1123,21 @@ let gateThreshold = -45;
 let micMonitorGain = null;
 let micMonitorEnabled = false;
 
+// ---------- Трансляция изменённого голоса в другие программы ----------
+// Веб-страница не может подменить собой системный микрофон — для этого нет
+// доступа к ОС. Единственный рабочий способ пустить уже обработанный (со
+// сменённым голосом) звук в другую программу — вывести его через выбранное
+// устройство ВЫВОДА (setSinkId) на "вход" стороннего виртуального аудиокабеля
+// (VB-Audio Virtual Cable, BlackHole и т.п.), а в другой программе выбрать
+// этот же кабель уже как микрофон. externalOutputGain — постоянный узел,
+// живущий вне пересборок графа (как micMonitorGain), чтобы включённость не
+// слетала при смене микрофона/профиля шумоподавления.
+let externalOutputGain = null;
+let externalOutputDest = null;
+let externalOutputAudioEl = null;
+let externalOutputEnabled = false;
+let externalOutputDeviceId = '';
+
 // ---------- Граф обработки своего микрофона ----------
 // sourceNode — узел на "сырой" (необработанный) поток с микрофона. От него отдельно
 // отходит analyserNode (для индикатора уровня и Voice Gate), поэтому анализ громкости
@@ -1283,6 +1298,32 @@ async function applyVoiceChanger() {
     }
     if (myId !== voiceChangerApplyId || micGainNode !== inNode) return;
     try { inNode.connect(outNode); } catch (e) { /* ignore */ }
+}
+
+// Создаёт (один раз) постоянный узел-выход и скрытый <audio>, проигрывающий
+// уже обработанный сигнал (после изменения голоса) на выбранное устройство
+// вывода звука — см. комментарий у объявления externalOutputGain выше.
+function ensureExternalOutputNode(ctx) {
+    if (externalOutputGain) return externalOutputGain;
+    externalOutputGain = ctx.createGain();
+    externalOutputDest = ctx.createMediaStreamDestination();
+    externalOutputGain.connect(externalOutputDest);
+    externalOutputAudioEl = new Audio();
+    externalOutputAudioEl.srcObject = externalOutputDest.stream;
+    externalOutputAudioEl.autoplay = true;
+    externalOutputAudioEl.muted = false;
+    externalOutputAudioEl.play().catch(() => { /* добудим при взаимодействии пользователя */ });
+    return externalOutputGain;
+}
+
+async function applyExternalOutputDevice() {
+    if (!externalOutputAudioEl || typeof externalOutputAudioEl.setSinkId !== 'function') return;
+    if (!externalOutputDeviceId) return;
+    try {
+        await externalOutputAudioEl.setSinkId(externalOutputDeviceId);
+    } catch (e) {
+        console.warn('[Трансляция голоса] Не удалось выбрать устройство вывода:', e);
+    }
 }
 
 // ---------- Пункт оптимизации №5: RMS-метр громкости через AudioWorklet ----------
@@ -1491,6 +1532,8 @@ function saveRemoteVolume(username, percent) {
     if (typeof saved.voiceChangerSemitones === 'number') {
         voiceChangerSemitones = Math.min(VOICE_CHANGER_MAX_SEMITONES, Math.max(VOICE_CHANGER_MIN_SEMITONES, Math.round(saved.voiceChangerSemitones)));
     }
+    if (typeof saved.externalOutputEnabled === 'boolean') externalOutputEnabled = saved.externalOutputEnabled;
+    if (typeof saved.externalOutputDeviceId === 'string') externalOutputDeviceId = saved.externalOutputDeviceId;
     if (gateEnabledCheck) gateEnabledCheck.checked = gateEnabled;
     if (gateHangoverSlider) gateHangoverSlider.value = gateHangoverMs;
     if (gateHangoverValueDisplay) gateHangoverValueDisplay.innerText = `${gateHangoverMs} мс`;
@@ -3093,6 +3136,7 @@ socket.on('connect', () => {
             token: currentUser.token || null
         }, () => {
             requestMyServers();
+            sendCustomStatus();
             restoreSubscriptions();
         });
     } else {
@@ -3199,7 +3243,7 @@ async function initPeer() {
             avatar: currentUser.avatar,
             peerId: id,
             token: currentUser.token || null
-        }, () => requestMyServers());
+        }, () => { requestMyServers(); sendCustomStatus(); });
     });
 
     myPeer.on('call', (call) => {
@@ -3405,6 +3449,10 @@ async function setupAudioAnalyzer(stream) {
             micMonitorGain.connect(audioContext.destination);
         }
         voiceOutNode.connect(micMonitorGain);
+
+        if (externalOutputEnabled) {
+            voiceOutNode.connect(ensureExternalOutputNode(audioContext));
+        }
         await applyVoiceChanger();
 
         if (analyserNode.__isWorklet) {
@@ -4760,7 +4808,10 @@ function buildVoiceUserRow(id, user, interactive = true) {
             <span class="status-badge mic-mute-badge${(user.micMuted || user.deafened) ? ' visible' : ''}" ${ids('mic-badge')} title="Микрофон выключен">${MIC_OFF_ICON_SVG}</span>
             <span class="status-badge deafen-badge${user.deafened ? ' visible' : ''}" ${ids('deafen-badge')} title="Наушники выключены">${DEAFEN_OFF_ICON_SVG}</span>
         </div>
-        <span class="voice-user-name" title="${escapeHtml(user.username || 'Участник')}" style="color:${getUserColor(user.username)}">${escapeHtml(user.username || 'Участник')}</span>
+        <div class="voice-user-namecol">
+            <span class="voice-user-name" title="${escapeHtml(user.username || 'Участник')}" style="color:${getUserColor(user.username)}">${escapeHtml(user.username || 'Участник')}</span>
+            ${user.status ? `<span class="voice-user-status" title="${escapeHtml(user.status)}">${escapeHtml(user.status)}</span>` : ''}
+        </div>
     `;
     // Громкость каждого собеседника можно менять только у себя — по клику на его
     // строку в списке. На себя самого это не вешаем.
@@ -5670,6 +5721,107 @@ if (micVolumeSlider) {
         if (voiceChain && voiceChain.node) {
             voiceChain.node.parameters.get('ratio').value = semitonesToRatio(voiceChangerSemitones);
         }
+    });
+})();
+
+// ---------- Спец. возможности: свой статус ----------
+// Показывается у остальных рядом с вашим ником, пока вы в голосовом канале.
+// Хранится на устройстве и переотправляется серверу при каждом подключении.
+const CUSTOM_STATUS_KEY = 'mute_custom_status';
+let myCustomStatus = '';
+try { myCustomStatus = localStorage.getItem(CUSTOM_STATUS_KEY) || ''; } catch (e) { /* ignore */ }
+
+function sendCustomStatus() {
+    if (typeof socket !== 'undefined' && socket) socket.emit('set status', { status: myCustomStatus });
+}
+
+(function initCustomStatusControl() {
+    const input = document.getElementById('custom-status-input');
+    const clearBtn = document.getElementById('custom-status-clear-btn');
+    if (!input) return;
+    input.value = myCustomStatus;
+
+    let debounceTimer = null;
+    const commit = () => {
+        myCustomStatus = input.value.trim().slice(0, 60);
+        try { localStorage.setItem(CUSTOM_STATUS_KEY, myCustomStatus); } catch (e) { /* ignore */ }
+        sendCustomStatus();
+    };
+    input.addEventListener('input', () => {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(commit, 400);
+    });
+    input.addEventListener('blur', () => { clearTimeout(debounceTimer); commit(); });
+    if (clearBtn) {
+        clearBtn.addEventListener('click', () => {
+            input.value = '';
+            clearTimeout(debounceTimer);
+            commit();
+        });
+    }
+})();
+
+// ---------- UI: трансляция изменённого голоса в другие программы ----------
+async function loadExternalOutputDevices() {
+    const select = document.getElementById('voice-changer-external-select');
+    if (!select) return;
+    try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const outputs = devices.filter(d => d.kind === 'audiooutput');
+        const prevValue = select.value || externalOutputDeviceId;
+        select.innerHTML = '';
+        outputs.forEach((dev, i) => {
+            const opt = document.createElement('option');
+            opt.value = dev.deviceId;
+            opt.innerText = dev.label || `Устройство вывода ${i + 1}`;
+            select.appendChild(opt);
+        });
+        if (prevValue && outputs.some(d => d.deviceId === prevValue)) {
+            select.value = prevValue;
+        }
+    } catch (e) { console.warn('[Трансляция голоса] Не удалось получить список устройств вывода:', e); }
+}
+
+(function initExternalOutputControls() {
+    const check = document.getElementById('voice-changer-external-check');
+    const select = document.getElementById('voice-changer-external-select');
+    const hint = document.getElementById('voice-changer-external-hint');
+    if (!check || !select) return;
+
+    const supported = typeof Audio !== 'undefined' && typeof (new Audio()).setSinkId === 'function';
+    if (!supported) {
+        check.disabled = true;
+        if (hint) hint.innerText = 'Выбор устройства вывода (setSinkId) не поддерживается этим браузером — трансляция в другие программы недоступна.';
+        return;
+    }
+
+    loadExternalOutputDevices();
+    check.checked = externalOutputEnabled;
+    select.disabled = !check.checked;
+
+    check.addEventListener('change', () => {
+        externalOutputEnabled = check.checked;
+        saveAudioSettings({ externalOutputEnabled });
+        select.disabled = !check.checked;
+        if (check.checked) {
+            if (audioContext && audioContext.state === 'suspended') audioContext.resume().catch(() => {});
+            if (audioContext && voiceOutNode) {
+                try { voiceOutNode.connect(ensureExternalOutputNode(audioContext)); } catch (e) { /* уже подключено */ }
+                applyExternalOutputDevice();
+            }
+        } else if (voiceOutNode && externalOutputGain) {
+            try { voiceOutNode.disconnect(externalOutputGain); } catch (e) { /* ignore */ }
+        }
+    });
+
+    select.addEventListener('change', () => {
+        externalOutputDeviceId = select.value;
+        saveAudioSettings({ externalOutputDeviceId });
+        applyExternalOutputDevice();
+    });
+
+    navigator.mediaDevices.addEventListener('devicechange', () => {
+        loadExternalOutputDevices().catch(() => {});
     });
 })();
 

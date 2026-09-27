@@ -863,6 +863,18 @@ io.on('connection', (socket) => {
     let currentUserRoom = null;
     let currentUserData = null;
     let currentChatRoom = null; // какой сервер сейчас открыт в чате у этого сокета
+    let currentStatus = '';     // свой статус (спец. возможности), виден рядом с ником в звонке
+
+    // Пользователь задал/изменил свой статус. Храним на сокете и, если человек сейчас
+    // в голосовом канале, сразу обновляем его строку у всех остальных.
+    socket.on('set status', ({ status } = {}) => {
+        currentStatus = String(status || '').trim().slice(0, 60);
+        socket.data.status = currentStatus;
+        if (currentUserRoom && rooms[currentUserRoom] && rooms[currentUserRoom][socket.id]) {
+            rooms[currentUserRoom][socket.id].status = currentStatus;
+            broadcastRoomUsersToWatchers(currentUserRoom);
+        }
+    });
 
     // Чат теперь свой для каждого сервера — история грузится только когда клиент
     // говорит, какую комнату он открыл (см. 'select chat room' ниже).
@@ -1376,7 +1388,8 @@ io.on('connection', (socket) => {
             peerId: peerId,
             sharing: false,
             micMuted: !!micMuted,
-            deafened: !!deafened
+            deafened: !!deafened,
+            status: currentStatus
         };
 
         currentUserData = rooms[room][socket.id];
@@ -1629,7 +1642,8 @@ function getRoomUsers(room) {
                 avatar: u.avatar,
                 sharing: !!u.sharing,
                 micMuted: !!u.micMuted,
-                deafened: !!u.deafened
+                deafened: !!u.deafened,
+                status: u.status || ''
             };
         }
     }

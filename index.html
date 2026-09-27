@@ -578,6 +578,21 @@
             text-overflow: ellipsis;
             white-space: nowrap;
         }
+        .voice-user-namecol {
+            flex: 1 1 auto;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+        .voice-user-namecol .voice-user-name { flex: none; }
+        .voice-user-status {
+            font-size: 11px;
+            color: var(--text-muted);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
         .voice-users-list { min-width: 0; overflow: hidden; }
         .sidebar-section, .sidebar-list { min-width: 0; }
         .sidebar-item > span {
@@ -2382,10 +2397,7 @@
             <div class="sidebar-section">
                 <h3 id="voice-users-heading">Участники канала</h3>
                 <div class="sidebar-list">
-                    <div class="sidebar-item" id="room-name-display">
-                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>
-                        <span>Вы не в звонке</span>
-                    </div>
+                    <div class="sidebar-item" id="room-name-display" style="display:none"></div>
                     <div class="voice-users-list" id="voice-users-container"></div>
                     <div id="voice-preview" style="display:none">
                         <div class="voice-offcall-divider" id="voice-preview-title"></div>
@@ -2792,13 +2804,20 @@
                     </div>
                     <div class="control-group">
                         <label class="checkbox-label">
-                            <input type="checkbox" id="voice-changer-check"> Девчачий голос
+                            <input type="checkbox" id="voice-changer-check"> Изменение голоса
                         </label>
                         <span class="profile-hint" id="voice-changer-hint">Голос меняется на лету — собеседники слышат уже изменённый. Чтобы проверить, включите «Слышать себя» выше (только в наушниках).</span>
                     </div>
                     <div class="control-group" id="voice-changer-pitch-group">
                         <label>Высота голоса: <span id="voice-changer-pitch-value">+5</span> полутонов</label>
                         <input type="range" id="voice-changer-pitch-slider" min="-10" max="10" step="1" value="5">
+                    </div>
+                    <div class="control-group" id="voice-changer-external-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="voice-changer-external-check"> Транслировать изменённый голос в другие программы
+                        </label>
+                        <select id="voice-changer-external-select" disabled></select>
+                        <span class="profile-hint" id="voice-changer-external-hint">Сама программа не может подменить системный микрофон — так умеет только виртуальный аудиокабель. Установите бесплатный VB-Audio Virtual Cable (Windows) или BlackHole (Mac), выберите его «вход» в списке выше, а затем в другой программе (Discord, игре, OBS) выберите этот же кабель как микрофон — она услышит уже изменённый голос.</span>
                     </div>
                 </div>
             </div>
@@ -3065,6 +3084,23 @@
             </div>
 
             <div class="settings-tab-panel" data-tab-panel="accessibility">
+                <div class="settings-section">
+                    <div class="settings-section-title">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12.01" y2="16"></line><path d="M12 8v4"></path></svg>
+                        Свой статус
+                    </div>
+                    <div class="control-group">
+                        <label class="checkbox-label" style="margin-bottom:6px;">Показывается рядом с вашим ником в голосовом канале</label>
+                        <div style="display:flex; gap:8px;">
+                            <input type="text" id="custom-status-input" maxlength="60" placeholder="Например: занят, не беспокоить" style="flex:1;">
+                            <button type="button" class="sound-icon-btn" id="custom-status-clear-btn" title="Очистить">
+                                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                            </button>
+                        </div>
+                        <span class="profile-hint" id="custom-status-hint">Сохраняется автоматически.</span>
+                    </div>
+                </div>
+
                 <div class="settings-section">
                     <div class="settings-section-title">
                         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"></rect><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"></path></svg>
