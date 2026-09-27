@@ -95,7 +95,11 @@
                 radial-gradient(circle at 15% 15%, rgba(99,102,241,0.12), transparent 40%),
                 radial-gradient(circle at 85% 85%, rgba(99,102,241,0.08), transparent 40%),
                 var(--bg-app);
-            display: flex;
+            /* По умолчанию скрыт: если профиль уже сохранён в этом браузере, экран входа
+               не должен показаться вообще ни на кадр. Показывается инлайн-скриптом сразу
+               под этим блоком — синхронно, до первой отрисовки страницы — и только если
+               сохранённого профиля не нашлось. См. также автовход в script.js. */
+            display: none;
             justify-content: center;
             align-items: center;
             z-index: 1000;
@@ -2087,6 +2091,9 @@
             border-radius: var(--radius-sm);
         }
         .playlist-widget.has-tracks { display: flex; }
+        /* Пока слушаете чужой плейлист (вы — гость), свой модуль треков прячем:
+           управление уже есть в панели совместного прослушивания выше. */
+        .playlist-widget.hidden-by-listen { display: none !important; }
         .playlist-widget-top {
             display: flex;
             align-items: center;
@@ -2367,6 +2374,25 @@
             <button class="btn-primary" id="register-btn">Войти</button>
         </div>
     </div>
+
+    <script>
+        // Показываем экран входа синхронно, ДО первой отрисовки страницы, и только
+        // если в этом браузере ещё нет сохранённого профиля — иначе у уже вошедших
+        // он мелькал бы каждый раз при перезагрузке, пока основной script.js не
+        // успевал его спрятать. Ключ и формат должны совпадать с PROFILE_STORAGE_KEY
+        // в script.js (см. saveProfileToStorage/loadProfileFromStorage).
+        (function () {
+            try {
+                var raw = localStorage.getItem('voicechat_profile');
+                var stored = raw ? JSON.parse(raw) : null;
+                if (!(stored && stored.username)) {
+                    document.getElementById('login-container').style.display = 'flex';
+                }
+            } catch (e) {
+                document.getElementById('login-container').style.display = 'flex';
+            }
+        })();
+    </script>
 
     <div id="app-container" class="fade-in">
         <div class="servers-rail" id="servers-rail">

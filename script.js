@@ -2682,6 +2682,7 @@ function refreshListenSessionUi() {
         listenSessionBar.classList.remove('active');
         listenSessionSeekRow.classList.remove('visible');
         listenSessionVolumeRow.classList.remove('visible');
+        if (playlistWidget) playlistWidget.classList.remove('hidden-by-listen');
         return;
     }
     listenSessionBar.classList.add('active');
@@ -2696,6 +2697,10 @@ function refreshListenSessionUi() {
     listenSessionVolumeRow.classList.toggle('visible', isGuest);
     listenSessionTrackName.style.display = isGuest ? '' : 'none';
     if (isGuest) listenSessionVolume.value = String(Math.min(150, playlistVolumePercent));
+
+    // Пока вам транслируют чужой плейлист (вы гость), свой модуль управления
+    // треками не нужен — прячем, чтобы не путал и не мешал.
+    if (playlistWidget) playlistWidget.classList.toggle('hidden-by-listen', isGuest);
 }
 
 function setupListenSession(conn, role, peerId, username) {
