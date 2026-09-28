@@ -284,8 +284,20 @@ const LOW_PERF_MODE_KEY = 'mute_low_perf_mode';
 let lowPerfModeEnabled = false;
 try { lowPerfModeEnabled = localStorage.getItem(LOW_PERF_MODE_KEY) === '1'; } catch (e) { /* ignore */ }
 
+// «Окно неактивно» — это не только visibilityState === 'hidden'. В WebView2 (Tauri)
+// при сворачивании окна кнопкой в своей шапке visibilitychange приходит не всегда, из-за
+// чего режим раньше просто не срабатывал. Поэтому считаем окно неактивным, если оно
+// скрыто ИЛИ потеряло фокус (свернули, переключились в другое приложение) ИЛИ Tauri
+// сообщил, что окно свёрнуто.
+let windowHasFocus = (typeof document.hasFocus === 'function') ? document.hasFocus() : true;
+let windowMinimized = false;
+
+function windowIsInactive() {
+    return document.visibilityState === 'hidden' || !windowHasFocus || windowMinimized;
+}
+
 function lowPerfActive() {
-    return lowPerfModeEnabled && document.visibilityState === 'hidden';
+    return lowPerfModeEnabled && windowIsInactive();
 }
 
 // Только визуальный слой: ставит/убирает CSS-класс, который глушит анимации и
@@ -297,6 +309,8 @@ function applyLowPerfState() {
 }
 
 document.addEventListener('visibilitychange', applyLowPerfState);
+window.addEventListener('blur', () => { windowHasFocus = false; applyLowPerfState(); });
+window.addEventListener('focus', () => { windowHasFocus = true; windowMinimized = false; applyLowPerfState(); });
 applyLowPerfState();
 
 // Настройка «показывать всех участников сервера» (Кастомизация → Список участников), хранится на устройстве.
@@ -773,7 +787,18 @@ let pendingAvatarFile = null; // выбранный файл аватарки, �
     const maximizeBtn = document.getElementById('titlebar-maximize');
     const closeBtn = document.getElementById('titlebar-close');
 
-    if (minimizeBtn) minimizeBtn.addEventListener('click', () => tauriWindow.minimize());
+    // Native-события окна: точнее, чем blur/visibilitychange в WebView2.
+    const refreshWindowActivity = async () => {
+        try {
+            windowMinimized = await tauriWindow.isMinimized();
+            windowHasFocus = await tauriWindow.isFocused();
+        } catch (e) { /* ignore */ }
+        applyLowPerfState();
+    };
+    try { tauriWindow.onFocusChanged(({ payload }) => { windowHasFocus = !!payload; if (payload) windowMinimized = false; applyLowPerfState(); }); } catch (e) { /* ignore */ }
+    try { tauriWindow.onResized(refreshWindowActivity); } catch (e) { /* ignore */ }
+
+    if (minimizeBtn) minimizeBtn.addEventListener('click', () => { windowMinimized = true; applyLowPerfState(); tauriWindow.minimize(); });
     if (closeBtn) closeBtn.addEventListener('click', () => tauriWindow.close());
     if (maximizeBtn) maximizeBtn.addEventListener('click', () => tauriWindow.toggleMaximize());
 
