@@ -3351,7 +3351,7 @@ async function initPeer() {
 
     myPeer.on('call', (call) => {
         console.log('[Звонок] Входящий звонок от:', call.peer);
-        call.answer(localMediaStream);
+        call.answer(localMediaStream, { sdpTransform: enableOpusDtx });
         // ВАЖНО: обновлять connectedUsers по call.metadata можно только здесь, на
         // ПРИНИМАЮЩЕЙ стороне — тут call.metadata реально описывает того, кто звонит
         // (call.peer). На звонящей стороне (см. myPeer.call(...) ниже) в metadata
@@ -4630,10 +4630,50 @@ function isIceConnected(pc) {
 }
 
 // Исходящий звонок. Звонит только сторона с меньшим peerId (см. 'room users').
+// ---------- Opus DTX: не кодировать и не слать тишину ----------
+// В mesh-звонке (каждый с каждым) свой голос кодируется отдельно для КАЖДОГО собеседника,
+// причём непрерывно — даже когда вы молчите и гейт закрыт (тишина тоже кодируется и
+// шлётся). Флаг usedtx=1 в SDP включает у отправителя Opus DTX: в паузах кодирование и
+// отправка пропускаются. Заодно перестаёт зря кодироваться "пустая" дорожка звука
+// демонстрации (пока никто ничего не шарит, там тишина). Параметр записывается в
+// собственное SDP каждой стороны (offer и answer) — отправитель читает его из SDP
+// принимающего. Мономикрофон и ~32 кбит/с Chrome и так использует по умолчанию,
+// поэтому их не трогаем. При любой ошибке разбора возвращаем SDP без изменений.
+function enableOpusDtx(sdp) {
+    try {
+        const eol = sdp.includes('\r\n') ? '\r\n' : '\n';
+        const parts = sdp.split(eol + 'm=');
+        for (let i = 0; i < parts.length; i++) {
+            const isFirst = i === 0;
+            const section = isFirst ? parts[i] : 'm=' + parts[i];
+            if (!section.startsWith('m=audio')) continue;
+            const rtpmap = section.match(/a=rtpmap:(\d+) opus\/48000[^\r\n]*/i);
+            if (!rtpmap) continue;
+            const pt = rtpmap[1];
+            const fmtpRe = new RegExp('a=fmtp:' + pt + ' ([^\\r\\n]*)');
+            let out;
+            if (fmtpRe.test(section)) {
+                out = section.replace(fmtpRe, (m, params) => {
+                    return /(^|;)usedtx=/.test(params)
+                        ? 'a=fmtp:' + pt + ' ' + params.replace(/usedtx=\d/, 'usedtx=1')
+                        : 'a=fmtp:' + pt + ' ' + params + ';usedtx=1';
+                });
+            } else {
+                out = section.replace(rtpmap[0], rtpmap[0] + eol + 'a=fmtp:' + pt + ' usedtx=1');
+            }
+            parts[i] = isFirst ? out : out.slice(2);
+        }
+        return parts.join(eol + 'm=');
+    } catch (e) {
+        return sdp;
+    }
+}
+
 function startCall(peerId) {
     if (!myPeer || myPeer.destroyed || !localMediaStream) { scheduleCallRetry(peerId); return; }
     const call = myPeer.call(peerId, localMediaStream, {
-        metadata: { username: currentUser.username, avatar: currentUser.avatar }
+        metadata: { username: currentUser.username, avatar: currentUser.avatar },
+        sdpTransform: enableOpusDtx
     });
     // PeerJS возвращает undefined, если сигнальное соединение сейчас разорвано.
     if (!call) { scheduleCallRetry(peerId); return; }
