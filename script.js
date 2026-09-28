@@ -4640,9 +4640,10 @@ function isIceConnected(pc) {
 //     уходит 25: вдвое меньше шифрований и сетевых отправок. Цена — примерно +20 мс к
 //     задержке голоса и чуть больше потеряется звука при потере одного пакета.
 // Параметры записываются в собственное SDP каждой стороны (offer и answer): отправитель
-// читает их из SDP принимающего. Моно и ~32 кбит/с Chrome и так использует по
-// умолчанию, поэтому их не трогаем. При любой ошибке разбора возвращаем SDP без изменений.
+// читает их из SDP принимающего. Моно Chrome и так использует по
+// умолчанию. Битрейт ограничен через maxaveragebitrate (OPUS_MAX_BITRATE). При любой ошибке разбора возвращаем SDP без изменений.
 const OPUS_PTIME_MS = 40; // 20 — вернуть стандартные пакеты
+const OPUS_MAX_BITRATE = 24000; // бит/с для голоса; 0 — не ограничивать (по умолчанию Chrome ~32 кбит/с)
 function enableOpusDtx(sdp) {
     try {
         const eol = sdp.includes('\r\n') ? '\r\n' : '\n';
@@ -4665,10 +4666,12 @@ function enableOpusDtx(sdp) {
                 section = section.replace(fmtpRe, (m, params) => {
                     let p = setParam(params, 'usedtx', 1);
                     if (OPUS_PTIME_MS > 20) p = setParam(p, 'minptime', OPUS_PTIME_MS);
+                    if (OPUS_MAX_BITRATE > 0) p = setParam(p, 'maxaveragebitrate', OPUS_MAX_BITRATE);
                     return 'a=fmtp:' + pt + ' ' + p;
                 });
             } else {
-                const p = 'usedtx=1' + (OPUS_PTIME_MS > 20 ? ';minptime=' + OPUS_PTIME_MS : '');
+                const p = 'usedtx=1' + (OPUS_PTIME_MS > 20 ? ';minptime=' + OPUS_PTIME_MS : '')
+                    + (OPUS_MAX_BITRATE > 0 ? ';maxaveragebitrate=' + OPUS_MAX_BITRATE : '');
                 section = section.replace(rtpmap[0], rtpmap[0] + eol + 'a=fmtp:' + pt + ' ' + p);
             }
 
