@@ -306,6 +306,28 @@ function lowPerfActive() {
 // иначе звонок бы "замолкал" при простом сворачивании окна, что не нужно.
 function applyLowPerfState() {
     document.documentElement.classList.toggle('low-perf-active', lowPerfActive());
+    applyRemoteMeterRate();
+}
+
+// Как часто метры ЧУЖИХ голосов (только свечение "говорит") шлют отчёты главному потоку:
+//  - окно активно                              → как обычно, каждые 50 мс;
+//  - окно неактивно, режим низкой произв. выкл → урезано до раза в секунду;
+//  - окно неактивно, режим низкой произв. вкл  → метры полностью выключены.
+// Звук собеседников и гейт собственного микрофона от этого не зависят.
+function remoteMeterReportMs() {
+    if (!windowIsInactive()) return 50;
+    return lowPerfModeEnabled ? 0 : 1000;
+}
+function sendRemoteMeterRate(node) {
+    if (node && node.__isWorklet && node.port) {
+        try { node.port.postMessage({ reportMs: remoteMeterReportMs() }); } catch (e) { /* ignore */ }
+    }
+}
+function applyRemoteMeterRate() {
+    // Вызывается и на загрузке, до объявления remoteAnalysers (let) — поэтому try.
+    try {
+        for (const id in remoteAnalysers) sendRemoteMeterRate(remoteAnalysers[id]);
+    } catch (e) { /* ещё не инициализировано */ }
 }
 
 document.addEventListener('visibilitychange', applyLowPerfState);
@@ -1366,8 +1388,21 @@ class MuteRmsMeterProcessor extends AudioWorkletProcessor {
         this._count = 0;
         // ~50мс на один отчёт, независимо от sampleRate конкретного устройства.
         this._samplesPerReport = Math.max(1, Math.round(sampleRate * 0.05));
+        this._off = false;
+        // Команда с главного потока: { reportMs } — как часто слать отчёт; 0 — совсем не
+        // считать и не слать. Используется ТОЛЬКО для метров чужих участников (они нужны
+        // лишь для свечения "говорит"); метр собственного микрофона (гейт) не трогается.
+        this.port.onmessage = (e) => {
+            const ms = e.data && e.data.reportMs;
+            if (typeof ms !== 'number') return;
+            this._off = ms <= 0;
+            if (ms > 0) this._samplesPerReport = Math.max(1, Math.round(sampleRate * ms / 1000));
+            this._sumSquares = 0;
+            this._count = 0;
+        };
     }
     process(inputs) {
+        if (this._off) return true; // метр выключен — вообще ничего не считаем
         const input = inputs[0];
         if (input && input.length > 0) {
             const channel = input[0];
@@ -3706,6 +3741,7 @@ async function setupRemoteAudioAnalyzer(stream, peerId) {
         const remoteAnalyser = await createLevelMeterNode(audioContext);
         source.connect(remoteAnalyser);
         remoteAnalysers[peerId] = remoteAnalyser;
+        sendRemoteMeterRate(remoteAnalyser);
 
         const username = (connectedUsers[peerId] && connectedUsers[peerId].username) || '';
         const voiceGain = audioContext.createGain();
@@ -3848,6 +3884,7 @@ function processRemoteAudioLevelFallback(peerId, node) {
     let lastIsSpeaking = null;
 
     const intervalId = setInterval(checkRemote, 50);
+    let fallbackTick = 0;
 
     function checkRemote() {
         if (remoteAnalysers[peerId] !== analyser) {
@@ -3855,6 +3892,8 @@ function processRemoteAudioLevelFallback(peerId, node) {
             return;
         }
         if (lowPerfActive()) return; // индикатор говорящего у собеседника — чисто визуальный, никто его сейчас не видит
+        // Окно неактивно, но режим низкой производительности выключен — урезаем до раза в секунду
+        if (windowIsInactive() && (++fallbackTick % 20) !== 0) return;
         let volumeDb = getRmsDb(analyser, dataArray);
         const isSpeaking = volumeDb > gateThreshold && !isDeafened;
 
