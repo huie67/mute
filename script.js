@@ -275,6 +275,30 @@ function setConnectionBanner(visible, text) {
     connectionBanner.classList.toggle('visible', !!visible);
 }
 
+// Режим низкой производительности: пользовательская настройка (хранится на устройстве)
+// + фактическая видимость окна. Активен ТОЛЬКО когда оба условия верны — включена
+// настройка И окно сейчас свёрнуто/скрыто (document.visibilityState === 'hidden').
+// В Tauri сворачивание окна тоже даёт 'hidden' — это тот же WebView2, что и вкладка
+// браузера, отдельного API дёргать не нужно.
+const LOW_PERF_MODE_KEY = 'mute_low_perf_mode';
+let lowPerfModeEnabled = false;
+try { lowPerfModeEnabled = localStorage.getItem(LOW_PERF_MODE_KEY) === '1'; } catch (e) { /* ignore */ }
+
+function lowPerfActive() {
+    return lowPerfModeEnabled && document.visibilityState === 'hidden';
+}
+
+// Только визуальный слой: ставит/убирает CSS-класс, который глушит анимации и
+// переходы (см. правило .low-perf-active в index.html). Никак не влияет на
+// WebRTC-звонок, микрофон, Voice Gate, сокет — они продолжают работать в фоне,
+// иначе звонок бы "замолкал" при простом сворачивании окна, что не нужно.
+function applyLowPerfState() {
+    document.documentElement.classList.toggle('low-perf-active', lowPerfActive());
+}
+
+document.addEventListener('visibilitychange', applyLowPerfState);
+applyLowPerfState();
+
 // Настройка «показывать всех участников сервера» (Кастомизация → Список участников), хранится на устройстве.
 const SHOW_OFFCALL_KEY = 'mute_show_offcall_members';
 let showOffCallMembers = false;
@@ -452,6 +476,7 @@ const thresholdSlider = document.getElementById('threshold-slider');
 const thresholdValueDisplay = document.getElementById('threshold-value');
 const thresholdIndicator = document.getElementById('threshold-indicator');
 
+const lowPerfModeCheck = document.getElementById('low-perf-mode-check');
 const gateEnabledCheck = document.getElementById('gate-enabled-check');
 const gateHangoverSlider = document.getElementById('gate-hangover-slider');
 const gateHangoverValueDisplay = document.getElementById('gate-hangover-value');
@@ -1133,20 +1158,6 @@ let gateThreshold = -45;
 let micMonitorGain = null;
 let micMonitorEnabled = false;
 
-// ---------- Трансляция изменённого голоса в другие программы ----------
-// Веб-страница не может подменить собой системный микрофон — для этого нет
-// доступа к ОС. Единственный рабочий способ пустить уже обработанный (со
-// сменённым голосом) звук в другую программу — вывести его через выбранное
-// устройство ВЫВОДА (setSinkId) на "вход" стороннего виртуального аудиокабеля
-// (VB-Audio Virtual Cable, BlackHole и т.п.), а в другой программе выбрать
-// этот же кабель уже как микрофон. externalOutputGain — постоянный узел,
-// живущий вне пересборок графа (как micMonitorGain), чтобы включённость не
-// слетала при смене микрофона/профиля шумоподавления.
-let externalOutputGain = null;
-let externalOutputDest = null;
-let externalOutputAudioEl = null;
-let externalOutputEnabled = false;
-let externalOutputDeviceId = '';
 
 // ---------- Граф обработки своего микрофона ----------
 // sourceNode — узел на "сырой" (необработанный) поток с микрофона. От него отдельно
@@ -1310,31 +1321,6 @@ async function applyVoiceChanger() {
     try { inNode.connect(outNode); } catch (e) { /* ignore */ }
 }
 
-// Создаёт (один раз) постоянный узел-выход и скрытый <audio>, проигрывающий
-// уже обработанный сигнал (после изменения голоса) на выбранное устройство
-// вывода звука — см. комментарий у объявления externalOutputGain выше.
-function ensureExternalOutputNode(ctx) {
-    if (externalOutputGain) return externalOutputGain;
-    externalOutputGain = ctx.createGain();
-    externalOutputDest = ctx.createMediaStreamDestination();
-    externalOutputGain.connect(externalOutputDest);
-    externalOutputAudioEl = new Audio();
-    externalOutputAudioEl.srcObject = externalOutputDest.stream;
-    externalOutputAudioEl.autoplay = true;
-    externalOutputAudioEl.muted = false;
-    externalOutputAudioEl.play().catch(() => { /* добудим при взаимодействии пользователя */ });
-    return externalOutputGain;
-}
-
-async function applyExternalOutputDevice() {
-    if (!externalOutputAudioEl || typeof externalOutputAudioEl.setSinkId !== 'function') return;
-    if (!externalOutputDeviceId) return;
-    try {
-        await externalOutputAudioEl.setSinkId(externalOutputDeviceId);
-    } catch (e) {
-        console.warn('[Трансляция голоса] Не удалось выбрать устройство вывода:', e);
-    }
-}
 
 // ---------- Пункт оптимизации №5: RMS-метр громкости через AudioWorklet ----------
 // Раньше уровень/RMS считался опросом AnalyserNode из setInterval в ГЛАВНОМ потоке —
@@ -1542,8 +1528,6 @@ function saveRemoteVolume(username, percent) {
     if (typeof saved.voiceChangerSemitones === 'number') {
         voiceChangerSemitones = Math.min(VOICE_CHANGER_MAX_SEMITONES, Math.max(VOICE_CHANGER_MIN_SEMITONES, Math.round(saved.voiceChangerSemitones)));
     }
-    if (typeof saved.externalOutputEnabled === 'boolean') externalOutputEnabled = saved.externalOutputEnabled;
-    if (typeof saved.externalOutputDeviceId === 'string') externalOutputDeviceId = saved.externalOutputDeviceId;
     if (gateEnabledCheck) gateEnabledCheck.checked = gateEnabled;
     if (gateHangoverSlider) gateHangoverSlider.value = gateHangoverMs;
     if (gateHangoverValueDisplay) gateHangoverValueDisplay.innerText = `${gateHangoverMs} мс`;
@@ -1774,6 +1758,19 @@ function playJoinSound() {
 // Кто-то вышел из комнаты
 function playLeaveSound() {
     playNotifySound('leave', getSoundVolume('leave'), currentUser.room || selectedRoom);
+}
+
+// Звук входа/выхода ЧУЖОГО участника. Один и тот же вход/выход может прийти сразу
+// несколькими путями ('room users' с разницей списков и отдельные 'user connected'/
+// 'user disconnected'), поэтому одинаковый звук для того же человека в пределах пары
+// секунд не повторяем.
+const recentPresenceSounds = {};
+function playPresenceSound(kind, peerId) {
+    const key = `${kind}:${peerId}`;
+    const now = Date.now();
+    if (recentPresenceSounds[key] && now - recentPresenceSounds[key] < 2500) return;
+    recentPresenceSounds[key] = now;
+    if (kind === 'join') playJoinSound(); else playLeaveSound();
 }
 
 // Свой или чужой мьют микрофона включился/выключился. Раньше звук генерировался
@@ -3496,9 +3493,6 @@ async function setupAudioAnalyzer(stream) {
         }
         voiceOutNode.connect(micMonitorGain);
 
-        if (externalOutputEnabled) {
-            voiceOutNode.connect(ensureExternalOutputNode(audioContext));
-        }
         await applyVoiceChanger();
 
         if (analyserNode.__isWorklet) {
@@ -3568,7 +3562,9 @@ function processAudioLevel(node) {
         // глазом разницы с каждым отчётом (~50мс) не видно, а лишних стилевых
         // пересчётов вдвое меньше. Саму логику гейта ниже это не касается — она
         // считается на каждом отчёте, чтобы отклик оставался быстрым.
-        if (messageCount % 2 === 0) {
+        // В режиме низкой производительности (окно свёрнуто) полоску/текст вообще
+        // не трогаем — их всё равно никто не видит.
+        if (messageCount % 2 === 0 && !lowPerfActive()) {
             let meterPercent = Math.max(0, Math.min(100, ((volumeDb + 70) / 60) * 100));
             micMeter.style.width = `${meterPercent}%`;
 
@@ -3598,9 +3594,11 @@ function processAudioLevel(node) {
         const isSpeaking = !isMuted && !isDeafened && (!gateEnabled || gateOpen);
         if (isSpeaking !== lastIsSpeaking) {
             lastIsSpeaking = isSpeaking;
-            applyGateToMicTrack();
-            if (!myAvatarElem || !myAvatarElem.isConnected) myAvatarElem = document.getElementById(`avatar-${myPeerId}`);
-            if (myAvatarElem) myAvatarElem.classList.toggle('speaking', isSpeaking);
+            applyGateToMicTrack(); // функциональная часть — работает всегда, даже в низкой производительности
+            if (!lowPerfActive()) {
+                if (!myAvatarElem || !myAvatarElem.isConnected) myAvatarElem = document.getElementById(`avatar-${myPeerId}`);
+                if (myAvatarElem) myAvatarElem.classList.toggle('speaking', isSpeaking);
+            }
         }
     };
 }
@@ -3628,7 +3626,7 @@ function processAudioLevelFallback(node) {
         }
         let volumeDb = getRmsDb(localAnalyser, dataArray);
         tickCount++;
-        const shouldRedraw = (tickCount % 2 === 0);
+        const shouldRedraw = (tickCount % 2 === 0) && !lowPerfActive();
 
         if (shouldRedraw) {
             let meterPercent = Math.max(0, Math.min(100, ((volumeDb + 70) / 60) * 100));
@@ -3658,9 +3656,11 @@ function processAudioLevelFallback(node) {
         const isSpeaking = !isMuted && !isDeafened && (!gateEnabled || gateOpen);
         if (isSpeaking !== lastIsSpeaking) {
             lastIsSpeaking = isSpeaking;
-            applyGateToMicTrack();
-            if (!myAvatarElem || !myAvatarElem.isConnected) myAvatarElem = document.getElementById(`avatar-${myPeerId}`);
-            if (myAvatarElem) myAvatarElem.classList.toggle('speaking', isSpeaking);
+            applyGateToMicTrack(); // функциональная часть — работает всегда, даже в низкой производительности
+            if (!lowPerfActive()) {
+                if (!myAvatarElem || !myAvatarElem.isConnected) myAvatarElem = document.getElementById(`avatar-${myPeerId}`);
+                if (myAvatarElem) myAvatarElem.classList.toggle('speaking', isSpeaking);
+            }
         }
     }
     check();
@@ -3801,6 +3801,7 @@ function processRemoteAudioLevel(peerId, node) {
             localNode.port.onmessage = null;
             return;
         }
+        if (lowPerfActive()) return; // индикатор говорящего у собеседника — чисто визуальный, никто его сейчас не видит
         const volumeDb = event.data;
         const isSpeaking = volumeDb > gateThreshold && !isDeafened;
 
@@ -3828,6 +3829,7 @@ function processRemoteAudioLevelFallback(peerId, node) {
             clearInterval(intervalId);
             return;
         }
+        if (lowPerfActive()) return; // индикатор говорящего у собеседника — чисто визуальный, никто его сейчас не видит
         let volumeDb = getRmsDb(analyser, dataArray);
         const isSpeaking = volumeDb > gateThreshold && !isDeafened;
 
@@ -4399,7 +4401,22 @@ socket.on('room users', (usersInRoom, room) => {
         return;
     }
 
+    // Кто зашёл/вышел — определяем по разнице со старым списком. Раньше звук входа
+    // решался в 'user connected' по "нет ли человека в connectedUsers", но сервер
+    // шлёт 'room users' (где новичок уже есть) РАНЬШЕ 'user connected', поэтому
+    // человек всегда считался "уже был" и звук входа не играл вообще.
+    const prevPeerIds = Object.keys(connectedUsers || {});
+    const wasAlreadyInCall = prevPeerIds.includes(myPeerId);
     connectedUsers = usersInRoom;
+    if (currentUser.room && wasAlreadyInCall) {
+        const nextPeerIds = Object.keys(usersInRoom || {});
+        nextPeerIds.forEach(id => {
+            if (id !== myPeerId && !prevPeerIds.includes(id)) playPresenceSound('join', id);
+        });
+        prevPeerIds.forEach(id => {
+            if (id !== myPeerId && !nextPeerIds.includes(id)) playPresenceSound('leave', id);
+        });
+    }
 
     for (let peerId in usersInRoom) {
         if (usersInRoom[peerId] && usersInRoom[peerId].sharing) {
@@ -4749,7 +4766,6 @@ function renderRemoteVideoState(peerId) {
 }
 
 socket.on('user connected', ({ username, avatar, peerId }) => {
-    const isNewcomer = !connectedUsers[peerId];
     // Раньше здесь запись полностью перезаписывалась заново собранным объектом
     // без micMuted/deafened — а событие 'room users' (с уже верным статусом мута)
     // приходит непосредственно ПЕРЕД этим событием, и его тут же затирало.
@@ -4760,10 +4776,9 @@ socket.on('user connected', ({ username, avatar, peerId }) => {
     connectedUsers[peerId] = { ...prev, username, avatar };
     if (currentUser.room) updateVoiceUsersList();
 
-    // Звук входа — только если мы сами сейчас в голосовом канале и зашёл не мы сами
-    if (isNewcomer && peerId !== myPeerId && currentUser.room) {
-        playJoinSound();
-    }
+    // Звук входа здесь НЕ играем: 'user connected' приходит и при быстром
+    // переподключении того же человека (тот же peerId, новый сокет) — это не
+    // новый вход. Звук входа определяется по разнице списков в 'room users'.
 });
 
 socket.on('user disconnected', (peerId) => {
@@ -4777,7 +4792,7 @@ socket.on('user disconnected', (peerId) => {
 
     // Звук выхода — только если мы сами сейчас в голосовом канале
     if (wasPresent && peerId !== myPeerId && currentUser.room) {
-        playLeaveSound();
+        playPresenceSound('leave', peerId);
     }
 
     if (activeCalls[peerId]) {
@@ -5694,6 +5709,15 @@ noiseCheck.addEventListener('change', () => {
 
 // "Слышать себя": просто крутим громкость постоянного gain-узла — не нужно
 // пересоздавать поток или трогать анализатор/индикатор уровня.
+if (lowPerfModeCheck) {
+    lowPerfModeCheck.checked = lowPerfModeEnabled;
+    lowPerfModeCheck.addEventListener('change', () => {
+        lowPerfModeEnabled = lowPerfModeCheck.checked;
+        try { localStorage.setItem(LOW_PERF_MODE_KEY, lowPerfModeEnabled ? '1' : '0'); } catch (e) { /* ignore */ }
+        applyLowPerfState(); // применится сразу, если окно как раз сейчас свёрнуто
+    });
+}
+
 micMonitorCheck.addEventListener('change', () => {
     micMonitorEnabled = micMonitorCheck.checked;
     applyGateToMicTrack();
@@ -5767,69 +5791,6 @@ if (micVolumeSlider) {
     });
 })();
 
-// ---------- UI: трансляция изменённого голоса в другие программы ----------
-async function loadExternalOutputDevices() {
-    const select = document.getElementById('voice-changer-external-select');
-    if (!select) return;
-    try {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const outputs = devices.filter(d => d.kind === 'audiooutput');
-        const prevValue = select.value || externalOutputDeviceId;
-        select.innerHTML = '';
-        outputs.forEach((dev, i) => {
-            const opt = document.createElement('option');
-            opt.value = dev.deviceId;
-            opt.innerText = dev.label || `Устройство вывода ${i + 1}`;
-            select.appendChild(opt);
-        });
-        if (prevValue && outputs.some(d => d.deviceId === prevValue)) {
-            select.value = prevValue;
-        }
-    } catch (e) { console.warn('[Трансляция голоса] Не удалось получить список устройств вывода:', e); }
-}
-
-(function initExternalOutputControls() {
-    const check = document.getElementById('voice-changer-external-check');
-    const select = document.getElementById('voice-changer-external-select');
-    const hint = document.getElementById('voice-changer-external-hint');
-    if (!check || !select) return;
-
-    const supported = typeof Audio !== 'undefined' && typeof (new Audio()).setSinkId === 'function';
-    if (!supported) {
-        check.disabled = true;
-        if (hint) hint.innerText = 'Выбор устройства вывода (setSinkId) не поддерживается этим браузером — трансляция в другие программы недоступна.';
-        return;
-    }
-
-    loadExternalOutputDevices();
-    check.checked = externalOutputEnabled;
-    select.disabled = !check.checked;
-
-    check.addEventListener('change', () => {
-        externalOutputEnabled = check.checked;
-        saveAudioSettings({ externalOutputEnabled });
-        select.disabled = !check.checked;
-        if (check.checked) {
-            if (audioContext && audioContext.state === 'suspended') audioContext.resume().catch(() => {});
-            if (audioContext && voiceOutNode) {
-                try { voiceOutNode.connect(ensureExternalOutputNode(audioContext)); } catch (e) { /* уже подключено */ }
-                applyExternalOutputDevice();
-            }
-        } else if (voiceOutNode && externalOutputGain) {
-            try { voiceOutNode.disconnect(externalOutputGain); } catch (e) { /* ignore */ }
-        }
-    });
-
-    select.addEventListener('change', () => {
-        externalOutputDeviceId = select.value;
-        saveAudioSettings({ externalOutputDeviceId });
-        applyExternalOutputDevice();
-    });
-
-    navigator.mediaDevices.addEventListener('devicechange', () => {
-        loadExternalOutputDevices().catch(() => {});
-    });
-})();
 
 thresholdSlider.addEventListener('input', (e) => {
     gateThreshold = parseInt(e.target.value, 10);
