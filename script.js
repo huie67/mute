@@ -4630,38 +4630,55 @@ function isIceConnected(pc) {
 }
 
 // Исходящий звонок. Звонит только сторона с меньшим peerId (см. 'room users').
-// ---------- Opus DTX: не кодировать и не слать тишину ----------
-// В mesh-звонке (каждый с каждым) свой голос кодируется отдельно для КАЖДОГО собеседника,
-// причём непрерывно — даже когда вы молчите и гейт закрыт (тишина тоже кодируется и
-// шлётся). Флаг usedtx=1 в SDP включает у отправителя Opus DTX: в паузах кодирование и
-// отправка пропускаются. Заодно перестаёт зря кодироваться "пустая" дорожка звука
-// демонстрации (пока никто ничего не шарит, там тишина). Параметр записывается в
-// собственное SDP каждой стороны (offer и answer) — отправитель читает его из SDP
-// принимающего. Мономикрофон и ~32 кбит/с Chrome и так использует по умолчанию,
-// поэтому их не трогаем. При любой ошибке разбора возвращаем SDP без изменений.
+// ---------- Настройка Opus в SDP: DTX + пакеты по 40 мс ----------
+// В mesh-звонке (каждый с каждым) свой голос кодируется и шифруется отдельно для КАЖДОГО
+// собеседника. Два флага в SDP снижают эту нагрузку:
+//  1) usedtx=1 — Opus DTX: в паузах кодирование и отправка тишины пропускаются (раньше
+//     тишина при закрытом гейте кодировалась и слалась непрерывно; заодно перестаёт зря
+//     кодироваться "пустая" дорожка звука демонстрации);
+//  2) ptime/maxptime/minptime = 40 мс — вместо 50 пакетов в секунду на собеседника
+//     уходит 25: вдвое меньше шифрований и сетевых отправок. Цена — примерно +20 мс к
+//     задержке голоса и чуть больше потеряется звука при потере одного пакета.
+// Параметры записываются в собственное SDP каждой стороны (offer и answer): отправитель
+// читает их из SDP принимающего. Моно и ~32 кбит/с Chrome и так использует по
+// умолчанию, поэтому их не трогаем. При любой ошибке разбора возвращаем SDP без изменений.
+const OPUS_PTIME_MS = 40; // 20 — вернуть стандартные пакеты
 function enableOpusDtx(sdp) {
     try {
         const eol = sdp.includes('\r\n') ? '\r\n' : '\n';
         const parts = sdp.split(eol + 'm=');
         for (let i = 0; i < parts.length; i++) {
             const isFirst = i === 0;
-            const section = isFirst ? parts[i] : 'm=' + parts[i];
+            let section = isFirst ? parts[i] : 'm=' + parts[i];
             if (!section.startsWith('m=audio')) continue;
             const rtpmap = section.match(/a=rtpmap:(\d+) opus\/48000[^\r\n]*/i);
             if (!rtpmap) continue;
             const pt = rtpmap[1];
+
+            // fmtp: usedtx=1 и minptime под нужный размер пакета
             const fmtpRe = new RegExp('a=fmtp:' + pt + ' ([^\\r\\n]*)');
-            let out;
+            const setParam = (params, key, val) => {
+                const re = new RegExp('(^|;)' + key + '=[^;]*');
+                return re.test(params) ? params.replace(re, '$1' + key + '=' + val) : params + ';' + key + '=' + val;
+            };
             if (fmtpRe.test(section)) {
-                out = section.replace(fmtpRe, (m, params) => {
-                    return /(^|;)usedtx=/.test(params)
-                        ? 'a=fmtp:' + pt + ' ' + params.replace(/usedtx=\d/, 'usedtx=1')
-                        : 'a=fmtp:' + pt + ' ' + params + ';usedtx=1';
+                section = section.replace(fmtpRe, (m, params) => {
+                    let p = setParam(params, 'usedtx', 1);
+                    if (OPUS_PTIME_MS > 20) p = setParam(p, 'minptime', OPUS_PTIME_MS);
+                    return 'a=fmtp:' + pt + ' ' + p;
                 });
             } else {
-                out = section.replace(rtpmap[0], rtpmap[0] + eol + 'a=fmtp:' + pt + ' usedtx=1');
+                const p = 'usedtx=1' + (OPUS_PTIME_MS > 20 ? ';minptime=' + OPUS_PTIME_MS : '');
+                section = section.replace(rtpmap[0], rtpmap[0] + eol + 'a=fmtp:' + pt + ' ' + p);
             }
-            parts[i] = isFirst ? out : out.slice(2);
+
+            // ptime/maxptime — размер пакета (старые значения, если были, заменяем)
+            if (OPUS_PTIME_MS > 20) {
+                section = section.replace(/a=(max)?ptime:\d+(\r?\n)?/g, '');
+                const fm = section.match(fmtpRe);
+                section = section.replace(fm[0], fm[0] + eol + 'a=ptime:' + OPUS_PTIME_MS + eol + 'a=maxptime:' + OPUS_PTIME_MS);
+            }
+            parts[i] = isFirst ? section : section.slice(2);
         }
         return parts.join(eol + 'm=');
     } catch (e) {
