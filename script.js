@@ -305,6 +305,7 @@ function lowPerfActive() {
 // WebRTC-звонок, микрофон, Voice Gate, сокет — они продолжают работать в фоне,
 // иначе звонок бы "замолкал" при простом сворачивании окна, что не нужно.
 function applyLowPerfState() {
+    document.documentElement.classList.toggle('low-perf-mode', lowPerfModeEnabled); // блюр выключен всегда, пока режим включён
     document.documentElement.classList.toggle('low-perf-active', lowPerfActive());
     applyRemoteMeterRate();
 }

@@ -1747,6 +1747,14 @@
            просто замирают на текущем кадре, а не сбрасываются) и убираем переходы.
            Это только визуальный слой — звонок, микрофон, гейт и сеть не трогаем,
            см. lowPerfActive() в script.js. */
+        /* Пока включён режим низкой производительности (независимо от того, свёрнуто
+           окно или нет) — полностью убираем блюр (backdrop-filter / filter: blur). */
+        html.low-perf-mode *,
+        html.low-perf-mode *::before,
+        html.low-perf-mode *::after {
+            -webkit-backdrop-filter: none !important;
+            backdrop-filter: none !important;
+        }
         html.low-perf-active *,
         html.low-perf-active *::before,
         html.low-perf-active *::after {
