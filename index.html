@@ -1659,6 +1659,7 @@
         .settings-content {
             flex: 1;
             min-width: 0;
+            min-height: 0; /* иначе в узком (колоночном) режиме контент растёт по высоте и прокрутка пропадает */
             display: flex;
             flex-direction: column;
         }
@@ -1716,6 +1717,9 @@
             accent-color: var(--accent);
         }
 
+        /* В десктоп-приложении сверху есть шапка 36px — окно настроек не должно вылезать за экран
+           (особенно при большом масштабе, когда вьюпорт становится совсем маленьким). */
+        html.tauri-app .settings-modal-card { max-height: calc(100vh - 36px - 16px); }
         @media (max-width: 640px) {
             .settings-modal-card { flex-direction: column; height: 92vh; }
             .settings-sidebar { width: auto; flex-direction: column; padding: 14px; border-right: none; border-bottom: 1px solid var(--border-soft); }
