@@ -5078,18 +5078,15 @@ function loadUiScale() {
 
 // Возвращает Promise<string|null>: null — применилось, строка — текст причины, почему нет.
 function applyUiScale(percent) {
-    const wv = window.__TAURI__ && window.__TAURI__.webview;
-    if (!wv || typeof wv.getCurrentWebview !== 'function') {
-        return Promise.resolve('API масштаба недоступен (нужна десктоп-версия, собранная заново).');
+    const t = window.__TAURI__;
+    const invoke = t && t.core && t.core.invoke;
+    if (typeof invoke !== 'function') {
+        return Promise.resolve('API Tauri недоступен.');
     }
-    try {
-        return Promise.resolve(wv.getCurrentWebview().setZoom(percent / 100))
-            .then(() => null)
-            .catch(e => { console.warn('[ui-scale] setZoom:', e); return String((e && e.message) || e); });
-    } catch (e) {
-        console.warn('[ui-scale] setZoom:', e);
-        return Promise.resolve(String((e && e.message) || e));
-    }
+    return Promise.resolve()
+        .then(() => invoke('set_ui_scale', { percent }))
+        .then(() => null)
+        .catch(e => { console.warn('[ui-scale]', e); return String((e && e.message) || e); });
 }
 
 (function initUiScaleSetting() {
