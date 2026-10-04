@@ -5061,6 +5061,56 @@ function updateVoiceUsersList(users = connectedUsers) {
     }
 }
 
+// ---------- Масштаб интерфейса (только десктоп-приложение) ----------
+// Используем настоящий масштаб страницы WebView2 (как Ctrl +/−), а не CSS zoom: так
+// правильно работают всплывающие окна, перетаскивание разделителей и размеры в vh/vw.
+// Значение хранится на устройстве и применяется при каждом запуске.
+const UI_SCALE_KEY = 'mute_ui_scale';
+const UI_SCALE_MIN = 50, UI_SCALE_MAX = 200, UI_SCALE_DEFAULT = 100;
+
+function loadUiScale() {
+    try {
+        const n = parseInt(localStorage.getItem(UI_SCALE_KEY), 10);
+        if (Number.isFinite(n)) return Math.min(UI_SCALE_MAX, Math.max(UI_SCALE_MIN, n));
+    } catch (e) { /* ignore */ }
+    return UI_SCALE_DEFAULT;
+}
+
+function applyUiScale(percent) {
+    const wv = window.__TAURI__ && window.__TAURI__.webview;
+    if (!wv || typeof wv.getCurrentWebview !== 'function') return;
+    try {
+        const res = wv.getCurrentWebview().setZoom(percent / 100);
+        if (res && typeof res.catch === 'function') res.catch(e => console.warn('[ui-scale] setZoom:', e));
+    } catch (e) { console.warn('[ui-scale] setZoom:', e); }
+}
+
+(function initUiScaleSetting() {
+    const range = document.getElementById('ui-scale-range');
+    const label = document.getElementById('ui-scale-value');
+    const resetBtn = document.getElementById('ui-scale-reset-btn');
+    if (!range) return;
+    const saved = loadUiScale();
+    range.value = saved;
+    if (label) label.textContent = saved + '%';
+    if (saved !== UI_SCALE_DEFAULT) applyUiScale(saved);
+
+    // Пока тянем ползунок — меняем только цифру: если масштабировать на лету,
+    // ползунок «убегает» из-под курсора. Применяем при отпускании.
+    range.addEventListener('input', () => { if (label) label.textContent = range.value + '%'; });
+    range.addEventListener('change', () => {
+        const v = parseInt(range.value, 10) || UI_SCALE_DEFAULT;
+        try { localStorage.setItem(UI_SCALE_KEY, String(v)); } catch (e) { /* ignore */ }
+        applyUiScale(v);
+    });
+    if (resetBtn) resetBtn.addEventListener('click', () => {
+        range.value = UI_SCALE_DEFAULT;
+        if (label) label.textContent = UI_SCALE_DEFAULT + '%';
+        try { localStorage.removeItem(UI_SCALE_KEY); } catch (e) { /* ignore */ }
+        applyUiScale(UI_SCALE_DEFAULT);
+    });
+})();
+
 // Переключатель в настройках кастомизации
 (function initOffCallMembersSetting() {
     const check = document.getElementById('show-offcall-members-check');

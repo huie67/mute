@@ -585,6 +585,22 @@
 
         .voice-users-list { min-width: 0; overflow: hidden; }
         .sidebar-section, .sidebar-list { min-width: 0; }
+        /* Когда участников много и они не помещаются по высоте — список прокручивается,
+           а блок с кнопками внизу (микрофон, выход и т.д.) остаётся на месте. */
+        .sidebar > .sidebar-section {
+            flex: 1 1 auto;
+            min-height: 0;
+            overflow-y: auto;
+            overflow-x: hidden;
+            padding-right: 2px;
+        }
+        .sidebar > .bottom-actions { flex-shrink: 0; }
+        /* Масштаб интерфейса работает только в десктоп-приложении (в браузере есть Ctrl +/−) */
+        .settings-section.tauri-only-setting { display: none; }
+        html.tauri-app .settings-section.tauri-only-setting { display: flex; }
+        .ui-scale-row { display: flex; align-items: center; gap: 12px; }
+        .ui-scale-row input[type="range"] { flex: 1; min-width: 0; }
+        .ui-scale-value { min-width: 44px; text-align: right; font-size: 13px; font-weight: 700; color: var(--text); }
         .sidebar-item > span {
             min-width: 0;
             overflow: hidden;
@@ -3124,6 +3140,24 @@
                     <div class="control-group">
                         <label>Основной цвет текста в приложении</label>
                         <button type="button" class="btn-secondary-ghost" id="theme-text-toggle-btn" style="width:100%;">Сделать текст чёрным</button>
+                    </div>
+                </div>
+
+                <div class="settings-section tauri-only-setting" id="ui-scale-section">
+                    <div class="settings-section-title">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
+                        Масштаб интерфейса
+                    </div>
+                    <div class="control-group">
+                        <label for="ui-scale-range">Размер элементов</label>
+                        <div class="ui-scale-row">
+                            <input type="range" id="ui-scale-range" min="50" max="200" step="5" value="100">
+                            <span class="ui-scale-value" id="ui-scale-value">100%</span>
+                        </div>
+                        <span class="profile-hint">Увеличивает или уменьшает весь интерфейс целиком. Применяется, когда вы отпустите ползунок. Хранится на этом устройстве.</span>
+                    </div>
+                    <div class="theme-actions-row">
+                        <button type="button" class="btn-secondary-ghost" id="ui-scale-reset-btn">Сбросить масштаб (100%)</button>
                     </div>
                 </div>
 
