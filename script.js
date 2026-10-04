@@ -5076,13 +5076,20 @@ function loadUiScale() {
     return UI_SCALE_DEFAULT;
 }
 
+// Возвращает Promise<string|null>: null — применилось, строка — текст причины, почему нет.
 function applyUiScale(percent) {
     const wv = window.__TAURI__ && window.__TAURI__.webview;
-    if (!wv || typeof wv.getCurrentWebview !== 'function') return;
+    if (!wv || typeof wv.getCurrentWebview !== 'function') {
+        return Promise.resolve('API масштаба недоступен (нужна десктоп-версия, собранная заново).');
+    }
     try {
-        const res = wv.getCurrentWebview().setZoom(percent / 100);
-        if (res && typeof res.catch === 'function') res.catch(e => console.warn('[ui-scale] setZoom:', e));
-    } catch (e) { console.warn('[ui-scale] setZoom:', e); }
+        return Promise.resolve(wv.getCurrentWebview().setZoom(percent / 100))
+            .then(() => null)
+            .catch(e => { console.warn('[ui-scale] setZoom:', e); return String((e && e.message) || e); });
+    } catch (e) {
+        console.warn('[ui-scale] setZoom:', e);
+        return Promise.resolve(String((e && e.message) || e));
+    }
 }
 
 (function initUiScaleSetting() {
@@ -5093,7 +5100,13 @@ function applyUiScale(percent) {
     const saved = loadUiScale();
     range.value = saved;
     if (label) label.textContent = saved + '%';
-    if (saved !== UI_SCALE_DEFAULT) applyUiScale(saved);
+    const errEl = document.getElementById('ui-scale-error');
+    const show = (reason) => {
+        if (!errEl) return;
+        errEl.textContent = reason ? ('Не удалось применить масштаб: ' + reason + ' Пересоберите приложение (npm run tauri build) и установите заново.') : '';
+        errEl.style.display = reason ? '' : 'none';
+    };
+    if (saved !== UI_SCALE_DEFAULT) applyUiScale(saved).then(show);
 
     // Пока тянем ползунок — меняем только цифру: если масштабировать на лету,
     // ползунок «убегает» из-под курсора. Применяем при отпускании.
@@ -5101,13 +5114,13 @@ function applyUiScale(percent) {
     range.addEventListener('change', () => {
         const v = parseInt(range.value, 10) || UI_SCALE_DEFAULT;
         try { localStorage.setItem(UI_SCALE_KEY, String(v)); } catch (e) { /* ignore */ }
-        applyUiScale(v);
+        applyUiScale(v).then(show);
     });
     if (resetBtn) resetBtn.addEventListener('click', () => {
         range.value = UI_SCALE_DEFAULT;
         if (label) label.textContent = UI_SCALE_DEFAULT + '%';
         try { localStorage.removeItem(UI_SCALE_KEY); } catch (e) { /* ignore */ }
-        applyUiScale(UI_SCALE_DEFAULT);
+        applyUiScale(UI_SCALE_DEFAULT).then(show);
     });
 })();
 
