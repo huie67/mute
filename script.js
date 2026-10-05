@@ -5931,42 +5931,6 @@ if (micVolumeSlider) {
     });
 }
 
-// Лимит процессора (только десктопное приложение Tauri на Windows): ползунок в
-// «Спец. возможности». Значение хранится в localStorage и применяется при каждом запуске.
-(function initCpuLimitControl() {
-    const section = document.getElementById('cpu-limit-section');
-    const slider = document.getElementById('cpu-limit-slider');
-    const valueEl = document.getElementById('cpu-limit-value');
-    const hint = document.getElementById('cpu-limit-hint');
-    if (!section || !slider) return;
-    const invoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
-    if (!invoke) return; // обычный браузер — секция остаётся скрытой
-    section.style.display = '';
-
-    const saved = parseInt(loadAudioSettings().cpuLimit, 10);
-    let limit = Number.isFinite(saved) ? Math.min(100, Math.max(1, saved)) : 100;
-    slider.value = limit;
-    const refresh = () => { if (valueEl) valueEl.innerText = limit >= 100 ? 'Без лимита' : `${limit}%`; };
-    refresh();
-
-    const apply = async () => {
-        try {
-            await invoke('set_cpu_limit', { percent: limit });
-        } catch (e) {
-            console.warn('[CPU limit]', e);
-            if (hint) hint.innerText = 'Не удалось применить лимит: ' + e;
-        }
-    };
-    if (limit < 100) apply();
-
-    slider.addEventListener('input', () => {
-        limit = parseInt(slider.value, 10);
-        saveAudioSettings({ cpuLimit: limit });
-        refresh();
-    });
-    slider.addEventListener('change', apply); // применяем, когда отпустили ползунок
-})();
-
 // Изменение голоса («Девчачий голос»): включение и высота. Работает на лету, без
 // пересборки микрофона и без обрыва звонка.
 (function initVoiceChangerControls() {
