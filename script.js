@@ -604,7 +604,7 @@ const remoteVideos = document.getElementById('remote-videos');
 // каналами не ждёт сеть. Храним только ограниченное число комнат, чтобы RAM
 // не росла бесконечно. В кэше лежат данные сообщений, а не декодированные
 // изображения — сами картинки остаются под контролем DOM-лимита.
-const CHAT_HISTORY_CACHE_MAX_ROOMS = 4; // меньше комнат в памяти — меньше оперативки при частых переключениях
+const CHAT_HISTORY_CACHE_MAX_ROOMS = 1; // держим в памяти только открытый канал; прошлые каналы не копим
 const CHAT_HISTORY_CACHE_MAX_MESSAGES = 100;
 const chatHistoryCache = new Map();
 
@@ -1184,13 +1184,30 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 let selectedRoom = null; 
 
-// Последний открытый канал больше НЕ запоминаем: после обновления страницы (F5) ни один
-// канал не выбран. Функции оставлены как заглушки, чтобы не трогать места вызова,
-// а ключ, сохранённый прежними версиями, при загрузке стираем.
+// Запоминаем последний открытый канал/сервер, чтобы после обновления страницы (F5)
+// снова открылась та же вкладка, а не пустой экран без выбранного канала.
 const LAST_ROOM_KEY = 'lastSelectedRoom';
-try { localStorage.removeItem(LAST_ROOM_KEY); } catch (e) { /* ignore */ }
-function saveLastRoom() { /* не сохраняем */ }
-function tryRestoreLastRoom() { /* не восстанавливаем */ }
+function saveLastRoom(room) {
+    try {
+        if (room) localStorage.setItem(LAST_ROOM_KEY, room);
+        else localStorage.removeItem(LAST_ROOM_KEY);
+    } catch (e) { /* ignore */ }
+}
+function loadLastRoom() {
+    try { return localStorage.getItem(LAST_ROOM_KEY); } catch (e) { return null; }
+}
+// Восстанавливаем только один раз за загрузку страницы — как только пользователь
+// сам кликнет по какому-то каналу, автоматическое восстановление больше не нужно.
+let lastRoomRestored = false;
+function tryRestoreLastRoom() {
+    if (lastRoomRestored || selectedRoom) return;
+    const room = loadLastRoom();
+    if (!room) return;
+    const btn = document.querySelector(`[data-room="${CSS.escape(room)}"]`);
+    if (!btn) return;
+    lastRoomRestored = true;
+    selectRoomButton(btn);
+}
 
 let localMediaStream = null; 
 let rawAudioStream = null;
