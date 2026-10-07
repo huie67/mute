@@ -567,6 +567,23 @@
         }
         .presence-dot.online { background: #3ba55d; }
 
+        /* Качество связи с участником (точка справа от ника) */
+        .net-quality {
+            flex-shrink: 0;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #6b7280;
+            opacity: 0.9;
+        }
+        .net-quality.q-good { background: #3ba55d; }
+        .net-quality.q-ok { background: #f59e0b; }
+        .net-quality.q-bad { background: #ef4444; }
+        .net-quality.q-unknown { background: #6b7280; opacity: 0.4; }
+        html.no-net-quality .net-quality { display: none; }
+        /* Участник, заглушённый только для себя */
+        .voice-user-row.local-muted .voice-user-name { opacity: 0.55; text-decoration: line-through; }
+
         .voice-user-row {
             display: flex;
             align-items: center;
@@ -1762,24 +1779,24 @@
         @keyframes connection-banner-spin { to { transform: rotate(360deg); } }
 
         /* Режим низкой производительности: когда включена настройка И окно сейчас
-           свёрнуто/скрыто, на <html> навешивается этот класс. Ставим все анимации на
-           паузу (а не "animation: none" — так бесконечные, вроде спиннера реконнекта,
-           просто замирают на текущем кадре, а не сбрасываются) и убираем переходы.
-           Это только визуальный слой — звонок, микрофон, гейт и сеть не трогаем,
-           см. lowPerfActive() в script.js. */
-        /* Пока включён режим низкой производительности (независимо от того, свёрнуто
-           окно или нет) — полностью убираем блюр (backdrop-filter / filter: blur). */
-        html.low-perf-mode *,
-        html.low-perf-mode *::before,
-        html.low-perf-mode *::after {
+           свёрнуто/скрыто, на <html> навешивается класс low-perf-active (см. lowPerfActive()
+           в script.js). Размытие, анимации и тени сюда больше не входят — они выключаются
+           настройкой «Лёгкий интерфейс» (html.light-ui). Звонок, микрофон, гейт и сеть
+           режим не трогает. */
+        /* Лёгкий интерфейс: постоянно, независимо от окна — без размытия, анимаций,
+           переходов и теней. */
+        html.light-ui {
+            --shadow-card: none;
+        }
+        html.light-ui *,
+        html.light-ui *::before,
+        html.light-ui *::after {
             -webkit-backdrop-filter: none !important;
             backdrop-filter: none !important;
-        }
-        html.low-perf-active *,
-        html.low-perf-active *::before,
-        html.low-perf-active *::after {
-            animation-play-state: paused !important;
+            animation: none !important;
             transition: none !important;
+            box-shadow: none !important;
+            text-shadow: none !important;
         }
         /* Пока окно неактивно — весь интерфейс (кроме шапки окна) не рисуется вообще.
            content-visibility:hidden пропускает layout/paint, но сохраняет состояние:
@@ -2881,6 +2898,19 @@
 
                 <div class="settings-section">
                     <div class="settings-section-title">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path></svg>
+                        Рация (push-to-talk)
+                    </div>
+                    <div class="control-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="ptt-enabled-check"> Говорить только по удержанию клавиши
+                        </label>
+                        <span class="profile-hint">Микрофон передаёт звук, только пока вы держите клавишу; автоактивация (Voice Gate) при этом не работает. Клавишу назначьте в «Спец. возможности» → «Горячие клавиши» → «Рация».<span id="ptt-key-hint"></span></span>
+                    </div>
+                </div>
+
+                <div class="settings-section">
+                    <div class="settings-section-title">
                         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"></line><line x1="4" y1="10" x2="4" y2="3"></line><line x1="12" y1="21" x2="12" y2="12"></line><line x1="12" y1="8" x2="12" y2="3"></line><line x1="20" y1="21" x2="20" y2="16"></line><line x1="20" y1="12" x2="20" y2="3"></line><line x1="1" y1="14" x2="7" y2="14"></line><line x1="9" y1="8" x2="15" y2="8"></line><line x1="17" y1="16" x2="23" y2="16"></line></svg>
                         Обработка сигнала
                     </div>
@@ -3147,6 +3177,19 @@
                     </div>
                 </div>
 
+                <div class="settings-section">
+                    <div class="settings-section-title">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+                        Лёгкий интерфейс
+                    </div>
+                    <div class="control-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="light-ui-check"> Отключить размытие, анимации и тени
+                        </label>
+                        <span class="profile-hint">Постоянно, в любом состоянии окна. Меньше нагрузка на процессор и видеокарту, особенно на слабых компьютерах.</span>
+                    </div>
+                </div>
+
                 <div class="settings-section tauri-only-setting" id="ui-scale-section">
                     <div class="settings-section-title">
                         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
@@ -3176,6 +3219,12 @@
                             <input type="checkbox" id="show-offcall-members-check"> Показывать всех участников сервера
                         </label>
                         <span class="profile-hint">Участники, которых нет в звонке, отображаются под теми, кто в звонке, с отметкой «в сети» или «не в сети».</span>
+                    </div>
+                    <div class="control-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="net-quality-check" checked> Показывать качество связи
+                        </label>
+                        <span class="profile-hint">Цветная точка у ника участника в звонке: зелёная — хорошо, жёлтая — заметные задержки, красная — плохо. Наведите курсор, чтобы увидеть пинг и потери.</span>
                     </div>
                 </div>
 
@@ -3220,7 +3269,7 @@
                         <label class="checkbox-label">
                             <input type="checkbox" id="low-perf-mode-check"> Режим низкой производительности
                         </label>
-                        <span class="profile-hint">Пока окно неактивно (свёрнуто, скрыто или вы переключились в другое приложение) — интерфейс перестаёт отрисовываться, а все анимации и эффекты останавливаются. Как только вернётесь в окно — всё появляется обратно. На звонок, микрофон, гейт и получение сообщений это не влияет — они продолжают работать как обычно, и всё восстанавливается сразу, как только вы вернётесь к окну.</span>
+                        <span class="profile-hint">Пока окно неактивно (свёрнуто, скрыто или вы переключились в другое приложение) — интерфейс перестаёт отрисовываться, а индикаторы «говорит» у собеседников отключаются. Как только вернётесь в окно — всё появляется обратно. На звонок, микрофон, гейт и получение сообщений это не влияет. Размытие и анимации отключаются отдельно — в «Кастомизации» → «Лёгкий интерфейс».</span>
                     </div>
                 </div>
 

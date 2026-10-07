@@ -304,8 +304,16 @@ function lowPerfActive() {
 // переходы (см. правило .low-perf-active в index.html). Никак не влияет на
 // WebRTC-звонок, микрофон, Voice Gate, сокет — они продолжают работать в фоне,
 // иначе звонок бы "замолкал" при простом сворачивании окна, что не нужно.
+// ---------- Лёгкий интерфейс ----------
+// Постоянно (независимо от окна): без размытия, анимаций, переходов и теней.
+// Раньше часть этого делал режим низкой производительности — теперь он отвечает только
+// за «окно неактивно», а оформление вынесено сюда.
+const LIGHT_UI_KEY = 'mute_light_ui';
+let lightUiEnabled = false;
+try { lightUiEnabled = localStorage.getItem(LIGHT_UI_KEY) === '1'; } catch (e) { /* ignore */ }
+document.documentElement.classList.toggle('light-ui', lightUiEnabled);
+
 function applyLowPerfState() {
-    document.documentElement.classList.toggle('low-perf-mode', lowPerfModeEnabled); // блюр выключен всегда, пока режим включён
     document.documentElement.classList.toggle('low-perf-active', lowPerfActive());
     applyRemoteMeterRate();
 }
@@ -1479,6 +1487,38 @@ const GATE_HYSTERESIS_DB = 4;
 // как вы замолчали; ползунок называется в интерфейсе "Задержка закрытия гейта").
 let gateHangoverMs = 300;
 
+// ---------- Рация (push-to-talk) ----------
+// Включена: микрофон передаёт звук только пока удерживается назначенная клавиша
+// (Voice Gate при этом не участвует). Небольшая задержка после отпускания — чтобы
+// не обрезать конец слова.
+const netQualityByPeer = {};   // peerId -> { level, title } (см. «Качество связи» ниже)
+let pttEnabled = false;
+let pttHeld = false;
+let pttReleaseTimer = null;
+const PTT_RELEASE_DELAY_MS = 250;
+
+// Единое правило «микрофон сейчас передаёт»: учитывает мьют/дефен, рацию и гейт.
+function micShouldTransmit() {
+    if (isMuted || isDeafened) return false;
+    if (pttEnabled) return pttHeld;
+    return !gateEnabled || gateOpen;
+}
+
+function pttSet(down) {
+    if (!pttEnabled) return;
+    if (down) {
+        if (pttReleaseTimer) { clearTimeout(pttReleaseTimer); pttReleaseTimer = null; }
+        if (!pttHeld) { pttHeld = true; applyGateToMicTrack(); }
+    } else {
+        if (!pttHeld || pttReleaseTimer) return;
+        pttReleaseTimer = setTimeout(() => {
+            pttReleaseTimer = null;
+            pttHeld = false;
+            applyGateToMicTrack();
+        }, PTT_RELEASE_DELAY_MS);
+    }
+}
+
 // ---------- Настройки звука: сохранение между заходами ----------
 const AUDIO_SETTINGS_KEY = 'mute:audioSettings';
 function loadAudioSettings() {
@@ -1576,11 +1616,32 @@ function saveRemoteVolume(username, percent) {
     } catch (e) { /* ignore */ }
 }
 
+// Заглушить участника только для себя (хранится на устройстве по нику).
+const REMOTE_MUTE_STORAGE_KEY = 'mute:remoteMuted';
+function loadRemoteMutes() {
+    try { return JSON.parse(localStorage.getItem(REMOTE_MUTE_STORAGE_KEY) || '{}') || {}; } catch (e) { return {}; }
+}
+function isRemoteLocallyMuted(username) {
+    return !!loadRemoteMutes()[username || ''];
+}
+function setRemoteLocallyMuted(username, muted) {
+    try {
+        const all = loadRemoteMutes();
+        if (muted) all[username || ''] = true; else delete all[username || ''];
+        localStorage.setItem(REMOTE_MUTE_STORAGE_KEY, JSON.stringify(all));
+    } catch (e) { /* ignore */ }
+}
+// Итоговая громкость голоса участника: 0 при дефене или локальном мьюте, иначе выставленная.
+function remoteGainValue(username) {
+    return (isDeafened || isRemoteLocallyMuted(username)) ? 0 : getRemoteVolumePercent(username) / 100;
+}
+
 (function applySavedAudioSettings() {
     const saved = loadAudioSettings();
     if (typeof saved.gateThreshold === 'number') gateThreshold = saved.gateThreshold;
     if (typeof saved.gateEnabled === 'boolean') gateEnabled = saved.gateEnabled;
     if (typeof saved.gateHangoverMs === 'number') gateHangoverMs = saved.gateHangoverMs;
+    if (typeof saved.pttEnabled === 'boolean') pttEnabled = saved.pttEnabled;
     if (typeof saved.micVolume === 'number') micVolume = saved.micVolume;
     if (typeof saved.noiseSuppression === 'boolean' && noiseCheck) noiseCheck.checked = saved.noiseSuppression;
     if (typeof saved.echoCancellation === 'boolean' && echoCheck) echoCheck.checked = saved.echoCancellation;
@@ -1605,7 +1666,7 @@ function saveRemoteVolume(username, percent) {
 // и выставляем им disabled, а не просто прячем, чтобы было видно, что они есть,
 // но сейчас не участвуют в работе.
 function updateGateControlsDisabled() {
-    const disabled = gateEnabledCheck ? !gateEnabledCheck.checked : false;
+    const disabled = (gateEnabledCheck ? !gateEnabledCheck.checked : false) || pttEnabled;
     if (thresholdSlider) thresholdSlider.disabled = disabled;
     if (gateHangoverSlider) gateHangoverSlider.disabled = disabled;
     const thresholdGroup = document.getElementById('gate-threshold-group');
@@ -3574,7 +3635,7 @@ async function setupAudioAnalyzer(stream) {
 // проверке порога срабатывания.
 function applyGateToMicTrack() {
     if (!localMediaStream) return;
-    const shouldTransmit = !isMuted && !isDeafened && (!gateEnabled || gateOpen);
+    const shouldTransmit = micShouldTransmit();
     localMediaStream.getAudioTracks().forEach(track => {
         if (track !== currentDemoAudioTrack) {
             track.enabled = shouldTransmit;
@@ -3652,7 +3713,7 @@ function processAudioLevel(node) {
             }, gateHangoverMs);
         }
 
-        const isSpeaking = !isMuted && !isDeafened && (!gateEnabled || gateOpen);
+        const isSpeaking = micShouldTransmit();
         if (isSpeaking !== lastIsSpeaking) {
             lastIsSpeaking = isSpeaking;
             applyGateToMicTrack(); // функциональная часть — работает всегда, даже в низкой производительности
@@ -3714,7 +3775,7 @@ function processAudioLevelFallback(node) {
             }, gateHangoverMs);
         }
 
-        const isSpeaking = !isMuted && !isDeafened && (!gateEnabled || gateOpen);
+        const isSpeaking = micShouldTransmit();
         if (isSpeaking !== lastIsSpeaking) {
             lastIsSpeaking = isSpeaking;
             applyGateToMicTrack(); // функциональная часть — работает всегда, даже в низкой производительности
@@ -3746,7 +3807,7 @@ async function setupRemoteAudioAnalyzer(stream, peerId) {
 
         const username = (connectedUsers[peerId] && connectedUsers[peerId].username) || '';
         const voiceGain = audioContext.createGain();
-        voiceGain.gain.value = isDeafened ? 0 : getRemoteVolumePercent(username) / 100;
+        voiceGain.gain.value = remoteGainValue(username);
         source.connect(voiceGain);
         voiceGain.connect(audioContext.destination);
         remoteVoiceGainNodes[peerId] = voiceGain;
@@ -4986,8 +5047,12 @@ function buildOffCallRows(users) {
 // в звонке): без id (чтобы не дублировать id строк основного списка) и без громкости.
 function buildVoiceUserRow(id, user, interactive = true) {
     const row = document.createElement('div');
-    row.className = 'voice-user-row';
+    row.className = 'voice-user-row' + (interactive && id !== myPeerId && isRemoteLocallyMuted(user.username) ? ' local-muted' : '');
     const ids = (kind) => interactive ? `id="${kind}-${id}"` : '';
+    const nq = (interactive && id !== myPeerId) ? netQualityByPeer[id] : null;
+    const netQualityHtml = (interactive && id !== myPeerId)
+        ? `<span class="net-quality q-${nq ? nq.level : 'unknown'}" id="netq-${id}" title="${nq ? escapeHtml(nq.title) : 'Качество связи: измеряется…'}"></span>`
+        : '';
     row.innerHTML = `
         <div class="user-avatar-wrap">
             <img src="${user.avatar || 'https://api.dicebear.com/7.x/identicon/svg?seed=def'}" class="user-avatar" ${ids('avatar')} alt="">
@@ -4995,12 +5060,13 @@ function buildVoiceUserRow(id, user, interactive = true) {
             <span class="status-badge deafen-badge${user.deafened ? ' visible' : ''}" ${ids('deafen-badge')} title="Наушники выключены">${DEAFEN_OFF_ICON_SVG}</span>
         </div>
         <span class="voice-user-name" title="${escapeHtml(user.username || 'Участник')}" style="color:${getUserColor(user.username)}">${escapeHtml(user.username || 'Участник')}</span>
+        ${netQualityHtml}
     `;
     // Громкость каждого собеседника можно менять только у себя — по клику на его
     // строку в списке. На себя самого это не вешаем.
     if (interactive && id !== myPeerId) {
         row.classList.add('clickable');
-        row.title = 'Нажать, чтобы изменить громкость только для себя';
+        row.title = 'Нажать: громкость и заглушение только для себя';
         row.addEventListener('click', () => openUserVolumePopover(id, row, user.username || 'Участник'));
     }
     return row;
@@ -5172,6 +5238,7 @@ function openUserVolumePopover(peerId, anchorEl, username) {
         <input type="range" id="user-volume-range" min="0" max="500" step="5" value="${percent}">
         <div class="user-volume-popover-value">${percent}%</div>
         <span class="profile-hint">Меняется только у вас — собеседник об этом не узнает</span>
+        <button type="button" class="listen-invite-btn" id="user-local-mute-btn"></button>
         <div class="user-volume-popover-divider"></div>
         <button type="button" class="listen-invite-btn${listenSession && listenSession.peerId === peerId ? ' is-active' : ''}" id="listen-invite-popover-btn">
             <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
@@ -5197,20 +5264,107 @@ function openUserVolumePopover(peerId, anchorEl, username) {
     pop.style.left = `${Math.max(8, Math.min(anchorRect.left, window.innerWidth - popWidth - 8))}px`;
     pop.style.top = `${Math.min(anchorRect.bottom + 6, window.innerHeight - 110)}px`;
 
+    const localMuteBtn = pop.querySelector('#user-local-mute-btn');
+    const refreshLocalMuteBtn = () => {
+        const m = isRemoteLocallyMuted(username);
+        localMuteBtn.classList.toggle('is-active', m);
+        localMuteBtn.innerHTML = `<span>${m ? 'Включить звук участника' : 'Заглушить для себя'}</span>`;
+    };
+    refreshLocalMuteBtn();
+    localMuteBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        setRemoteLocallyMuted(username, !isRemoteLocallyMuted(username));
+        if (remoteVoiceGainNodes[peerId]) remoteVoiceGainNodes[peerId].gain.value = remoteGainValue(username);
+        const av = document.getElementById(`avatar-${peerId}`);
+        const rowEl = av && av.closest('.voice-user-row');
+        if (rowEl) rowEl.classList.toggle('local-muted', isRemoteLocallyMuted(username));
+        refreshLocalMuteBtn();
+    });
+
     const rangeInput = pop.querySelector('#user-volume-range');
     const valueLabel = pop.querySelector('.user-volume-popover-value');
     rangeInput.addEventListener('input', (e) => {
         const val = parseInt(e.target.value, 10);
         valueLabel.innerText = `${val}%`;
         saveRemoteVolume(username, val);
-        if (remoteVoiceGainNodes[peerId] && !isDeafened) {
-            remoteVoiceGainNodes[peerId].gain.value = val / 100;
+        if (remoteVoiceGainNodes[peerId]) {
+            remoteVoiceGainNodes[peerId].gain.value = remoteGainValue(username);
         }
     });
     rangeInput.addEventListener('click', (e) => e.stopPropagation());
 
     setTimeout(() => document.addEventListener('mousedown', onDocMouseDownForVolumePopover, true), 0);
 }
+
+// ---------- Качество связи с участниками ----------
+// Раз в несколько секунд читаем статистику WebRTC каждого соединения: пинг (RTT) и долю
+// потерянных аудиопакетов за последний интервал. Показываем цветной точкой у ника.
+const NET_QUALITY_KEY = 'mute_show_net_quality';
+const NET_QUALITY_POLL_MS = 4000;
+let showNetQuality = true;
+try { showNetQuality = localStorage.getItem(NET_QUALITY_KEY) !== '0'; } catch (e) { /* ignore */ }
+document.documentElement.classList.toggle('no-net-quality', !showNetQuality);
+const netQualityPrev = {};     // peerId -> { lost, recv }
+let netQualityBusy = false;
+
+function netQualityLevel(rttMs, lossPct) {
+    if (rttMs == null) return 'unknown';
+    if (rttMs < 150 && lossPct < 3) return 'good';
+    if (rttMs < 300 && lossPct < 10) return 'ok';
+    return 'bad';
+}
+
+async function pollNetQuality() {
+    if (netQualityBusy || !showNetQuality || !currentUser.room || windowIsInactive()) return;
+    netQualityBusy = true;
+    try {
+        const peerIds = Object.keys(activeCalls);
+        for (const peerId of peerIds) {
+            const call = activeCalls[peerId];
+            const pc = call && call.peerConnection;
+            if (!pc) continue;
+            let rtt = null, lost = 0, recv = 0, jitter = null;
+            try {
+                const stats = await pc.getStats();
+                stats.forEach(r => {
+                    if (r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded' && typeof r.currentRoundTripTime === 'number') {
+                        rtt = r.currentRoundTripTime * 1000;
+                    }
+                    if (r.type === 'inbound-rtp' && (r.kind === 'audio' || r.mediaType === 'audio')) {
+                        lost += r.packetsLost || 0;
+                        recv += r.packetsReceived || 0;
+                        if (typeof r.jitter === 'number') jitter = r.jitter * 1000;
+                    }
+                });
+            } catch (e) { continue; }
+            const prev = netQualityPrev[peerId];
+            netQualityPrev[peerId] = { lost, recv };
+            let lossPct = 0;
+            if (prev) {
+                const dLost = Math.max(0, lost - prev.lost);
+                const dRecv = Math.max(0, recv - prev.recv);
+                lossPct = (dLost + dRecv) > 0 ? (100 * dLost) / (dLost + dRecv) : 0;
+            }
+            const level = netQualityLevel(rtt, lossPct);
+            const title = rtt == null
+                ? 'Качество связи: нет данных'
+                : `Пинг ${Math.round(rtt)} мс · потери ${lossPct.toFixed(1)}%` + (jitter != null ? ` · джиттер ${Math.round(jitter)} мс` : '');
+            netQualityByPeer[peerId] = { level, title };
+            const el = document.getElementById(`netq-${peerId}`);
+            if (el) {
+                el.className = `net-quality q-${level}`;
+                el.title = title;
+            }
+        }
+        // забываем тех, с кем звонка уже нет
+        Object.keys(netQualityByPeer).forEach(id => {
+            if (!activeCalls[id]) { delete netQualityByPeer[id]; delete netQualityPrev[id]; }
+        });
+    } finally {
+        netQualityBusy = false;
+    }
+}
+setInterval(pollNetQuality, NET_QUALITY_POLL_MS);
 
 // Обновляет значки конкретного участника без перерисовки всего списка.
 // При дефене микрофон тоже фактически выключен, поэтому значок мьюта показываем и в этом случае.
@@ -5602,7 +5756,7 @@ deafenBtn.addEventListener('click', () => {
     // пользователь выставил каждому индивидуально, а не единую 100%.
     Object.keys(remoteVoiceGainNodes).forEach(peerId => {
         const username = (connectedUsers[peerId] && connectedUsers[peerId].username) || '';
-        remoteVoiceGainNodes[peerId].gain.value = isDeafened ? 0 : getRemoteVolumePercent(username) / 100;
+        remoteVoiceGainNodes[peerId].gain.value = remoteGainValue(username);
     });
 
     deafenBtn.classList.toggle('active', isDeafened);
@@ -5663,9 +5817,10 @@ const KEYBIND_ACTIONS = [
     { id: 'playpause', label: 'Плеер: старт / пауза' },
     { id: 'prevtrack', label: 'Плеер: предыдущий трек' },
     { id: 'nexttrack', label: 'Плеер: следующий трек' },
-    { id: 'voicechanger', label: 'Изменение голоса' }
+    { id: 'voicechanger', label: 'Изменение голоса' },
+    { id: 'ptt', label: 'Рация: удерживайте, чтобы говорить' }
 ];
-let keybinds = { mute: '', deafen: '', leave: '', playpause: '', prevtrack: '', nexttrack: '', voicechanger: '', global: true };
+let keybinds = { mute: '', deafen: '', leave: '', playpause: '', prevtrack: '', nexttrack: '', voicechanger: '', ptt: '', global: true };
 try {
     const raw = localStorage.getItem(KEYBINDS_KEY);
     if (raw) keybinds = { ...keybinds, ...JSON.parse(raw) };
@@ -5675,6 +5830,13 @@ let keybindRecording = null;  // id действия, для которого с
 
 function saveKeybinds() {
     try { localStorage.setItem(KEYBINDS_KEY, JSON.stringify(keybinds)); } catch (e) { /* ignore */ }
+    updatePttKeyHint();
+}
+
+function updatePttKeyHint() {
+    const el = document.getElementById('ptt-key-hint');
+    if (!el) return;
+    el.textContent = keybinds.ptt ? ` Сейчас: ${prettyCombo(keybinds.ptt)}.` : ' Клавиша пока не назначена.';
 }
 
 function runKeybindAction(id) {
@@ -5684,6 +5846,7 @@ function runKeybindAction(id) {
     else if (id === 'playpause') togglePlaylistPlayPause();
     else if (id === 'prevtrack') playlistPrevTrack();
     else if (id === 'nexttrack') playlistNextTrack();
+    else if (id === 'ptt') pttSet(true);
     else if (id === 'voicechanger') {
         const check = document.getElementById('voice-changer-check');
         if (check && !check.disabled) {
@@ -5813,6 +5976,18 @@ document.addEventListener('keydown', (e) => {
     runKeybindAction(action.id);
 });
 
+// Отпускание клавиши рации в обычном (оконном) режиме — в браузере и когда глобальная
+// привязка не сработала.
+document.addEventListener('keyup', (e) => {
+    const combo = keybinds.ptt;
+    if (!combo || keybindGlobalOk.ptt || typeof e.code !== 'string') return;
+    const main = combo.split('+').pop();
+    const code = e.code.replace(/^Key/, '').replace(/^Digit/, '');
+    const isMod = /^(Control|Shift|Alt|Meta)(Left|Right)$/.test(e.code);
+    if (code === main || (isMod && combo.includes('+'))) pttSet(false);
+});
+window.addEventListener('blur', () => { if (!keybindGlobalOk.ptt) pttSet(false); });
+
 // Глобальные комбинации (только в приложении Tauri, плагин global-shortcut).
 async function syncGlobalShortcuts() {
     const gs = window.__TAURI__ && window.__TAURI__.globalShortcut;
@@ -5826,6 +6001,12 @@ async function syncGlobalShortcuts() {
         if (!combo) continue;
         try {
             await gs.register(combo, (ev) => {
+                if (a.id === 'ptt') {
+                    // Рации нужны и нажатие, и отпускание клавиши.
+                    if (!ev || ev.state === 'Pressed') pttSet(true);
+                    else if (ev.state === 'Released') pttSet(false);
+                    return;
+                }
                 if (!ev || ev.state === 'Pressed') runKeybindAction(a.id);
             });
             keybindGlobalOk[a.id] = true;
@@ -5930,6 +6111,46 @@ if (micVolumeSlider) {
         saveAudioSettings({ micVolume });
     });
 }
+
+// Настройка «Рация (push-to-talk)» на вкладке микрофона.
+(function initPttSetting() {
+    const check = document.getElementById('ptt-enabled-check');
+    updatePttKeyHint();
+    if (!check) return;
+    check.checked = pttEnabled;
+    check.addEventListener('change', () => {
+        pttEnabled = check.checked;
+        pttHeld = false;
+        if (pttReleaseTimer) { clearTimeout(pttReleaseTimer); pttReleaseTimer = null; }
+        if (pttEnabled && gateCloseTimer) { clearTimeout(gateCloseTimer); gateCloseTimer = null; }
+        saveAudioSettings({ pttEnabled });
+        updateGateControlsDisabled();
+        applyGateToMicTrack();
+    });
+})();
+
+// Переключатели «Лёгкий интерфейс» и «Качество связи» в кастомизации.
+(function initLightUiAndNetQuality() {
+    const lightCheck = document.getElementById('light-ui-check');
+    if (lightCheck) {
+        lightCheck.checked = lightUiEnabled;
+        lightCheck.addEventListener('change', () => {
+            lightUiEnabled = lightCheck.checked;
+            try { localStorage.setItem(LIGHT_UI_KEY, lightUiEnabled ? '1' : '0'); } catch (e) { /* ignore */ }
+            document.documentElement.classList.toggle('light-ui', lightUiEnabled);
+        });
+    }
+    const nqCheck = document.getElementById('net-quality-check');
+    if (nqCheck) {
+        nqCheck.checked = showNetQuality;
+        nqCheck.addEventListener('change', () => {
+            showNetQuality = nqCheck.checked;
+            try { localStorage.setItem(NET_QUALITY_KEY, showNetQuality ? '1' : '0'); } catch (e) { /* ignore */ }
+            document.documentElement.classList.toggle('no-net-quality', !showNetQuality);
+            if (showNetQuality) pollNetQuality();
+        });
+    }
+})();
 
 // Изменение голоса («Девчачий голос»): включение и высота. Работает на лету, без
 // пересборки микрофона и без обрыва звонка.
