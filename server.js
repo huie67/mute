@@ -92,6 +92,14 @@ async function initDb() {
             avatar TEXT,
             text TEXT,
             image_url TEXT,
+            file_url TEXT,
+            file_name TEXT,
+            file_type TEXT,
+            file_size INTEGER,
+            reply_to_id INTEGER,
+            location_lat DOUBLE PRECISION,
+            location_lng DOUBLE PRECISION,
+            location_accuracy DOUBLE PRECISION,
             created_at BIGINT NOT NULL
         );
     `);
@@ -100,6 +108,24 @@ async function initDb() {
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS room TEXT;`);
     // Шёпот (wh@ник): JSON-массив ников, кому видно сообщение. NULL — обычное сообщение для всех.
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS whisper_to TEXT;`);
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS file_url TEXT;`);
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS file_name TEXT;`);
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS file_type TEXT;`);
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS file_size INTEGER;`);
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to_id INTEGER;`);
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS location_lat DOUBLE PRECISION;`);
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS location_lng DOUBLE PRECISION;`);
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS location_accuracy DOUBLE PRECISION;`);
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS message_reactions (
+            message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+            username TEXT NOT NULL,
+            reaction TEXT NOT NULL,
+            created_at BIGINT NOT NULL,
+            PRIMARY KEY (message_id, username, reaction)
+        );
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS message_reactions_message_idx ON message_reactions (message_id);`);
     await pool.query(`CREATE INDEX IF NOT EXISTS messages_room_idx ON messages (room, id);`);
 
     // Аккаунты: вход по паролю.
@@ -164,12 +190,19 @@ async function initDb() {
     `);
 }
 
-async function insertMessage({ username, avatar, text, imageUrl, room, createdAt, whisperTo = null }) {
+async function insertMessage({ username, avatar, text, imageUrl, fileUrl, fileName, fileType, fileSize, replyToId, locationLat, locationLng, locationAccuracy, room, createdAt, whisperTo = null }) {
     const result = await pool.query(
-        `INSERT INTO messages (username, avatar, text, image_url, room, created_at, whisper_to)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `INSERT INTO messages (
+            username, avatar, text, image_url, file_url, file_name, file_type, file_size,
+            reply_to_id, location_lat, location_lng, location_accuracy, room, created_at, whisper_to
+         )
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
          RETURNING id`,
-        [username, avatar, text, imageUrl, room, createdAt, whisperTo && whisperTo.length ? JSON.stringify(whisperTo) : null]
+        [
+            username, avatar, text, imageUrl, fileUrl, fileName, fileType, fileSize,
+            replyToId, locationLat, locationLng, locationAccuracy, room, createdAt,
+            whisperTo && whisperTo.length ? JSON.stringify(whisperTo) : null
+        ]
     );
     return result.rows[0].id;
 }
@@ -239,8 +272,37 @@ async function getRecentMessages(room, limit = 100, viewerName = '') {
     const messages = result.rows.reverse()
         .map(row => {
             const whisperTo = parseWhisperList(row.whisper_to);
-            return { ...row, whisper_to: whisperTo, created_at: Number(row.created_at) };
+            return { ...row, whisper_to: whisperTo, created_at: Number(row.created_at), reactions: [] };
         });
+
+    if (messages.length) {
+        const ids = messages.map(m => m.id);
+        const reactionsResult = await pool.query(
+            `SELECT message_id, reaction, username
+             FROM message_reactions WHERE message_id = ANY($1::int[])
+             ORDER BY created_at ASC`,
+            [ids]
+        );
+        const reactionMap = new Map();
+        for (const r of reactionsResult.rows) {
+            if (!reactionMap.has(r.message_id)) reactionMap.set(r.message_id, []);
+            reactionMap.get(r.message_id).push({ reaction: r.reaction, username: r.username });
+        }
+        messages.forEach(m => { m.reactions = reactionMap.get(m.id) || []; });
+
+        const replyIds = [...new Set(messages.map(m => m.reply_to_id).filter(Boolean))];
+        if (replyIds.length) {
+            const replyResult = await pool.query(
+                `SELECT id, username, text, image_url, file_name
+                 FROM messages WHERE id = ANY($1::int[])`,
+                [replyIds]
+            );
+            const replyMap = new Map(replyResult.rows.map(r => [r.id, r]));
+            messages.forEach(m => {
+                m.reply = m.reply_to_id ? (replyMap.get(m.reply_to_id) || null) : null;
+            });
+        }
+    }
 
     recentMessagesCache.set(cacheKey, { fetchedAt: now, limit: requestedLimit, messages });
 
@@ -265,22 +327,24 @@ cloudinary.config({
 });
 
 const ALLOWED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+const MAX_CHAT_FILE_SIZE = 5 * 1024 * 1024;
 
 const upload = multer({
-    storage: multer.memoryStorage(), // файл не пишем на диск — сразу в буфер и в Cloudinary
-    limits: { fileSize: 8 * 1024 * 1024 }, // 8 МБ
-    fileFilter: (req, file, cb) => {
-        if (!ALLOWED_IMAGE_TYPES.includes(file.mimetype)) {
-            return cb(new Error('Недопустимый формат файла'));
-        }
-        cb(null, true);
-    }
+    storage: multer.memoryStorage(),
+    limits: { fileSize: MAX_CHAT_FILE_SIZE },
+    fileFilter: (req, file, cb) => cb(null, true)
 });
 
-function uploadBufferToCloudinary(buffer) {
+function uploadBufferToCloudinary(buffer, file) {
     return new Promise((resolve, reject) => {
+        const isImage = ALLOWED_IMAGE_TYPES.includes(file.mimetype);
         const uploadStream = cloudinary.uploader.upload_stream(
-            { folder: 'voicechat', resource_type: 'image' },
+            {
+                folder: isImage ? 'voicechat' : 'voicechat-files',
+                resource_type: isImage ? 'image' : 'raw',
+                use_filename: true,
+                unique_filename: true
+            },
             (err, result) => {
                 if (err) return reject(err);
                 resolve(result);
@@ -291,16 +355,22 @@ function uploadBufferToCloudinary(buffer) {
 }
 
 app.post('/upload', (req, res) => {
-    upload.single('image')(req, res, async (err) => {
+    upload.fields([{ name: 'file', maxCount: 1 }, { name: 'image', maxCount: 1 }])(req, res, async (err) => {
         if (err) return res.status(400).json({ error: err.message });
-        if (!req.file) return res.status(400).json({ error: 'Файл не получен' });
+        const reqFile = (req.files && (req.files.file?.[0] || req.files.image?.[0])) || null;
+        if (!reqFile) return res.status(400).json({ error: 'Файл не получен' });
 
         try {
-            const result = await uploadBufferToCloudinary(req.file.buffer);
-            res.json({ url: result.secure_url });
+            const result = await uploadBufferToCloudinary(reqFile.buffer, reqFile);
+            res.json({
+                url: result.secure_url,
+                type: reqFile.mimetype,
+                name: reqFile.originalname,
+                size: reqFile.size
+            });
         } catch (uploadErr) {
-            console.error('❌ Ошибка загрузки в Cloudinary:', uploadErr);
-            res.status(500).json({ error: 'Не удалось загрузить изображение' });
+            console.error('❌ Ошибка загрузки файла в Cloudinary:', uploadErr);
+            res.status(500).json({ error: 'Не удалось загрузить файл' });
         }
     });
 });
@@ -1521,20 +1591,49 @@ io.on('connection', (socket) => {
         if (goneName) notifyPresenceChange(goneName);
     });
 
+    const cleanTextTooLong = (value) => String(value || '').length > 200;
+
     socket.on('chat message', async (payload) => {
         if (!socket.data) return;
         if (!currentChatRoom) return; // не в чате ни одной комнаты — отправлять некуда
 
         const text = typeof payload === 'string' ? payload : (payload && payload.text) || '';
         const imageUrl = (payload && payload.imageUrl) || null;
+        const fileUrl = (payload && payload.fileUrl) || null;
+        const fileName = (payload && payload.fileName) || null;
+        const fileType = (payload && payload.fileType) || null;
+        const fileSize = Number.isFinite(Number(payload && payload.fileSize)) ? Number(payload.fileSize) : null;
+        const locationLat = Number.isFinite(Number(payload && payload.locationLat)) ? Number(payload.locationLat) : null;
+        const locationLng = Number.isFinite(Number(payload && payload.locationLng)) ? Number(payload.locationLng) : null;
+        const locationAccuracy = Number.isFinite(Number(payload && payload.locationAccuracy)) ? Number(payload.locationAccuracy) : null;
+        const requestedReplyId = Number.isInteger(Number(payload && payload.replyToId)) ? Number(payload.replyToId) : null;
 
-        if (!text.trim() && !imageUrl) return;
+        if (cleanTextTooLong(text)) {
+            socket.emit('chat notice', 'Сообщение слишком длинное: максимум 200 символов.');
+            return;
+        }
+        if (!text.trim() && !imageUrl && !fileUrl && !(locationLat !== null && locationLng !== null)) return;
 
         const username = socket.data.username || 'Участник';
         const avatar = socket.data.avatar || '';
         const createdAt = Date.now();
         const room = currentChatRoom;
         const cleanText = text.trim();
+
+        let replyToId = null;
+        let reply = null;
+        if (requestedReplyId) {
+            const replyResult = await pool.query(
+                `SELECT id, username, text, image_url, file_name, room
+                 FROM messages WHERE id = $1 AND room = $2`,
+                [requestedReplyId, room]
+            );
+            if (replyResult.rows[0]) {
+                replyToId = replyResult.rows[0].id;
+                const r = replyResult.rows[0];
+                reply = { id: r.id, username: r.username, text: r.text, image_url: r.image_url, file_name: r.file_name };
+            }
+        }
 
         // Шёпот: "wh@ник" — сообщение получают только отмеченные (через wh@ник или @ник) и автор.
         // Проверяем ДО сохранения: если адресатов найти не удалось, ничего не отправляем —
@@ -1572,7 +1671,10 @@ io.on('connection', (socket) => {
         }
 
         try {
-            const id = await insertMessage({ username, avatar, text: cleanText, imageUrl, room, createdAt, whisperTo });
+            const id = await insertMessage({
+                username, avatar, text: cleanText, imageUrl, fileUrl, fileName, fileType, fileSize,
+                replyToId, locationLat, locationLng, locationAccuracy, room, createdAt, whisperTo
+            });
 
             invalidateRecentMessagesCache(room);
 
@@ -1582,6 +1684,16 @@ io.on('connection', (socket) => {
                 avatar,
                 text: cleanText,
                 image_url: imageUrl,
+                file_url: fileUrl,
+                file_name: fileName,
+                file_type: fileType,
+                file_size: fileSize,
+                reply_to_id: replyToId,
+                reply,
+                location_lat: locationLat,
+                location_lng: locationLng,
+                location_accuracy: locationAccuracy,
+                reactions: [],
                 room,
                 created_at: createdAt,
                 whisper_to: whisperTo
@@ -1610,6 +1722,50 @@ io.on('connection', (socket) => {
     });
 
     // Удаление собственного сообщения из чата. Разрешено удалять только свои —
+    socket.on('toggle reaction', async ({ messageId, reaction } = {}) => {
+        const id = Number(messageId);
+        const username = socket.data && socket.data.username;
+        const allowed = ['👍','❤️','😂','😮','😢','🔥'];
+        if (!Number.isInteger(id) || !username || !allowed.includes(reaction)) return;
+        try {
+            const msg = await pool.query(`SELECT room, whisper_to FROM messages WHERE id = $1`, [id]);
+            if (!msg.rows[0] || msg.rows[0].room !== currentChatRoom) return;
+            const whisperTo = parseWhisperList(msg.rows[0].whisper_to);
+            const existing = await pool.query(
+                `SELECT 1 FROM message_reactions WHERE message_id=$1 AND username=$2 AND reaction=$3`,
+                [id, username, reaction]
+            );
+            if (existing.rowCount) {
+                await pool.query(`DELETE FROM message_reactions WHERE message_id=$1 AND username=$2 AND reaction=$3`, [id, username, reaction]);
+            } else {
+                await pool.query(
+                    `INSERT INTO message_reactions (message_id, username, reaction, created_at)
+                     VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
+                    [id, username, reaction, Date.now()]
+                );
+            }
+            invalidateRecentMessagesCache(msg.rows[0].room);
+            const all = await pool.query(
+                `SELECT reaction, username FROM message_reactions WHERE message_id=$1 ORDER BY created_at ASC`,
+                [id]
+            );
+            const reactionPayload = { messageId: id, room: msg.rows[0].room, reactions: all.rows };
+            if (!whisperTo) {
+                io.to(`chat:${msg.rows[0].room}`).emit('message reactions', reactionPayload);
+            } else {
+                const allowed = new Set(whisperTo.map(n => String(n).toLowerCase()));
+                const socketIds = io.sockets.adapter.rooms.get(`chat:${msg.rows[0].room}`) || new Set();
+                for (const sid of socketIds) {
+                    const sock = io.sockets.sockets.get(sid);
+                    const uname = sock && sock.data && sock.data.username;
+                    if (uname && allowed.has(uname.toLowerCase())) sock.emit('message reactions', reactionPayload);
+                }
+            }
+        } catch (err) {
+            console.error('❌ Ошибка реакции:', err);
+        }
+    });
+
     // проверка владения (по нику) целиком на сервере, см. deleteOwnMessage().
     socket.on('delete message', async (payload) => {
         if (!socket.data || !socket.data.username) return;

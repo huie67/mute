@@ -598,6 +598,20 @@ const closeStreamModal = document.getElementById('close-stream-modal');
 
 const messagesDiv = document.getElementById('messages');
 const messageInput = document.getElementById('message-input');
+const chatReplyBar = document.getElementById('chat-reply-bar');
+const chatReplyPreview = document.getElementById('chat-reply-preview');
+const chatReplyCancel = document.getElementById('chat-reply-cancel');
+const emojiBtn = document.getElementById('emoji-btn');
+const emojiPicker = document.getElementById('emoji-picker');
+const locationBtn = document.getElementById('location-btn');
+const myLocationModal = document.getElementById('my-location-modal');
+const myLocationMap = document.getElementById('my-location-map');
+const myLocationCoords = document.getElementById('my-location-coords');
+const closeMyLocation = document.getElementById('close-my-location');
+const refreshMyLocation = document.getElementById('refresh-my-location');
+const sendLocationBtn = document.getElementById('send-location-btn');
+let pendingReply = null;
+let currentOwnLocation = null;
 const remoteVideos = document.getElementById('remote-videos');
 
 // Локальный кэш истории: повторное переключение между недавно открытыми
@@ -6386,7 +6400,7 @@ function renderMessageTextWithMentions(text, members, myUsername) {
     return html;
 }
 
-function renderChatMessage({ id, username, user, avatar, text, image_url, created_at, whisper_to }) {
+function renderChatMessage({ id, username, user, avatar, text, image_url, file_url, file_name, file_type, file_size, reply_to_id, reply, location_lat, location_lng, location_accuracy, reactions, created_at, whisper_to }) {
     const name = username || user || 'Участник';
     // Прилипать к низу нужно, только если человек и так смотрит на конец чата (или это
     // его собственное сообщение). Измеряем ДО добавления сообщения — после него
@@ -6438,6 +6452,11 @@ function renderChatMessage({ id, username, user, avatar, text, image_url, create
             html += `<span class="whisper-tag" title="Это сообщение видят только отмеченные участники">${label}</span> `;
         }
     }
+    if (reply_to_id) {
+        const replyName = reply?.username || 'сообщение';
+        const replyText = reply?.text || (reply?.file_name ? `📎 ${reply.file_name}` : (reply?.image_url ? '🖼️ Фото' : 'Сообщение'));
+        html += `<div class="msg-reply-preview">↩️ ${escapeHtml(replyName)}: ${escapeHtml(String(replyText).slice(0, 120))}</div>`;
+    }
     if (text) html += `<span class="msg-text">${renderMessageTextWithMentions(text, getMentionCandidates(), currentUser.username)}</span>`;
     if (image_url) {
         // loading="lazy" + decoding="async" — картинка декодируется (и попадает в GPU-текстуру)
@@ -6446,8 +6465,35 @@ function renderChatMessage({ id, username, user, avatar, text, image_url, create
         // GPU-процесс — декодируются только те фото, что вы прямо сейчас видите.
         html += `<div class="chat-image-wrap"><img src="${image_url}" class="chat-image" alt="Изображение" loading="lazy" decoding="async" onclick="openImageLightbox('${image_url}')"></div>`;
     }
+    if (file_url) {
+        const safeName = escapeHtml(file_name || 'Файл');
+        const sizeLabel = file_size ? ` <small>(${formatChatFileSize(file_size)})</small>` : '';
+        html += `<a class="chat-file" href="${file_url}" target="_blank" rel="noopener" download="${safeName}">📎 <span class="chat-file-name">${safeName}</span>${sizeLabel}</a>`;
+    }
+    if (location_lat != null && location_lng != null) {
+        const lat = Number(location_lat), lng = Number(location_lng);
+        const mapUrl = `https://www.openstreetmap.org/?mlat=${encodeURIComponent(lat)}&mlon=${encodeURIComponent(lng)}#map=16/${encodeURIComponent(lat)}/${encodeURIComponent(lng)}`;
+        html += `<div class="chat-location">📍 <a href="${mapUrl}" target="_blank" rel="noopener">Открыть точку на карте</a>${location_accuracy ? ` <small>±${Math.round(location_accuracy)} м</small>` : ''}</div>`;
+    }
     // Время — только у первого сообщения блока (у остальных та же минута).
     if (!joinGroup) html += `<span class="msg-time">${formatMessageTime(date)}</span>`;
+    if (id != null) {
+        html += `<div class="msg-actions">
+            <button type="button" class="msg-action-btn" onclick="setReplyToMessage(${JSON.stringify(id)}, ${JSON.stringify(name)}, ${JSON.stringify(text || '')})">↩ Ответить</button>
+            <button type="button" class="msg-action-btn" onclick="toggleReaction(${JSON.stringify(id)}, '👍')">👍</button>
+            <button type="button" class="msg-action-btn" onclick="toggleReaction(${JSON.stringify(id)}, '❤️')">❤️</button>
+            <button type="button" class="msg-action-btn" onclick="toggleReaction(${JSON.stringify(id)}, '😂')">😂</button>
+        </div>`;
+    }
+    const reactionList = Array.isArray(reactions) ? reactions : [];
+    if (reactionList.length) {
+        const counts = {};
+        reactionList.forEach(r => { counts[r.reaction] = (counts[r.reaction] || 0) + 1; });
+        const mine = new Set(reactionList.filter(r => String(r.username).toLowerCase() === String(currentUser.username).toLowerCase()).map(r => r.reaction));
+        html += `<div class="reaction-row">${Object.entries(counts).map(([emo,count]) =>
+            `<button type="button" class="reaction-chip${mine.has(emo) ? ' mine' : ''}" onclick="toggleReaction(${JSON.stringify(id)}, ${JSON.stringify(emo)})">${emo} ${count}</button>`
+        ).join('')}</div>`;
+    }
     if (isMine) {
         html += `<button type="button" class="msg-delete-btn" title="Удалить сообщение" onclick="deleteMyMessage(${JSON.stringify(id)})"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg></button>`;
     }
@@ -6482,6 +6528,61 @@ function renderChatMessage({ id, username, user, avatar, text, image_url, create
     }
     trimRenderedMessages();
 }
+
+
+function formatChatFileSize(bytes) {
+    const n = Number(bytes) || 0;
+    if (n < 1024) return `${n} Б`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} КБ`;
+    return `${(n / 1024 / 1024).toFixed(1)} МБ`;
+}
+
+window.setReplyToMessage = function(id, username, text) {
+    pendingReply = { id, username, text: String(text || '') };
+    if (chatReplyPreview) chatReplyPreview.textContent = `${username}: ${pendingReply.text || 'Вложение'}`;
+    chatReplyBar?.classList.add('show');
+    messageInput?.focus();
+};
+
+function clearReply() {
+    pendingReply = null;
+    chatReplyBar?.classList.remove('show');
+    if (chatReplyPreview) chatReplyPreview.textContent = '';
+}
+chatReplyCancel?.addEventListener('click', clearReply);
+
+window.toggleReaction = function(id, reaction) {
+    if (id == null || !selectedRoom) return;
+    socket.emit('toggle reaction', { messageId: id, reaction });
+};
+
+socket.on('message reactions', ({ messageId, room, reactions }) => {
+    if (room !== selectedRoom) return;
+    const parts = messagesDiv.querySelectorAll(`.msg-part[data-id="${CSS.escape(String(messageId))}"]`);
+    if (!parts.length) return;
+    // Перерисовываем только реакционный блок, не трогая текст/картинки.
+    const group = parts[0].closest('.chat-message');
+    const row = group?.querySelector('.reaction-row');
+    const counts = {};
+    (reactions || []).forEach(r => { counts[r.reaction] = (counts[r.reaction] || 0) + 1; });
+    const mine = new Set((reactions || []).filter(r => String(r.username).toLowerCase() === String(currentUser.username).toLowerCase()).map(r => r.reaction));
+    const html = Object.entries(counts).map(([emo,count]) =>
+        `<button type="button" class="reaction-chip${mine.has(emo) ? ' mine' : ''}" onclick="toggleReaction(${JSON.stringify(messageId)}, ${JSON.stringify(emo)})">${emo} ${count}</button>`
+    ).join('');
+    if (row) {
+        if (html) row.innerHTML = html;
+        else row.remove();
+    } else if (html) {
+        const newRow = document.createElement('div');
+        newRow.className = 'reaction-row';
+        newRow.innerHTML = html;
+        parts[parts.length - 1].appendChild(newRow);
+    }
+    // Обновляем локальный кэш, чтобы реакция не пропадала при переключении комнаты.
+    const cached = getCachedChatHistory(room) || [];
+    const item = cached.find(m => String(m.id) === String(messageId));
+    if (item) item.reactions = reactions || [];
+});
 
 // Удаление собственного сообщения: сервер сам проверяет владение по нику (ID сокета
 // не хватило бы — после перезахода/другого устройства id меняется), поэтому здесь
@@ -6941,8 +7042,9 @@ messageInput.addEventListener('keydown', (e) => {
         // Позицию меряем ДО отправки: вниз прокручиваем, только если человек и так
         // находится у конца чата. Если он читает историю выше — не трогаем прокрутку.
         const stickToBottom = chatPinnedToBottom || isChatNearBottom();
-        socket.emit('chat message', { text: messageInput.value.trim() });
+        socket.emit('chat message', { text: messageInput.value.trim(), replyToId: pendingReply?.id || null });
         messageInput.value = '';
+        clearReply();
         closeMentionAutocomplete();
         if (stickToBottom) {
             scrollChatToBottom();
@@ -6964,36 +7066,117 @@ if (attachBtn && attachInput) {
         attachInput.value = '';
         if (!file) return;
 
-        if (!file.type.startsWith('image/')) {
-            alert('Можно прикреплять только изображения');
-            return;
-        }
-        if (file.size > 8 * 1024 * 1024) {
-            alert('Файл слишком большой (максимум 8 МБ)');
+        if (file.size > 5 * 1024 * 1024) {
+            alert('Файл слишком большой (максимум 5 МБ)');
             return;
         }
 
         attachBtn.disabled = true;
         try {
             const formData = new FormData();
-            formData.append('image', file);
+            formData.append('file', file);
             const res = await fetch('/upload', { method: 'POST', body: formData });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Ошибка загрузки');
+
             const stickToBottom = chatPinnedToBottom || isChatNearBottom();
-            socket.emit('chat message', { text: '', imageUrl: data.url });
+            const payload = {
+                text: '',
+                replyToId: pendingReply?.id || null,
+                fileUrl: data.url,
+                fileName: data.name || file.name,
+                fileType: data.type || file.type,
+                fileSize: data.size || file.size
+            };
+            if (String(file.type || '').startsWith('image/')) {
+                payload.imageUrl = data.url;
+                payload.fileUrl = null;
+            }
+            socket.emit('chat message', payload);
+            clearReply();
             if (stickToBottom) {
                 scrollChatToBottom();
                 holdChatAnchor({ type: 'bottom' });
             }
         } catch (err) {
-            console.error('[Ошибка] Загрузка изображения:', err);
-            alert('Не удалось загрузить изображение');
+            console.error('[Ошибка] Загрузка файла:', err);
+            alert(err.message || 'Не удалось загрузить файл');
         } finally {
             attachBtn.disabled = false;
         }
     });
 }
+
+// ---------- Смайлики ----------
+const chatEmojis = ['😀','😃','😄','😁','😆','😅','😂','🤣','😊','😇','🙂','🙃','😉','😌','😍','🥰','😘','😎','🤔','😐','😶','🙄','😏','😴','😢','😭','😡','🤬','😱','😮','😳','🥳','🤩','🤗','🤝','👍','👎','👏','🙏','❤️','🧡','💛','💚','💙','💜','🖤','🤍','🔥','✨','🎉','💀','💯','🚀','👀','💩'];
+if (emojiPicker) {
+    emojiPicker.innerHTML = chatEmojis.map(e => `<button type="button" class="emoji-choice" data-emoji="${e}">${e}</button>`).join('');
+    emojiPicker.addEventListener('click', e => {
+        const btn = e.target.closest('[data-emoji]');
+        if (!btn) return;
+        const emoji = btn.dataset.emoji;
+        const start = messageInput.selectionStart ?? messageInput.value.length;
+        const end = messageInput.selectionEnd ?? messageInput.value.length;
+        messageInput.value = messageInput.value.slice(0,start) + emoji + messageInput.value.slice(end);
+        messageInput.selectionStart = messageInput.selectionEnd = start + emoji.length;
+        messageInput.focus();
+    });
+}
+emojiBtn?.addEventListener('click', e => {
+    e.stopPropagation();
+    emojiPicker?.classList.toggle('show');
+});
+document.addEventListener('click', e => {
+    if (emojiPicker && !emojiPicker.contains(e.target) && e.target !== emojiBtn) emojiPicker.classList.remove('show');
+});
+
+// ---------- Моя точка ----------
+function openMyLocation() {
+    if (!navigator.geolocation) {
+        alert('Геолокация не поддерживается этим устройством.');
+        return;
+    }
+    myLocationModal.style.display = 'flex';
+    myLocationCoords.textContent = 'Получаем ваше местоположение…';
+    navigator.geolocation.getCurrentPosition(
+        pos => {
+            currentOwnLocation = {
+                lat: pos.coords.latitude,
+                lng: pos.coords.longitude,
+                accuracy: pos.coords.accuracy
+            };
+            const lat = currentOwnLocation.lat, lng = currentOwnLocation.lng;
+            myLocationCoords.textContent = `Широта: ${lat.toFixed(6)} · Долгота: ${lng.toFixed(6)} · точность ±${Math.round(pos.coords.accuracy)} м`;
+            const d = 0.008;
+            myLocationMap.src = `https://www.openstreetmap.org/export/embed.html?bbox=${lng-d}%2C${lat-d}%2C${lng+d}%2C${lat+d}&layer=mapnik&marker=${lat}%2C${lng}`;
+        },
+        err => {
+            myLocationCoords.textContent = 'Не удалось определить местоположение.';
+            alert(err.message || 'Разрешите доступ к геолокации.');
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 15000 }
+    );
+}
+locationBtn?.addEventListener('click', openMyLocation);
+refreshMyLocation?.addEventListener('click', openMyLocation);
+closeMyLocation?.addEventListener('click', () => {
+    myLocationModal.style.display = 'none';
+});
+myLocationModal?.addEventListener('click', e => {
+    if (e.target === myLocationModal) myLocationModal.style.display = 'none';
+});
+sendLocationBtn?.addEventListener('click', () => {
+    if (!currentOwnLocation || !selectedRoom) return;
+    socket.emit('chat message', {
+        text: '',
+        replyToId: pendingReply?.id || null,
+        locationLat: currentOwnLocation.lat,
+        locationLng: currentOwnLocation.lng,
+        locationAccuracy: currentOwnLocation.accuracy
+    });
+    clearReply();
+    myLocationModal.style.display = 'none';
+});
 
 // Полноэкранный просмотр фото из чата
 window.openImageLightbox = function(url) {
