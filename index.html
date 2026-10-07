@@ -1125,7 +1125,7 @@
             border: 1px solid var(--border);
             color: #fff;
             border-radius: var(--radius-sm);
-            padding: 0 9px;
+            padding: 0 12px;
             font-size: 16px;
             cursor: pointer;
             flex-shrink: 0;
@@ -2387,179 +2387,27 @@
         .chat-message { word-break: break-word; position: relative; }
         /* Одно сообщение внутри объединённого блока (ник и время — только у первого) */
         .msg-part { position: relative; }
-
-        /* Панель действий над сообщением: реакция / ответ / удалить (по наведению) */
-        .msg-actions {
+        .chat-message.own-message .msg-part { padding-right: 22px; }
+        .msg-delete-btn {
             position: absolute;
             right: 0;
-            top: -14px;
-            display: flex;
-            gap: 2px;
-            padding: 2px;
-            background: var(--bg-elevated);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            box-shadow: 0 4px 14px rgba(0,0,0,0.35);
-            opacity: 0;
-            pointer-events: none;
-            transition: opacity 0.12s;
-            z-index: 5;
-        }
-        .msg-part:hover .msg-actions,
-        .msg-part.actions-open .msg-actions { opacity: 1; pointer-events: auto; }
-        .msg-actions button {
-            width: 24px;
-            height: 24px;
+            top: 1px;
+            width: 18px;
+            height: 18px;
             display: flex;
             align-items: center;
             justify-content: center;
             border: none;
             background: transparent;
-            color: var(--text-muted);
+            color: var(--text-faint);
             cursor: pointer;
-            border-radius: 6px;
+            opacity: 0;
+            transition: opacity 0.15s, color 0.15s;
             padding: 0;
-            transition: background 0.12s, color 0.12s;
         }
-        .msg-actions button:hover { background: var(--bg-elevated-hover); color: var(--text); }
-        .msg-actions .msg-delete-btn:hover { color: var(--danger); }
-        .msg-actions svg { display: block; }
-
-        /* Цитата «ответ на сообщение» */
-        .msg-reply-quote {
-            display: flex;
-            align-items: baseline;
-            gap: 6px;
-            max-width: 100%;
-            margin: 2px 0 3px;
-            padding: 2px 8px;
-            border-left: 3px solid var(--accent);
-            background: var(--accent-soft);
-            border-radius: 0 6px 6px 0;
-            font-size: 12px;
-            color: var(--text-muted);
-            cursor: pointer;
-            overflow: hidden;
-        }
-        .msg-reply-quote:hover { background: var(--bg-elevated); }
-        .msg-reply-quote .rq-author { font-weight: 600; flex-shrink: 0; }
-        .msg-reply-quote .rq-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-        .msg-reply-quote.rq-deleted { cursor: default; font-style: italic; border-left-color: var(--border-strong); background: transparent; }
-        .msg-part.msg-jump-flash { animation: msg-jump-flash 1.6s ease-out; }
-        @keyframes msg-jump-flash { 0%, 40% { background: var(--accent-soft); } 100% { background: transparent; } }
-
-        /* Реакции под сообщением */
-        .msg-reactions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
-        .msg-reactions:empty { display: none; }
-        .reaction-chip {
-            display: inline-flex;
-            align-items: center;
-            gap: 5px;
-            padding: 1px 8px;
-            height: 22px;
-            border-radius: 11px;
-            border: 1px solid var(--border);
-            background: var(--bg-elevated);
-            color: var(--text-muted);
-            font-size: 13px;
-            cursor: pointer;
-            transition: background 0.12s, border-color 0.12s;
-        }
-        .reaction-chip:hover { background: var(--bg-elevated-hover); }
-        .reaction-chip.mine { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
-        .reaction-chip .rc-count { font-size: 12px; font-weight: 600; }
-
-        /* Смайлики-только: крупнее */
-        .msg-text.jumbo { font-size: 30px; line-height: 1.25; }
-
-        /* Вложенный файл / архив */
-        .chat-file {
-            display: inline-flex;
-            align-items: center;
-            gap: 10px;
-            max-width: min(340px, 100%);
-            margin-top: 6px;
-            padding: 8px 12px 8px 10px;
-            background: var(--bg-input);
-            border: 1px solid var(--border);
-            border-radius: var(--radius-sm);
-            color: var(--text);
-            text-decoration: none;
-            transition: background 0.12s, border-color 0.12s;
-        }
-        .chat-file:hover { background: var(--bg-elevated); border-color: var(--accent); }
-        .chat-file .cf-icon {
-            flex-shrink: 0;
-            width: 34px;
-            height: 34px;
-            border-radius: 8px;
-            background: var(--accent-soft);
-            color: var(--accent);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .chat-file .cf-meta { min-width: 0; display: flex; flex-direction: column; }
-        .chat-file .cf-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .chat-file .cf-size { font-size: 11px; color: var(--text-faint); }
-        .chat-file .cf-dl { flex-shrink: 0; color: var(--text-faint); display: flex; }
-        .chat-file:hover .cf-dl { color: var(--accent); }
-
-        /* Плашки над полем ввода: «ответ для…» и загрузка файла */
-        #reply-bar, #upload-status {
-            display: none;
-            align-items: center;
-            gap: 8px;
-            padding: 6px 16px;
-            border-top: 1px solid var(--border-soft);
-            background: var(--bg-raised);
-            font-size: 12px;
-            color: var(--text-muted);
-        }
-        #reply-bar.visible, #upload-status.visible { display: flex; }
-        #reply-bar .rb-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        #reply-bar .rb-text b { color: var(--text); }
-        #reply-bar button, #upload-status button {
-            border: none; background: transparent; color: var(--text-faint); cursor: pointer;
-            font-size: 16px; line-height: 1; padding: 2px 4px; border-radius: 4px;
-        }
-        #reply-bar button:hover, #upload-status button:hover { color: var(--text); background: var(--bg-elevated); }
-        #upload-status .us-bar { flex: 1; height: 4px; border-radius: 2px; background: var(--bg-elevated); overflow: hidden; }
-        #upload-status .us-bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.15s; }
-        #upload-status .us-name { max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
-        .chat-panel.drag-over { outline: 2px dashed var(--accent); outline-offset: -6px; }
-
-        /* Выбор смайликов */
-        .emoji-picker {
-            position: fixed;
-            z-index: 3500;
-            width: 328px;
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: var(--radius-md);
-            box-shadow: var(--shadow-card);
-            display: none;
-            flex-direction: column;
-            overflow: hidden;
-        }
-        .emoji-picker.open { display: flex; }
-        .emoji-quick { display: flex; gap: 2px; padding: 6px 8px; border-bottom: 1px solid var(--border-soft); }
-        .emoji-tabs { display: flex; gap: 2px; padding: 4px 6px; border-bottom: 1px solid var(--border-soft); }
-        .emoji-tab, .emoji-cell {
-            border: none; background: transparent; cursor: pointer; border-radius: 6px;
-            font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
-        }
-        .emoji-tab { flex: 1; font-size: 16px; padding: 4px 0; opacity: 0.55; }
-        .emoji-tab.active, .emoji-tab:hover { opacity: 1; background: var(--bg-elevated); }
-        .emoji-quick .emoji-cell { font-size: 22px; width: 36px; height: 34px; }
-        .emoji-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; padding: 8px; height: 224px; overflow-y: auto; align-content: start; }
-        .emoji-grid .emoji-cell { font-size: 21px; height: 34px; }
-        .emoji-cell:hover { background: var(--bg-elevated-hover); }
-        .emoji-empty { grid-column: 1 / -1; color: var(--text-faint); font-size: 12px; text-align: center; padding: 20px 0; }
-        .msg-text, .reaction-chip .rc-emoji, .rq-text { font-family: inherit; }
-
-        /* Собственная точка качества связи (пинг до сервера) */
-        .net-quality.self { box-shadow: 0 0 0 2px var(--accent-soft); }
+        .chat-message.own-message .msg-part:hover .msg-delete-btn { opacity: 1; }
+        .msg-delete-btn:hover { color: var(--danger); }
+        .msg-delete-btn svg { display: block; }
     </style>
 </head>
 <body>
@@ -2786,42 +2634,15 @@
 
                 <div class="chat-panel" id="chat-panel">
                     <div id="messages"></div>
-                    <div id="reply-bar">
-                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 14 4 9 9 4"></polyline><path d="M20 20v-7a4 4 0 0 0-4-4H4"></path></svg>
-                        <span class="rb-text" id="reply-bar-text"></span>
-                        <button type="button" id="reply-bar-cancel" title="Отменить ответ (Esc)" aria-label="Отменить ответ">✕</button>
-                    </div>
-                    <div id="upload-status">
-                        <span class="us-name" id="upload-status-name"></span>
-                        <span class="us-bar"><i id="upload-status-fill"></i></span>
-                        <span id="upload-status-pct">0%</span>
-                        <button type="button" id="upload-status-cancel" title="Отменить загрузку" aria-label="Отменить загрузку">✕</button>
-                    </div>
                     <div class="chat-input-area">
                         <input type="text" id="message-input" placeholder="Выберите сервер слева, чтобы открыть чат" disabled autocomplete="off">
                         <div class="mention-autocomplete" id="mention-autocomplete"></div>
-                        <button class="attach-btn" id="emoji-btn" type="button" title="Смайлики" disabled>
-                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <circle cx="12" cy="12" r="10"></circle>
-                                <path d="M8 14s1.5 2 4 2 4-2 4-2"></path>
-                                <line x1="9" y1="9" x2="9.01" y2="9"></line>
-                                <line x1="15" y1="9" x2="15.01" y2="9"></line>
-                            </svg>
-                        </button>
                         <button class="attach-btn" id="attach-image-btn" type="button" title="Прикрепить фото">
-                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-                                <circle cx="8.5" cy="8.5" r="1.5"></circle>
-                                <polyline points="21 15 16 10 5 21"></polyline>
-                            </svg>
-                        </button>
-                        <button class="attach-btn" id="attach-file-btn" type="button" title="Прикрепить файл или архив (можно перетащить в чат)">
                             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                 <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
                             </svg>
                         </button>
                         <input type="file" id="attach-image-input" accept="image/*" style="display:none">
-                        <input type="file" id="attach-file-input" multiple style="display:none">
                     </div>
                 </div>
             </div>

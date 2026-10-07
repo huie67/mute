@@ -780,9 +780,6 @@ function getMentionCandidates() {
 // аккаунт, голосовой чат и т.д.) просто не выполнится.
 const mentionAutocompleteEl = document.getElementById('mention-autocomplete');
 let mentionState = { active: false, startIndex: -1, query: '', items: [], activeIndex: 0 };
-// Сообщение, на которое сейчас готовим ответ: { id, room, username, preview } (объявлено здесь
-// же по той же причине — setChatEnabled вызывается при загрузке, см. комментарий выше).
-let replyTarget = null;
 
 function closeMentionAutocomplete() {
     mentionState = { active: false, startIndex: -1, query: '', items: [], activeIndex: 0 };
@@ -796,11 +793,8 @@ function closeMentionAutocomplete() {
 function setChatEnabled(enabled) {
     messageInput.disabled = !enabled;
     messageInput.placeholder = enabled ? 'Написать в чат...' : 'Выберите сервер слева, чтобы открыть чат';
-    ['attach-image-btn', 'attach-file-btn', 'emoji-btn'].forEach(id => {
-        const b = document.getElementById(id);
-        if (b) b.disabled = !enabled;
-    });
-    if (!enabled && typeof clearReply === 'function') clearReply();
+    const attachBtnEl = document.getElementById('attach-image-btn');
+    if (attachBtnEl) attachBtnEl.disabled = !enabled;
     closeMentionAutocomplete();
 }
 setChatEnabled(false);
@@ -1498,12 +1492,6 @@ let gateHangoverMs = 300;
 // (Voice Gate при этом не участвует). Небольшая задержка после отпускания — чтобы
 // не обрезать конец слова.
 const netQualityByPeer = {};   // peerId -> { level, title } (см. «Качество связи» ниже)
-// Своя точка качества связи — пинг до сервера (объявлено здесь, рядом с netQualityByPeer, чтобы
-// строка списка участников могла обратиться к ним в любой момент без TDZ).
-const SELF_PING_TITLE_WAIT = 'Ваш пинг до сервера: измеряется…';
-let selfNetQuality = { level: 'unknown', title: SELF_PING_TITLE_WAIT };
-const selfPingSamples = [];
-let selfPollScheduled = false;
 let pttEnabled = false;
 let pttHeld = false;
 let pttReleaseTimer = null;
@@ -5062,14 +5050,9 @@ function buildVoiceUserRow(id, user, interactive = true) {
     row.className = 'voice-user-row' + (interactive && id !== myPeerId && isRemoteLocallyMuted(user.username) ? ' local-muted' : '');
     const ids = (kind) => interactive ? `id="${kind}-${id}"` : '';
     const nq = (interactive && id !== myPeerId) ? netQualityByPeer[id] : null;
-    let netQualityHtml = (interactive && id !== myPeerId)
+    const netQualityHtml = (interactive && id !== myPeerId)
         ? `<span class="net-quality q-${nq ? nq.level : 'unknown'}" id="netq-${id}" title="${nq ? escapeHtml(nq.title) : 'Качество связи: измеряется…'}"></span>`
         : '';
-    // Своя точка: к себе WebRTC-соединения нет, поэтому показываем пинг до сервера.
-    if (interactive && id === myPeerId) {
-        netQualityHtml = `<span class="net-quality self q-${selfNetQuality.level}" id="netq-self" title="${escapeHtml(selfNetQuality.title)}"></span>`;
-        scheduleSelfNetQualityPoll();
-    }
     row.innerHTML = `
         <div class="user-avatar-wrap">
             <img src="${user.avatar || 'https://api.dicebear.com/7.x/identicon/svg?seed=def'}" class="user-avatar" ${ids('avatar')} alt="">
@@ -5323,42 +5306,6 @@ try { showNetQuality = localStorage.getItem(NET_QUALITY_KEY) !== '0'; } catch (e
 document.documentElement.classList.toggle('no-net-quality', !showNetQuality);
 const netQualityPrev = {};     // peerId -> { lost, recv }
 let netQualityBusy = false;
-// Своя точка: пинг до сервера (socket.io с подтверждением). Берём медиану трёх последних замеров,
-// чтобы одиночный скачок не перекрашивал точку.
-
-function scheduleSelfNetQualityPoll() {
-    // Строку со своей точкой только что нарисовали — не ждём следующего тика опроса.
-    if (selfPollScheduled || selfPingSamples.length) return;
-    selfPollScheduled = true;
-    setTimeout(() => { selfPollScheduled = false; pollNetQuality(); }, 600);
-}
-
-function measureServerPing() {
-    return new Promise((resolve) => {
-        if (!socket.connected) return resolve(null);
-        const t0 = performance.now();
-        socket.timeout(3000).emit('net ping', (err) => resolve(err ? null : performance.now() - t0));
-    });
-}
-
-async function updateSelfNetQuality() {
-    const ms = await measureServerPing();
-    if (ms == null) {
-        selfPingSamples.length = 0;
-        selfNetQuality = { level: 'bad', title: 'Нет связи с сервером' };
-    } else {
-        selfPingSamples.push(ms);
-        if (selfPingSamples.length > 3) selfPingSamples.shift();
-        const sorted = [...selfPingSamples].sort((a, b) => a - b);
-        const med = sorted[Math.floor(sorted.length / 2)];
-        selfNetQuality = { level: netQualityLevel(med, 0), title: `Ваш пинг до сервера: ${Math.round(med)} мс` };
-    }
-    const el = document.getElementById('netq-self');
-    if (el) {
-        el.className = `net-quality self q-${selfNetQuality.level}`;
-        el.title = selfNetQuality.title;
-    }
-}
 
 function netQualityLevel(rttMs, lossPct) {
     if (rttMs == null) return 'unknown';
@@ -5409,7 +5356,6 @@ async function pollNetQuality() {
                 el.title = title;
             }
         }
-        await updateSelfNetQuality();
         // забываем тех, с кем звонка уже нет
         Object.keys(netQualityByPeer).forEach(id => {
             if (!activeCalls[id]) { delete netQualityByPeer[id]; delete netQualityPrev[id]; }
@@ -6440,490 +6386,7 @@ function renderMessageTextWithMentions(text, members, myUsername) {
     return html;
 }
 
-// ---------- Ответы, реакции, смайлики и файлы в чате ----------
-const RECENT_EMOJI_KEY = 'mute:recentEmoji';
-const RECENT_EMOJI_MAX = 24;
-const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🔥', '🎉', '👀'];
-const MAX_CLIENT_FILE_MB = 10; // должно совпадать с MAX_FILE_MB на сервере (по умолчанию 10)
-const EMOJI_CATEGORIES = [
-    { icon: '😀', list: '😀 😃 😄 😁 😆 😅 🤣 😂 🙂 🙃 😉 😊 😇 🥰 😍 🤩 😘 😗 😚 😙 😋 😛 😜 🤪 😝 🤑 🤗 🤭 🤫 🤔 🤐 🤨 😐 😑 😶 😏 😒 🙄 😬 😌 😔 😪 🤤 😴 😷 🤒 🤕 🤢 🤮 🤧 🥵 🥶 🥴 😵 🤯 🤠 🥳 😎 🤓 🧐 😕 😟 🙁 😮 😯 😲 😳 🥺 😦 😧 😨 😰 😥 😢 😭 😱 😖 😣 😞 😓 😩 😫 🥱 😤 😡 😠 🤬 😈 👿 💀 💩 🤡 👻 👽 👾 🤖 😺 😸 😹 😻 😼 😽 🙀 😿 😾' },
-    { icon: '👍', list: '👍 👎 👌 ✌️ 🤞 🤟 🤘 🤙 👈 👉 👆 👇 ☝️ ✋ 🤚 🖐️ 🖖 👋 🤏 ✊ 👊 🤛 🤜 👏 🙌 👐 🤲 🤝 🙏 ✍️ 💅 🤳 💪 🦾 🦵 🦶 👂 👃 👀 👁️ 👅 👄 🧠 🙋 🙆 🙅 🙇 🤦 🤷 🙎 🙍 💁 🤰 👶 🧒 👦 👧 🧑 👨 👩 🧓 👴 👵' },
-    { icon: '❤️', list: '❤️ 🧡 💛 💚 💙 💜 🖤 🤍 🤎 💔 ❣️ 💕 💞 💓 💗 💖 💘 💝 💯 💢 💥 💫 💦 💨 💤 ✨ ⭐ 🌟 🔥 🎉 🎊 🎈 🎁 🏆 🥇 🥈 🥉 🎮 🎧 🎤 🎵 🎶 🎬 🎯 🎲 🧩' },
-    { icon: '🐶', list: '🐶 🐱 🐭 🐹 🐰 🦊 🐻 🐼 🐨 🐯 🦁 🐮 🐷 🐸 🐵 🙈 🙉 🙊 🐔 🐧 🐦 🦆 🦉 🐺 🐴 🦄 🐝 🦋 🐌 🐞 🐢 🐍 🐙 🦀 🐠 🐬 🐳 🦈 🐘 🦒 🐑 🐓 🌸 🌹 🌻 🌲 🌴 🍀 🍄 🌈 ☀️ 🌙 ⛅ ☁️ ❄️ ⚡ 🌊 🌍' },
-    { icon: '🍕', list: '🍏 🍎 🍌 🍉 🍇 🍓 🍒 🍑 🍍 🥝 🍅 🥑 🥕 🌽 🥔 🍞 🧀 🍳 🥓 🍔 🍟 🍕 🌭 🌮 🍝 🍣 🍜 🍩 🍪 🎂 🍰 🍫 🍬 🍭 🍦 ☕ 🍵 🥛 🍺 🍻 🥂 🍷 🍸 🥃 🥤' },
-    { icon: '⚽', list: '⚽ 🏀 🏈 ⚾ 🎾 🏐 🏓 🥊 🎸 🎹 🥁 🎻 📱 💻 ⌨️ 🖥️ 🖱️ 📷 🎥 📺 💡 🔋 🔑 🔒 🔔 📎 📌 ✏️ 📝 📚 💰 💳 🚀 ✈️ 🚗 🚲 ⏰ 🏠 💊 🧸' },
-    { icon: '✅', list: '✅ ❌ ⚠️ ❓ ❗ ➕ ➖ ✔️ ✖️ ➡️ ⬅️ ⬆️ ⬇️ 🔄 🔊 🔇 🆗 🆒 🆕 🔞 💬 ♻️ ❤️‍🔥 🚫 ⭕ 🔴 🟠 🟡 🟢 🔵 🟣 ⚫ ⚪' }
-].map(c => ({ icon: c.icon, items: c.list.split(/\s+/).filter(Boolean) }));
-
-function loadRecentEmoji() {
-    try {
-        const raw = JSON.parse(localStorage.getItem(RECENT_EMOJI_KEY) || '[]');
-        return Array.isArray(raw) ? raw.filter(e => typeof e === 'string').slice(0, RECENT_EMOJI_MAX) : [];
-    } catch (e) { return []; }
-}
-function rememberRecentEmoji(emoji) {
-    try {
-        const list = [emoji, ...loadRecentEmoji().filter(e => e !== emoji)].slice(0, RECENT_EMOJI_MAX);
-        localStorage.setItem(RECENT_EMOJI_KEY, JSON.stringify(list));
-    } catch (e) { /* ignore */ }
-}
-
-// --- Выбор смайликов (один общий всплывающий блок) ---
-let emojiPickerEl = null;
-let emojiPickerState = null; // { onPick, closeOnPick, anchor, tab }
-
-function ensureEmojiPicker() {
-    if (emojiPickerEl) return emojiPickerEl;
-    emojiPickerEl = document.createElement('div');
-    emojiPickerEl.className = 'emoji-picker';
-    emojiPickerEl.innerHTML = '<div class="emoji-quick"></div><div class="emoji-tabs"></div><div class="emoji-grid"></div>';
-    document.body.appendChild(emojiPickerEl);
-    emojiPickerEl.addEventListener('mousedown', (e) => e.preventDefault()); // не уводим фокус из поля ввода
-    emojiPickerEl.addEventListener('click', (e) => {
-        const cell = e.target.closest('.emoji-cell');
-        if (cell && emojiPickerState) {
-            const emoji = cell.dataset.emoji;
-            rememberRecentEmoji(emoji);
-            const { onPick, closeOnPick } = emojiPickerState;
-            const keepOpen = e.shiftKey || !closeOnPick;
-            if (!keepOpen) closeEmojiPicker();
-            else renderEmojiGrid();
-            onPick(emoji);
-            return;
-        }
-        const tab = e.target.closest('.emoji-tab');
-        if (tab && emojiPickerState) {
-            emojiPickerState.tab = Number(tab.dataset.tab);
-            renderEmojiGrid();
-        }
-    });
-    document.addEventListener('mousedown', (e) => {
-        if (!emojiPickerEl.classList.contains('open')) return;
-        if (emojiPickerEl.contains(e.target)) return;
-        if (emojiPickerState && emojiPickerState.anchor && emojiPickerState.anchor.contains(e.target)) return;
-        closeEmojiPicker();
-    }, true);
-    document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && emojiPickerEl.classList.contains('open')) closeEmojiPicker();
-    });
-    window.addEventListener('blur', () => closeEmojiPicker());
-    messagesDiv.addEventListener('scroll', () => closeEmojiPicker(), { passive: true });
-    return emojiPickerEl;
-}
-
-function closeEmojiPicker() {
-    if (emojiPickerEl) emojiPickerEl.classList.remove('open');
-    emojiPickerState = null;
-}
-
-function renderEmojiGrid() {
-    if (!emojiPickerEl || !emojiPickerState) return;
-    const mkCell = (emoji) => {
-        const b = document.createElement('button');
-        b.type = 'button';
-        b.className = 'emoji-cell';
-        b.dataset.emoji = emoji;
-        b.textContent = emoji;
-        return b;
-    };
-    const quick = emojiPickerEl.querySelector('.emoji-quick');
-    quick.innerHTML = '';
-    quick.style.display = emojiPickerState.quick ? 'flex' : 'none';
-    if (emojiPickerState.quick) QUICK_REACTIONS.forEach(e => quick.appendChild(mkCell(e)));
-
-    // Вкладка 0 — недавние, дальше — категории.
-    const tabs = emojiPickerEl.querySelector('.emoji-tabs');
-    tabs.innerHTML = '';
-    const tabIcons = ['🕘', ...EMOJI_CATEGORIES.map(c => c.icon)];
-    tabIcons.forEach((icon, i) => {
-        const b = document.createElement('button');
-        b.type = 'button';
-        b.className = 'emoji-tab' + (i === emojiPickerState.tab ? ' active' : '');
-        b.dataset.tab = String(i);
-        b.textContent = icon;
-        tabs.appendChild(b);
-    });
-
-    const grid = emojiPickerEl.querySelector('.emoji-grid');
-    grid.innerHTML = '';
-    const items = emojiPickerState.tab === 0 ? loadRecentEmoji() : EMOJI_CATEGORIES[emojiPickerState.tab - 1].items;
-    if (!items.length) {
-        const empty = document.createElement('div');
-        empty.className = 'emoji-empty';
-        empty.textContent = 'Пока пусто — выберите смайлик из других вкладок';
-        grid.appendChild(empty);
-    } else {
-        items.forEach(e => grid.appendChild(mkCell(e)));
-    }
-}
-
-// quick — ряд быстрых реакций сверху; closeOnPick — закрывать после выбора (Shift — оставить).
-function openEmojiPicker({ anchor, onPick, quick = false, closeOnPick = true }) {
-    ensureEmojiPicker();
-    if (emojiPickerEl.classList.contains('open') && emojiPickerState && emojiPickerState.anchor === anchor) {
-        closeEmojiPicker();
-        return;
-    }
-    const hasRecent = loadRecentEmoji().length > 0;
-    emojiPickerState = { onPick, closeOnPick, anchor, quick, tab: hasRecent ? 0 : 1 };
-    renderEmojiGrid();
-    emojiPickerEl.classList.add('open');
-
-    const r = anchor.getBoundingClientRect();
-    const w = emojiPickerEl.offsetWidth || 328;
-    const h = emojiPickerEl.offsetHeight || 330;
-    let left = Math.min(Math.max(8, r.right - w), window.innerWidth - w - 8);
-    let top = r.top - h - 6;
-    if (top < 8) top = Math.min(r.bottom + 6, window.innerHeight - h - 8);
-    emojiPickerEl.style.left = `${left}px`;
-    emojiPickerEl.style.top = `${Math.max(8, top)}px`;
-}
-
-function insertEmojiIntoInput(emoji) {
-    if (messageInput.disabled) return;
-    const start = messageInput.selectionStart ?? messageInput.value.length;
-    const end = messageInput.selectionEnd ?? start;
-    messageInput.setRangeText(emoji, start, end, 'end');
-    messageInput.focus();
-    messageInput.dispatchEvent(new Event('input', { bubbles: true }));
-}
-
-const emojiBtn = document.getElementById('emoji-btn');
-if (emojiBtn) {
-    emojiBtn.addEventListener('click', () => {
-        openEmojiPicker({ anchor: emojiBtn, onPick: insertEmojiIntoInput, quick: false, closeOnPick: true });
-    });
-}
-
-// --- Ответы на сообщения ---
-
-function messagePreviewText(m) {
-    const t = String((m && m.text) || '').replace(/\s+/g, ' ').trim();
-    if (t) return t.length > 120 ? t.slice(0, 120) + '…' : t;
-    if (m && m.hasImage) return '📷 Фото';
-    if (m && m.fileName) return `📎 ${m.fileName}`;
-    return '';
-}
-
-function setReplyTarget(target) {
-    replyTarget = target;
-    const bar = document.getElementById('reply-bar');
-    const textEl = document.getElementById('reply-bar-text');
-    if (!bar || !textEl) return;
-    textEl.textContent = '';
-    if (!target) { bar.classList.remove('visible'); return; }
-    const label = document.createElement('span');
-    label.textContent = 'Ответ для ';
-    const who = document.createElement('b');
-    who.textContent = target.username;
-    textEl.append(label, who, document.createTextNode(`: ${target.preview}`));
-    bar.classList.add('visible');
-    messageInput.focus();
-}
-function clearReply() { setReplyTarget(null); }
-
-// Добавляет к исходящему сообщению id цитируемого и сбрасывает ответ.
-function withReply(payload) {
-    if (replyTarget && replyTarget.room === selectedRoom) payload.replyTo = replyTarget.id;
-    clearReply();
-    return payload;
-}
-
-document.getElementById('reply-bar-cancel')?.addEventListener('click', clearReply);
-messageInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && replyTarget && !mentionState.active) clearReply();
-});
-
-function jumpToMessage(id) {
-    const part = messagesDiv.querySelector(`.msg-part[data-id="${CSS.escape(String(id))}"]`);
-    if (!part) { showToast('Исходное сообщение далеко выше — в ленте его уже нет'); return; }
-    chatScrollAnchor = null;
-    part.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    part.classList.remove('msg-jump-flash');
-    void part.offsetWidth; // перезапуск анимации
-    part.classList.add('msg-jump-flash');
-    setTimeout(() => part.classList.remove('msg-jump-flash'), 1700);
-}
-
-// --- Реакции ---
-function normChatName(n) { return String(n || '').trim().toLowerCase(); }
-
-function renderReactions(part, reactions) {
-    const box = part.querySelector(':scope > .msg-reactions');
-    if (!box) return;
-    box.innerHTML = '';
-    const me = normChatName(currentUser.username);
-    Object.entries(reactions || {}).forEach(([emoji, users]) => {
-        if (!Array.isArray(users) || !users.length) return;
-        const chip = document.createElement('button');
-        chip.type = 'button';
-        chip.className = 'reaction-chip' + (users.some(u => normChatName(u) === me) ? ' mine' : '');
-        chip.dataset.emoji = emoji;
-        const shown = users.slice(0, 10).join(', ') + (users.length > 10 ? ` и ещё ${users.length - 10}` : '');
-        chip.title = shown;
-        const em = document.createElement('span');
-        em.className = 'rc-emoji';
-        em.textContent = emoji;
-        const cnt = document.createElement('span');
-        cnt.className = 'rc-count';
-        cnt.textContent = String(users.length);
-        chip.append(em, cnt);
-        box.appendChild(chip);
-    });
-    if (part._msg) part._msg.reactions = reactions || {};
-}
-
-function toggleReaction(messageId, emoji) {
-    if (messageId == null || !emoji) return;
-    socket.emit('toggle reaction', { id: messageId, emoji });
-}
-
-function updateCachedReactions(room, id, reactions) {
-    const cached = chatHistoryCache.get(String(room || ''));
-    if (!cached) return;
-    const m = cached.messages.find(x => String(x.id) === String(id));
-    if (m) m.reactions = reactions;
-}
-
-socket.on('message reactions', ({ id, room, reactions } = {}) => {
-    if (id == null) return;
-    const r = room || selectedRoom;
-    updateCachedReactions(r, id, reactions || {});
-    if (r !== selectedRoom) return;
-    const part = messagesDiv.querySelector(`.msg-part[data-id="${CSS.escape(String(id))}"]`);
-    if (part) renderReactions(part, reactions || {});
-});
-
-// --- Клики по сообщениям (одним обработчиком на всю ленту) ---
-const HOVER_NONE = window.matchMedia ? window.matchMedia('(hover: none)') : { matches: false };
-messagesDiv.addEventListener('click', (e) => {
-    const part = e.target.closest('.msg-part');
-    if (!part) return;
-
-    const quote = e.target.closest('.msg-reply-quote');
-    if (quote && !quote.classList.contains('rq-deleted')) {
-        jumpToMessage(quote.dataset.replyId);
-        return;
-    }
-
-    const chip = e.target.closest('.reaction-chip');
-    if (chip) { toggleReaction(part.dataset.id, chip.dataset.emoji); return; }
-
-    const reactBtn = e.target.closest('.msg-act-react');
-    if (reactBtn) {
-        const id = part.dataset.id;
-        openEmojiPicker({ anchor: reactBtn, quick: true, closeOnPick: true, onPick: (emoji) => toggleReaction(id, emoji) });
-        return;
-    }
-
-    const replyBtn = e.target.closest('.msg-act-reply');
-    if (replyBtn) {
-        const m = part._msg;
-        if (!m) return;
-        setReplyTarget({ id: m.id, room: selectedRoom, username: m.username, preview: messagePreviewText(m) });
-        return;
-    }
-
-    // На сенсорных экранах нет наведения — панель действий открывается касанием по сообщению.
-    if (HOVER_NONE.matches && !e.target.closest('a, button, img')) {
-        const wasOpen = part.classList.contains('actions-open');
-        messagesDiv.querySelectorAll('.msg-part.actions-open').forEach(p => p.classList.remove('actions-open'));
-        if (!wasOpen) part.classList.add('actions-open');
-    }
-});
-
-// --- Файлы и фото: загрузка с прогрессом ---
-let activeUpload = null; // XMLHttpRequest текущей загрузки
-
-function formatFileSize(bytes) {
-    const n = Number(bytes);
-    if (!Number.isFinite(n) || n < 0) return '';
-    if (n < 1024) return `${n} Б`;
-    if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10 * 1024 ? 1 : 0)} КБ`;
-    return `${(n / 1024 / 1024).toFixed(1)} МБ`;
-}
-
-function setUploadStatus(name, pct) {
-    const box = document.getElementById('upload-status');
-    if (!box) return;
-    if (name == null) { box.classList.remove('visible'); return; }
-    box.classList.add('visible');
-    document.getElementById('upload-status-name').textContent = name;
-    document.getElementById('upload-status-fill').style.width = `${pct}%`;
-    document.getElementById('upload-status-pct').textContent = `${Math.round(pct)}%`;
-}
-
-function postFormWithProgress(url, formData, onProgress) {
-    return new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        activeUpload = xhr;
-        xhr.open('POST', url);
-        xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress((e.loaded / e.total) * 100); };
-        xhr.onload = () => {
-            let data = {};
-            try { data = JSON.parse(xhr.responseText); } catch (e) { /* ignore */ }
-            if (xhr.status >= 200 && xhr.status < 300) resolve(data);
-            else reject(new Error(data.error || `Ошибка загрузки (${xhr.status})`));
-        };
-        xhr.onerror = () => reject(new Error('Нет связи с сервером'));
-        xhr.onabort = () => reject(new Error('cancelled'));
-        xhr.send(formData);
-    });
-}
-
-function isChatImageFile(file) {
-    return ['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(file.type);
-}
-
-function sendChatPayloadAndStick(payload) {
-    const stick = chatPinnedToBottom || isChatNearBottom();
-    socket.emit('chat message', withReply(payload));
-    if (stick) {
-        scrollChatToBottom();
-        holdChatAnchor({ type: 'bottom' });
-    }
-}
-
-let chatUploadBusy = false;
-async function sendChatFiles(fileList) {
-    const files = Array.from(fileList || []).filter(Boolean);
-    if (!files.length || messageInput.disabled) return;
-    if (chatUploadBusy) { showToast('Подождите — предыдущий файл ещё загружается'); return; }
-    chatUploadBusy = true;
-    ['attach-image-btn', 'attach-file-btn'].forEach(id => { const b = document.getElementById(id); if (b) b.disabled = true; });
-    try {
-        for (const file of files) {
-            const asImage = isChatImageFile(file);
-            const limitMb = asImage ? 8 : MAX_CLIENT_FILE_MB;
-            if (file.size > limitMb * 1024 * 1024) {
-                showToast(`«${file.name}» слишком большой (максимум ${limitMb} МБ)`);
-                continue;
-            }
-            if (file.size === 0) { showToast(`«${file.name}» пустой`); continue; }
-            setUploadStatus(file.name, 0);
-            try {
-                const formData = new FormData();
-                if (asImage) {
-                    formData.append('image', file);
-                    const data = await postFormWithProgress('/upload', formData, (p) => setUploadStatus(file.name, p));
-                    sendChatPayloadAndStick({ text: '', imageUrl: data.url });
-                } else {
-                    formData.append('name', file.name); // до файла: имя в UTF-8 без «кракозябр»
-                    formData.append('file', file);
-                    const data = await postFormWithProgress('/upload-file', formData, (p) => setUploadStatus(file.name, p));
-                    sendChatPayloadAndStick({ text: '', file: { url: data.url, name: data.name, size: data.size } });
-                }
-            } catch (err) {
-                if (err.message === 'cancelled') break;
-                console.error('[Ошибка] Загрузка вложения:', err);
-                showToast(`Не удалось загрузить «${file.name}»: ${err.message}`);
-            }
-        }
-    } finally {
-        activeUpload = null;
-        chatUploadBusy = false;
-        setUploadStatus(null);
-        ['attach-image-btn', 'attach-file-btn'].forEach(id => { const b = document.getElementById(id); if (b) b.disabled = messageInput.disabled; });
-    }
-}
-
-document.getElementById('upload-status-cancel')?.addEventListener('click', () => { if (activeUpload) activeUpload.abort(); });
-
-(function initChatAttachments() {
-    const photoBtn = document.getElementById('attach-image-btn');
-    const photoInput = document.getElementById('attach-image-input');
-    const fileBtn = document.getElementById('attach-file-btn');
-    const fileInput = document.getElementById('attach-file-input');
-    const panel = document.getElementById('chat-panel');
-
-    if (photoBtn && photoInput) {
-        photoBtn.addEventListener('click', () => photoInput.click());
-        photoInput.addEventListener('change', () => { const f = Array.from(photoInput.files); photoInput.value = ''; sendChatFiles(f); });
-    }
-    if (fileBtn && fileInput) {
-        fileBtn.addEventListener('click', () => fileInput.click());
-        fileInput.addEventListener('change', () => { const f = Array.from(fileInput.files); fileInput.value = ''; sendChatFiles(f); });
-    }
-
-    // Вставка из буфера (скриншот, скопированный файл) — только если в буфере нет текста.
-    messageInput.addEventListener('paste', (e) => {
-        const cd = e.clipboardData;
-        if (!cd || !cd.files || !cd.files.length) return;
-        if (cd.getData('text/plain')) return;
-        e.preventDefault();
-        sendChatFiles(Array.from(cd.files));
-    });
-
-    // Перетаскивание файлов в чат.
-    if (panel) {
-        const hasFiles = (e) => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
-        let depth = 0;
-        panel.addEventListener('dragenter', (e) => { if (!hasFiles(e)) return; e.preventDefault(); depth++; panel.classList.add('drag-over'); });
-        panel.addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
-        panel.addEventListener('dragleave', (e) => { if (!hasFiles(e)) return; depth = Math.max(0, depth - 1); if (!depth) panel.classList.remove('drag-over'); });
-        panel.addEventListener('drop', (e) => {
-            if (!hasFiles(e)) return;
-            e.preventDefault();
-            depth = 0;
-            panel.classList.remove('drag-over');
-            sendChatFiles(Array.from(e.dataTransfer.files));
-        });
-    }
-})();
-
-// Ссылка на скачивание идёт через наш сервер (/download) — так файл сохраняется под своим именем.
-function fileDownloadHref(url, name) {
-    return `/download?url=${encodeURIComponent(url)}&name=${encodeURIComponent(name || 'file')}`;
-}
-
-const FILE_ICON_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>';
-const DOWNLOAD_ICON_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>';
-const REPLY_ICON_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 14 4 9 9 4"></polyline><path d="M20 20v-7a4 4 0 0 0-4-4H4"></path></svg>';
-const REACT_ICON_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M8 14s1.5 2 4 2 4-2 4-2"></path><line x1="9" y1="9" x2="9.01" y2="9"></line><line x1="15" y1="9" x2="15.01" y2="9"></line></svg>';
-const TRASH_ICON_SVG = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg>';
-
-// Сообщение из одних смайликов (до 6 штук) показываем крупно.
-const EMOJI_ONLY_RE = /^(?:\p{Extended_Pictographic}|\p{Regional_Indicator}|[\u200D\uFE0F\u20E3\u{1F3FB}-\u{1F3FF}]|\s)+$/u;
-function isEmojiOnlyText(text) {
-    const t = String(text || '').trim();
-    if (!t || t.length > 40 || !EMOJI_ONLY_RE.test(t)) return false;
-    const count = (t.match(/\p{Extended_Pictographic}|\p{Regional_Indicator}{2}/gu) || []).length;
-    return count >= 1 && count <= 6;
-}
-
-function buildReplyQuoteHtml(reply, replyTo) {
-    if (!reply && replyTo == null) return '';
-    if (!reply || reply.deleted) {
-        return '<div class="msg-reply-quote rq-deleted"><span class="rq-text">Исходное сообщение удалено</span></div>';
-    }
-    const preview = messagePreviewText({ text: reply.text, hasImage: reply.has_image, fileName: reply.file_name });
-    return `<div class="msg-reply-quote" data-reply-id="${Number(reply.id)}" title="Перейти к сообщению">` +
-        `<span class="rq-author" style="color:${getUserColor(reply.username)}">${escapeHtml(reply.username || 'Участник')}</span>` +
-        `<span class="rq-text">${escapeHtml(preview)}</span></div>`;
-}
-
-function buildFileCardHtml(url, name, size) {
-    if (!url) return '';
-    const sizeText = formatFileSize(size);
-    return `<a class="chat-file" href="${fileDownloadHref(url, name)}" target="_blank" rel="noopener noreferrer" title="Скачать ${escapeHtml(name || 'файл')}">` +
-        `<span class="cf-icon">${FILE_ICON_SVG}</span>` +
-        `<span class="cf-meta"><span class="cf-name">${escapeHtml(name || 'Файл')}</span>${sizeText ? `<span class="cf-size">${sizeText}</span>` : ''}</span>` +
-        `<span class="cf-dl">${DOWNLOAD_ICON_SVG}</span></a>`;
-}
-
-function buildMessageActionsHtml({ id, canInteract, isMine }) {
-    let html = '<div class="msg-actions">';
-    if (canInteract) {
-        html += `<button type="button" class="msg-act-react" title="Добавить реакцию">${REACT_ICON_SVG}</button>`;
-        html += `<button type="button" class="msg-act-reply" title="Ответить">${REPLY_ICON_SVG}</button>`;
-    }
-    if (isMine) {
-        html += `<button type="button" class="msg-delete-btn" title="Удалить сообщение" onclick="deleteMyMessage(${JSON.stringify(id)})">${TRASH_ICON_SVG}</button>`;
-    }
-    return html + '</div>';
-}
-
-function renderChatMessage({ id, username, user, avatar, text, image_url, file_url, file_name, file_size, reply, reply_to, reactions, created_at, whisper_to }) {
+function renderChatMessage({ id, username, user, avatar, text, image_url, created_at, whisper_to }) {
     const name = username || user || 'Участник';
     // Прилипать к низу нужно, только если человек и так смотрит на конец чата (или это
     // его собственное сообщение). Измеряем ДО добавления сообщения — после него
@@ -6962,8 +6425,7 @@ function renderChatMessage({ id, username, user, avatar, text, image_url, file_u
     part.className = 'msg-part';
     if (id != null) part.dataset.id = id;
 
-    // Ответ: цитата над сообщением (в объединённом блоке — у каждого сообщения своя).
-    let html = buildReplyQuoteHtml(reply, reply_to);
+    let html = '';
     if (!joinGroup) {
         html += `<strong class="msg-sender" style="color:${getUserColor(name)}">${escapeHtml(name)}:</strong> `;
         if (isWhisper) {
@@ -6976,7 +6438,7 @@ function renderChatMessage({ id, username, user, avatar, text, image_url, file_u
             html += `<span class="whisper-tag" title="Это сообщение видят только отмеченные участники">${label}</span> `;
         }
     }
-    if (text) html += `<span class="msg-text${isEmojiOnlyText(text) ? ' jumbo' : ''}">${renderMessageTextWithMentions(text, getMentionCandidates(), currentUser.username)}</span>`;
+    if (text) html += `<span class="msg-text">${renderMessageTextWithMentions(text, getMentionCandidates(), currentUser.username)}</span>`;
     if (image_url) {
         // loading="lazy" + decoding="async" — картинка декодируется (и попадает в GPU-текстуру)
         // только когда реально прокручена в область видимости, а не сразу при рендере
@@ -6984,17 +6446,12 @@ function renderChatMessage({ id, username, user, avatar, text, image_url, file_u
         // GPU-процесс — декодируются только те фото, что вы прямо сейчас видите.
         html += `<div class="chat-image-wrap"><img src="${image_url}" class="chat-image" alt="Изображение" loading="lazy" decoding="async" onclick="openImageLightbox('${image_url}')"></div>`;
     }
-    if (file_url) html += buildFileCardHtml(file_url, file_name, file_size);
     // Время — только у первого сообщения блока (у остальных та же минута).
     if (!joinGroup) html += `<span class="msg-time">${formatMessageTime(date)}</span>`;
-    // Реакции и панель действий (реакция / ответ / удалить). На шёпот реагировать и
-    // отвечать нельзя — сервер такие запросы всё равно отклонит.
-    const canInteract = id != null && !isWhisper;
-    html += '<div class="msg-reactions"></div>';
-    if (id != null) html += buildMessageActionsHtml({ id, canInteract, isMine });
+    if (isMine) {
+        html += `<button type="button" class="msg-delete-btn" title="Удалить сообщение" onclick="deleteMyMessage(${JSON.stringify(id)})"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg></button>`;
+    }
     part.innerHTML = html;
-    part._msg = { id, username: name, text: text || '', hasImage: !!image_url, fileName: file_name || null, reactions: reactions || {} };
-    renderReactions(part, reactions || {});
 
     let msg;
     if (joinGroup) {
@@ -7050,11 +6507,9 @@ function removeMessagePart(part) {
             frag.appendChild(n);
             frag.appendChild(document.createTextNode(' '));
         });
-        // Ник — после цитаты (если у следующего сообщения она есть), время — перед реакциями.
-        const nextQuote = next.querySelector(':scope > .msg-reply-quote');
-        next.insertBefore(frag, nextQuote ? nextQuote.nextSibling : next.firstChild);
+        next.insertBefore(frag, next.firstChild);
         const time = part.querySelector(':scope > .msg-time');
-        if (time) next.insertBefore(time, next.querySelector(':scope > .msg-reactions') || next.querySelector(':scope > .msg-actions'));
+        if (time) next.insertBefore(time, next.querySelector(':scope > .msg-delete-btn'));
     }
     part.remove();
 }
@@ -7247,7 +6702,6 @@ socket.on('chat history', (data) => {
     if (room && room !== selectedRoom) return;
 
     const targetRoom = room || selectedRoom;
-    if (replyTarget && replyTarget.room !== targetRoom) clearReply();
     // Если этот же канал уже показан (свежая история пришла после кэша или после
     // переподключения) — запоминаем, где человек сейчас, и возвращаем его туда же,
     // а не бросаем в конец чата.
@@ -7487,7 +6941,7 @@ messageInput.addEventListener('keydown', (e) => {
         // Позицию меряем ДО отправки: вниз прокручиваем, только если человек и так
         // находится у конца чата. Если он читает историю выше — не трогаем прокрутку.
         const stickToBottom = chatPinnedToBottom || isChatNearBottom();
-        socket.emit('chat message', withReply({ text: messageInput.value.trim() }));
+        socket.emit('chat message', { text: messageInput.value.trim() });
         messageInput.value = '';
         closeMentionAutocomplete();
         if (stickToBottom) {
@@ -7498,6 +6952,48 @@ messageInput.addEventListener('keydown', (e) => {
 });
 // Раньше здесь был обработчик 'input', который прокручивал чат вниз уже при первом
 // набранном символе. Теперь набор текста прокрутку не меняет — только отправка (см. выше).
+
+const attachBtn = document.getElementById('attach-image-btn');
+const attachInput = document.getElementById('attach-image-input');
+
+if (attachBtn && attachInput) {
+    attachBtn.addEventListener('click', () => attachInput.click());
+
+    attachInput.addEventListener('change', async () => {
+        const file = attachInput.files[0];
+        attachInput.value = '';
+        if (!file) return;
+
+        if (!file.type.startsWith('image/')) {
+            alert('Можно прикреплять только изображения');
+            return;
+        }
+        if (file.size > 8 * 1024 * 1024) {
+            alert('Файл слишком большой (максимум 8 МБ)');
+            return;
+        }
+
+        attachBtn.disabled = true;
+        try {
+            const formData = new FormData();
+            formData.append('image', file);
+            const res = await fetch('/upload', { method: 'POST', body: formData });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Ошибка загрузки');
+            const stickToBottom = chatPinnedToBottom || isChatNearBottom();
+            socket.emit('chat message', { text: '', imageUrl: data.url });
+            if (stickToBottom) {
+                scrollChatToBottom();
+                holdChatAnchor({ type: 'bottom' });
+            }
+        } catch (err) {
+            console.error('[Ошибка] Загрузка изображения:', err);
+            alert('Не удалось загрузить изображение');
+        } finally {
+            attachBtn.disabled = false;
+        }
+    });
+}
 
 // Полноэкранный просмотр фото из чата
 window.openImageLightbox = function(url) {

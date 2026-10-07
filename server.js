@@ -101,24 +101,6 @@ async function initDb() {
     // Шёпот (wh@ник): JSON-массив ников, кому видно сообщение. NULL — обычное сообщение для всех.
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS whisper_to TEXT;`);
     await pool.query(`CREATE INDEX IF NOT EXISTS messages_room_idx ON messages (room, id);`);
-    // Ответы на сообщения и вложенные файлы/архивы.
-    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to INTEGER;`);
-    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS file_url TEXT;`);
-    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS file_name TEXT;`);
-    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS file_size BIGINT;`);
-    // Реакции (эмодзи) на сообщения: один человек — одна реакция каждого вида на сообщение.
-    await pool.query(`
-        CREATE TABLE IF NOT EXISTS message_reactions (
-            message_id INTEGER NOT NULL,
-            emoji TEXT NOT NULL,
-            username TEXT NOT NULL,
-            created_at BIGINT NOT NULL
-        );
-    `);
-    await pool.query(`
-        CREATE UNIQUE INDEX IF NOT EXISTS message_reactions_unique_idx
-        ON message_reactions (message_id, emoji, LOWER(username));
-    `);
 
     // Аккаунты: вход по паролю.
     await pool.query(`
@@ -182,13 +164,12 @@ async function initDb() {
     `);
 }
 
-async function insertMessage({ username, avatar, text, imageUrl, room, createdAt, whisperTo = null, replyTo = null, file = null }) {
+async function insertMessage({ username, avatar, text, imageUrl, room, createdAt, whisperTo = null }) {
     const result = await pool.query(
-        `INSERT INTO messages (username, avatar, text, image_url, room, created_at, whisper_to, reply_to, file_url, file_name, file_size)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        `INSERT INTO messages (username, avatar, text, image_url, room, created_at, whisper_to)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING id`,
-        [username, avatar, text, imageUrl, room, createdAt, whisperTo && whisperTo.length ? JSON.stringify(whisperTo) : null,
-         replyTo, file ? file.url : null, file ? file.name : null, file ? file.size : null]
+        [username, avatar, text, imageUrl, room, createdAt, whisperTo && whisperTo.length ? JSON.stringify(whisperTo) : null]
     );
     return result.rows[0].id;
 }
@@ -203,11 +184,6 @@ async function deleteOwnMessage(id, username) {
         `DELETE FROM messages WHERE id = $1 AND LOWER(username) = LOWER($2) RETURNING room`,
         [id, username]
     );
-    if (result.rows[0]) {
-        // Реакции удалённого сообщения больше не нужны.
-        pool.query(`DELETE FROM message_reactions WHERE message_id = $1`, [id])
-            .catch(err => console.error('❌ Ошибка удаления реакций:', err));
-    }
     return result.rows[0] || null;
 }
 
@@ -217,43 +193,6 @@ function parseWhisperList(raw) {
         const arr = JSON.parse(raw);
         return Array.isArray(arr) && arr.length ? arr : null;
     } catch (e) { return null; }
-}
-
-// Короткая выдержка цитируемого сообщения для блока «ответ на…».
-function shortenForReply(text) {
-    const t = String(text || '').replace(/\s+/g, ' ').trim();
-    return t.length > 140 ? t.slice(0, 140) + '…' : t;
-}
-
-// Реакции: { emoji: [ники...] } на каждое сообщение, в порядке появления.
-async function getReactionsByMessageIds(ids) {
-    const out = {};
-    const list = (ids || []).filter(n => Number.isFinite(Number(n)));
-    if (!list.length) return out;
-    try {
-        const res = await pool.query(
-            `SELECT message_id, emoji, username FROM message_reactions
-             WHERE message_id = ANY($1::int[]) ORDER BY created_at ASC`,
-            [list]
-        );
-        for (const r of res.rows) {
-            const bucket = out[r.message_id] || (out[r.message_id] = {});
-            (bucket[r.emoji] || (bucket[r.emoji] = [])).push(r.username);
-        }
-    } catch (err) {
-        console.error('❌ Ошибка чтения реакций:', err);
-    }
-    return out;
-}
-
-// Допускаем только эмодзи (а не произвольный текст) и ограничиваем длину.
-const EMOJI_RE = /^(?:\p{Extended_Pictographic}|\p{Regional_Indicator}{2}|[#*0-9]\uFE0F?\u20E3)(?:[\p{Extended_Pictographic}\u200D\uFE0F\u{1F3FB}-\u{1F3FF}\u{E0020}-\u{E007F}])*$/u;
-const MAX_REACTION_KINDS_PER_MESSAGE = 20;
-function normalizeEmoji(raw) {
-    if (typeof raw !== 'string') return null;
-    const e = raw.trim();
-    if (!e || e.length > 24 || !EMOJI_RE.test(e)) return null;
-    return e;
 }
 
 // Короткий серверный кэш последних сообщений.
@@ -289,19 +228,10 @@ async function getRecentMessages(room, limit = 100, viewerName = '') {
             });
     }
 
-    // LEFT JOIN подтягивает цитируемое сообщение для ответов. Шёпоты на ответы не
-    // цитируются (см. 'chat message'), так что утечки текста шёпота здесь нет.
     const result = await pool.query(
-        `SELECT m.*,
-                r.username AS reply_username, r.text AS reply_text,
-                r.image_url AS reply_image_url, r.file_name AS reply_file_name
-         FROM messages m
-         LEFT JOIN messages r ON r.id = m.reply_to AND r.room = m.room
-         WHERE m.room = $1
-         ORDER BY m.id DESC LIMIT $2`,
+        `SELECT * FROM messages WHERE room = $1 ORDER BY id DESC LIMIT $2`,
         [room, requestedLimit]
     );
-    const reactionsById = await getReactionsByMessageIds(result.rows.map(r => r.id));
     // pg возвращает колонки BIGINT (created_at) не числом, а строкой — так драйвер
     // защищается от потери точности у значений больше Number.MAX_SAFE_INTEGER.
     // На клиенте `new Date("1758214528000")` (строка) — это Invalid Date, а
@@ -309,24 +239,7 @@ async function getRecentMessages(room, limit = 100, viewerName = '') {
     const messages = result.rows.reverse()
         .map(row => {
             const whisperTo = parseWhisperList(row.whisper_to);
-            const {
-                reply_username, reply_text, reply_image_url, reply_file_name, ...base
-            } = row;
-            return {
-                ...base,
-                whisper_to: whisperTo,
-                created_at: Number(row.created_at),
-                file_size: row.file_size != null ? Number(row.file_size) : null,
-                reply: row.reply_to ? {
-                    id: row.reply_to,
-                    deleted: !reply_username,
-                    username: reply_username || null,
-                    text: shortenForReply(reply_text),
-                    has_image: !!reply_image_url,
-                    file_name: reply_file_name || null
-                } : null,
-                reactions: reactionsById[row.id] || {}
-            };
+            return { ...row, whisper_to: whisperTo, created_at: Number(row.created_at) };
         });
 
     recentMessagesCache.set(cacheKey, { fetchedAt: now, limit: requestedLimit, messages });
@@ -391,108 +304,6 @@ app.post('/upload', (req, res) => {
         }
     });
 });
-
-// ---------- Файлы и архивы в чат ----------
-// Любой тип файла (zip, rar, pdf, docx, txt, ...) кладём в Cloudinary как raw-ресурс.
-// Лимит у бесплатного Cloudinary для raw-файлов — 10 МБ; можно поменять через MAX_FILE_MB.
-const MAX_FILE_BYTES = Math.max(1, Number(process.env.MAX_FILE_MB) || 10) * 1024 * 1024;
-
-const uploadFile = multer({
-    storage: multer.memoryStorage(),
-    limits: { fileSize: MAX_FILE_BYTES }
-});
-
-// Имя файла для показа: без путей и управляющих символов, не длиннее 120 символов.
-function sanitizeDisplayFileName(name) {
-    let n = String(name || '').replace(/[\u0000-\u001f\u007f\\/]/g, '_').trim();
-    if (n.length > 120) {
-        const dot = n.lastIndexOf('.');
-        const ext = dot > 0 && n.length - dot <= 12 ? n.slice(dot) : '';
-        n = n.slice(0, 120 - ext.length) + ext;
-    }
-    return n || 'file';
-}
-
-// Имя для public_id в Cloudinary: только латиница/цифры/._- (расширение сохраняем).
-function cloudinaryFileId(displayName) {
-    const safe = displayName.replace(/[^A-Za-z0-9._-]/g, '_').replace(/_{2,}/g, '_').slice(-80) || 'file';
-    return `${crypto.randomBytes(6).toString('hex')}_${safe}`;
-}
-
-function uploadRawToCloudinary(buffer, publicId) {
-    return new Promise((resolve, reject) => {
-        const stream = cloudinary.uploader.upload_stream(
-            { folder: 'voicechat/files', resource_type: 'raw', public_id: publicId, use_filename: false, unique_filename: false },
-            (err, result) => (err ? reject(err) : resolve(result))
-        );
-        stream.end(buffer);
-    });
-}
-
-app.post('/upload-file', (req, res) => {
-    uploadFile.single('file')(req, res, async (err) => {
-        if (err) {
-            const tooBig = err.code === 'LIMIT_FILE_SIZE';
-            return res.status(400).json({
-                error: tooBig ? `Файл слишком большой (максимум ${Math.round(MAX_FILE_BYTES / 1024 / 1024)} МБ)` : err.message
-            });
-        }
-        if (!req.file) return res.status(400).json({ error: 'Файл не получен' });
-
-        // Имя берём из отдельного поля формы: multer отдаёт originalname в latin1,
-        // и кириллические имена иначе превращаются в «кракозябры».
-        let rawName = req.body && typeof req.body.name === 'string' ? req.body.name : '';
-        if (!rawName) {
-            try { rawName = Buffer.from(req.file.originalname || '', 'latin1').toString('utf8'); } catch (e) { rawName = req.file.originalname || ''; }
-        }
-        const name = sanitizeDisplayFileName(rawName);
-
-        try {
-            const result = await uploadRawToCloudinary(req.file.buffer, cloudinaryFileId(name));
-            res.json({ url: result.secure_url, name, size: req.file.size });
-        } catch (uploadErr) {
-            console.error('❌ Ошибка загрузки файла в Cloudinary:', uploadErr);
-            res.status(500).json({ error: 'Не удалось загрузить файл' });
-        }
-    });
-});
-
-// Скачивание файла с «человеческим» именем. Cloudinary отдаёт raw-файл под служебным
-// именем (с префиксом), а у некоторых типов (txt, pdf) браузер открывает его вместо
-// скачивания. Поэтому качаем через сервер и ставим Content-Disposition с исходным именем.
-// Проксируем только ссылки на наш Cloudinary (см. isTrustedUploadUrl) — это не открытый прокси.
-app.get('/download', async (req, res) => {
-    const url = req.query.url;
-    if (!isTrustedUploadUrl(url)) return res.status(400).send('Bad url');
-    const name = sanitizeDisplayFileName(typeof req.query.name === 'string' ? req.query.name : 'file');
-    try {
-        const upstream = await fetch(url);
-        if (!upstream.ok) return res.status(upstream.status === 404 ? 404 : 502).send('Файл недоступен');
-        const buf = Buffer.from(await upstream.arrayBuffer());
-        if (buf.length > MAX_FILE_BYTES * 1.1) return res.status(413).send('Файл слишком большой');
-        const asciiName = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
-        res.setHeader('Content-Type', 'application/octet-stream');
-        res.setHeader('Content-Disposition', `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(name)}`);
-        res.setHeader('X-Content-Type-Options', 'nosniff');
-        res.setHeader('Content-Length', String(buf.length));
-        res.end(buf);
-    } catch (err) {
-        console.error('❌ Ошибка скачивания файла:', err);
-        res.status(502).send('Не удалось скачать файл');
-    }
-});
-
-// В сообщение можно положить только ссылку на НАШ Cloudinary: иначе клиент мог бы
-// прислать любую строку (в том числе javascript:...) и она попала бы в разметку чата.
-function isTrustedUploadUrl(u) {
-    if (typeof u !== 'string' || u.length > 1000) return false;
-    try {
-        const p = new URL(u);
-        return p.protocol === 'https:'
-            && p.hostname === 'res.cloudinary.com'
-            && p.pathname.startsWith(`/${process.env.CLOUDINARY_CLOUD_NAME}/`);
-    } catch (e) { return false; }
-}
 
 // ---------- Аккаунты: регистрация/вход по паролю ----------
 // JWT нужен, чтобы после входа клиент мог доказать серверу, что он — действительно
@@ -1715,22 +1526,9 @@ io.on('connection', (socket) => {
         if (!currentChatRoom) return; // не в чате ни одной комнаты — отправлять некуда
 
         const text = typeof payload === 'string' ? payload : (payload && payload.text) || '';
-        const rawImageUrl = (payload && payload.imageUrl) || null;
-        const imageUrl = isTrustedUploadUrl(rawImageUrl) ? rawImageUrl : null;
+        const imageUrl = (payload && payload.imageUrl) || null;
 
-        // Вложенный файл/архив: { url, name, size }
-        let file = null;
-        const rawFile = payload && typeof payload === 'object' ? payload.file : null;
-        if (rawFile && isTrustedUploadUrl(rawFile.url)) {
-            const size = Number(rawFile.size);
-            file = {
-                url: rawFile.url,
-                name: sanitizeDisplayFileName(rawFile.name),
-                size: Number.isFinite(size) && size >= 0 ? Math.round(size) : null
-            };
-        }
-
-        if (!text.trim() && !imageUrl && !file) return;
+        if (!text.trim() && !imageUrl) return;
 
         const username = socket.data.username || 'Участник';
         const avatar = socket.data.avatar || '';
@@ -1774,33 +1572,7 @@ io.on('connection', (socket) => {
         }
 
         try {
-            // Ответ на сообщение: оно должно быть из этой же комнаты и не быть шёпотом
-            // (иначе цитата раскрыла бы личный текст всей комнате).
-            let replyTo = null;
-            let reply = null;
-            const wantedReply = payload && typeof payload === 'object' ? Number(payload.replyTo) : NaN;
-            if (Number.isFinite(wantedReply) && wantedReply > 0) {
-                const rr = await pool.query(
-                    `SELECT id, username, text, image_url, file_name, whisper_to, room FROM messages WHERE id = $1`,
-                    [wantedReply]
-                );
-                const orig = rr.rows[0];
-                if (orig && orig.room === room && !orig.whisper_to) {
-                    replyTo = orig.id;
-                    reply = {
-                        id: orig.id,
-                        deleted: false,
-                        username: orig.username,
-                        text: shortenForReply(orig.text),
-                        has_image: !!orig.image_url,
-                        file_name: orig.file_name || null
-                    };
-                } else if (orig && orig.whisper_to) {
-                    socket.emit('chat notice', 'На шёпот нельзя ответить цитатой — отправлено без ответа.');
-                }
-            }
-
-            const id = await insertMessage({ username, avatar, text: cleanText, imageUrl, room, createdAt, whisperTo, replyTo, file });
+            const id = await insertMessage({ username, avatar, text: cleanText, imageUrl, room, createdAt, whisperTo });
 
             invalidateRecentMessagesCache(room);
 
@@ -1810,12 +1582,6 @@ io.on('connection', (socket) => {
                 avatar,
                 text: cleanText,
                 image_url: imageUrl,
-                file_url: file ? file.url : null,
-                file_name: file ? file.name : null,
-                file_size: file ? file.size : null,
-                reply_to: replyTo,
-                reply,
-                reactions: {},
                 room,
                 created_at: createdAt,
                 whisper_to: whisperTo
@@ -1841,55 +1607,6 @@ io.on('connection', (socket) => {
         } catch (err) {
             console.error('❌ Ошибка сохранения сообщения:', err);
         }
-    });
-
-    // Реакция-эмодзи на сообщение: повторный клик тем же эмодзи снимает свою реакцию.
-    // Реагировать можно только на сообщения того чата, который открыт у этого сокета,
-    // и не на шёпоты (иначе рассылка обновления выдала бы, что шёпот существует).
-    socket.on('toggle reaction', async (payload) => {
-        if (!socket.data || !socket.data.username || !currentChatRoom) return;
-        const id = payload && Number(payload.id);
-        const emoji = normalizeEmoji(payload && payload.emoji);
-        if (!id || !Number.isFinite(id) || !emoji) return;
-
-        try {
-            const found = await pool.query(`SELECT room, whisper_to FROM messages WHERE id = $1`, [id]);
-            const row = found.rows[0];
-            if (!row || row.room !== currentChatRoom || row.whisper_to) return;
-
-            const username = socket.data.username;
-            const removed = await pool.query(
-                `DELETE FROM message_reactions WHERE message_id = $1 AND emoji = $2 AND LOWER(username) = LOWER($3)`,
-                [id, emoji, username]
-            );
-            if (removed.rowCount === 0) {
-                const kinds = await pool.query(
-                    `SELECT COUNT(DISTINCT emoji)::int AS n, BOOL_OR(emoji = $2) AS has_this
-                     FROM message_reactions WHERE message_id = $1`,
-                    [id, emoji]
-                );
-                const k = kinds.rows[0] || {};
-                if (!k.has_this && (k.n || 0) >= MAX_REACTION_KINDS_PER_MESSAGE) {
-                    return socket.emit('chat notice', 'На одно сообщение можно поставить не больше 20 разных реакций.');
-                }
-                await pool.query(
-                    `INSERT INTO message_reactions (message_id, emoji, username, created_at)
-                     VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
-                    [id, emoji, username, Date.now()]
-                );
-            }
-
-            invalidateRecentMessagesCache(row.room);
-            const map = await getReactionsByMessageIds([id]);
-            io.to(`chat:${row.room}`).emit('message reactions', { id, room: row.room, reactions: map[id] || {} });
-        } catch (err) {
-            console.error('❌ Ошибка реакции:', err);
-        }
-    });
-
-    // Замер пинга до сервера: клиент шлёт событие с подтверждением и меряет время ответа.
-    socket.on('net ping', (ack) => {
-        if (typeof ack === 'function') ack();
     });
 
     // Удаление собственного сообщения из чата. Разрешено удалять только свои —
