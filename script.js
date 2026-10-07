@@ -604,7 +604,7 @@ const remoteVideos = document.getElementById('remote-videos');
 // каналами не ждёт сеть. Храним только ограниченное число комнат, чтобы RAM
 // не росла бесконечно. В кэше лежат данные сообщений, а не декодированные
 // изображения — сами картинки остаются под контролем DOM-лимита.
-const CHAT_HISTORY_CACHE_MAX_ROOMS = 12;
+const CHAT_HISTORY_CACHE_MAX_ROOMS = 4; // меньше комнат в памяти — меньше оперативки при частых переключениях
 const CHAT_HISTORY_CACHE_MAX_MESSAGES = 100;
 const chatHistoryCache = new Map();
 
@@ -706,6 +706,26 @@ const UNREAD_FLASH_MS = 1000; // должно совпадать с длител
 
 loadUnreadState();
 
+// В кэше аватар не нужен (лента его не рисует), а у старых сообщений он мог быть
+// большой data-URL — не держим его в памяти ×100 сообщений ×каждый канал.
+function slimCachedMessage(m) {
+    if (!m || typeof m !== 'object' || !m.avatar) return m;
+    const { avatar, ...rest } = m;
+    return rest;
+}
+
+// Подпись набора сообщений (id + реакции): по ней видно, изменилась ли история.
+function chatHistorySignature(list) {
+    return (list || []).map(m => `${m.id}:${m.reactions ? JSON.stringify(m.reactions) : ''}`).join('|');
+}
+
+// Полная очистка ленты с освобождением картинок: пустой src заставляет браузер сразу
+// выбросить декодированные кадры (особенно GIF), а не ждать сборщика мусора.
+function clearChatMessages() {
+    messagesDiv.querySelectorAll('img').forEach(img => { img.removeAttribute('src'); });
+    messagesDiv.innerHTML = '';
+}
+
 function getCachedChatHistory(room) {
     const key = String(room || '');
     const cached = chatHistoryCache.get(key);
@@ -721,7 +741,7 @@ function setCachedChatHistory(room, messages) {
     if (!key || !Array.isArray(messages)) return;
     chatHistoryCache.delete(key);
     chatHistoryCache.set(key, {
-        messages: messages.slice(-CHAT_HISTORY_CACHE_MAX_MESSAGES)
+        messages: messages.slice(-CHAT_HISTORY_CACHE_MAX_MESSAGES).map(slimCachedMessage)
     });
     while (chatHistoryCache.size > CHAT_HISTORY_CACHE_MAX_ROOMS) {
         const oldestKey = chatHistoryCache.keys().next().value;
@@ -737,7 +757,7 @@ function appendMessageToChatCache(room, payload) {
     if (!cached) return;
     const id = payload.id != null ? String(payload.id) : null;
     if (id && cached.messages.some(m => String(m.id) === id)) return;
-    cached.messages.push(payload);
+    cached.messages.push(slimCachedMessage(payload));
     if (cached.messages.length > CHAT_HISTORY_CACHE_MAX_MESSAGES) {
         cached.messages.splice(0, cached.messages.length - CHAT_HISTORY_CACHE_MAX_MESSAGES);
     }
@@ -3994,6 +4014,7 @@ function setConnectRoomButtonState(connected) {
 
 setConnectRoomButtonState(false);
 
+let roomSwitchTimer = null;
 function selectRoomButton(btn) {
     const roomName = btn.getAttribute('data-room');
     const displayName = btn.getAttribute('data-display-name') || roomName;
@@ -4032,7 +4053,7 @@ function selectRoomButton(btn) {
         // в фоне — поэтому кэш не влияет на безопасность и актуальность данных.
         const cachedHistory = getCachedChatHistory(roomName);
         if (cachedHistory) {
-            messagesDiv.innerHTML = '';
+            clearChatMessages();
             lastMessageDateKey = null;
             // См. комментарий у socket.on('chat history') — один и тот же защитный
             // try/catch на сообщение нужен и здесь, иначе быстрый локальный рендер
@@ -4052,12 +4073,17 @@ function selectRoomButton(btn) {
             unreadSnapshotByRoom.delete(String(roomName)); // старый снимок не должен гасить вспышку
         }
 
-        socket.emit('select chat room', { room: roomName });
-        // Список участников для автодополнения @упоминаний — сервер и так пришлёт его
-        // сам через ~250 мс после 'select chat room', но запрашиваем явно, чтобы
-        // подсказки были готовы, даже если человек начнёт печатать "@" сразу же.
-        const mentionCode = customCodeFromRoomName(roomName);
-        if (mentionCode) socket.emit('get server members', { code: mentionCode });
+        // Запрос к серверу чуть откладываем: при быстром листании каналов уходит только
+        // запрос последнего, а не пять подряд (каждый — с загрузкой истории и перерисовкой).
+        clearTimeout(roomSwitchTimer);
+        roomSwitchTimer = setTimeout(() => {
+            if (selectedRoom !== roomName) return;
+            socket.emit('select chat room', { room: roomName });
+            // Список участников для автодополнения @упоминаний — запрашиваем явно,
+            // чтобы подсказки были готовы, даже если человек начнёт печатать "@" сразу же.
+            const mentionCode = customCodeFromRoomName(roomName);
+            if (mentionCode) socket.emit('get server members', { code: mentionCode });
+        }, 120);
     }
 }
 
@@ -7409,8 +7435,19 @@ socket.on('chat history', (data) => {
     // а не бросаем в конец чата.
     const liveView = chatRenderedRoom === targetRoom ? computeChatReadPosition() : null;
 
+    // Лента уже показывает ровно эти же сообщения (из кэша) — не перерисовываем её заново:
+    // полная перерисовка при каждом переключении канала — главный источник лишней нагрузки.
+    const prevCached = chatHistoryCache.get(String(targetRoom || ''));
+    if (chatRenderedRoom === targetRoom && prevCached &&
+        chatHistorySignature(prevCached.messages) === chatHistorySignature(history)) {
+        setCachedChatHistory(targetRoom, history);
+        unreadSnapshotByRoom.delete(String(targetRoom || ''));
+        markRoomRead(targetRoom);
+        return;
+    }
+
     setCachedChatHistory(room || selectedRoom, history);
-    messagesDiv.innerHTML = '';
+    clearChatMessages();
     lastMessageDateKey = null; // заново расставляем разделители дат для свежезагруженной истории
     // Каждое сообщение рендерим в своём try/catch: раньше одно "плохое" сообщение
     // (например, повреждённые данные шёпота или неожиданный формат строки из БД)
