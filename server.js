@@ -295,6 +295,27 @@ function shortenForReply(text) {
 }
 
 // Реакции: { emoji: [ники...] } на каждое сообщение, в порядке появления.
+async // Реакции последних сообщений комнаты одним запросом — его можно слать параллельно с самой
+// историей (раньше сначала ждали сообщения, потом отдельным запросом реакции).
+async function getReactionsByRoom(room, limit) {
+    const out = {};
+    try {
+        const res = await pool.query(
+            `SELECT message_id, emoji, username FROM chat_reactions
+             WHERE message_id IN (SELECT id FROM messages WHERE room = $1 ORDER BY id DESC LIMIT $2)
+             ORDER BY created_at ASC`,
+            [room, limit]
+        );
+        for (const r of res.rows) {
+            const bucket = out[r.message_id] || (out[r.message_id] = {});
+            (bucket[r.emoji] || (bucket[r.emoji] = [])).push(r.username);
+        }
+    } catch (err) {
+        console.error('❌ Ошибка чтения реакций:', err);
+    }
+    return out;
+}
+
 async function getReactionsByMessageIds(ids) {
     const out = {};
     const list = (ids || []).filter(n => Number.isFinite(Number(n)));
@@ -329,7 +350,9 @@ function normalizeEmoji(raw) {
 // Он резко сокращает число одинаковых запросов к Neon при быстром переключении
 // каналов/переподключении, но не держит историю бесконечно.
 const recentMessagesCache = new Map();
-const RECENT_MESSAGES_CACHE_MS = 3000;
+// Все изменения (новое сообщение, реакция, удаление) сбрасывают кэш комнаты, поэтому держать его можно долго:
+// повторное открытие канала не ходит в удалённую БД вообще.
+const RECENT_MESSAGES_CACHE_MS = 60000;
 const RECENT_MESSAGES_CACHE_LIMIT = 100;
 
 function invalidateRecentMessagesCache(room) {
@@ -362,7 +385,7 @@ async function getRecentMessages(room, limit = 100, viewerName = '') {
 
     // LEFT JOIN подтягивает цитируемое сообщение для ответов. Шёпоты на ответы не
     // цитируются (см. 'chat message'), так что утечки текста шёпота здесь нет.
-    const result = await pool.query(
+    const [result, reactionsById] = await Promise.all([pool.query(
         `SELECT m.*,
                 r.username AS reply_username, r.text AS reply_text,
                 r.image_url AS reply_image_url, r.file_name AS reply_file_name
@@ -371,8 +394,7 @@ async function getRecentMessages(room, limit = 100, viewerName = '') {
          WHERE m.room = $1
          ORDER BY m.id DESC LIMIT $2`,
         [room, requestedLimit]
-    );
-    const reactionsById = await getReactionsByMessageIds(result.rows.map(r => r.id));
+    ), getReactionsByRoom(room, requestedLimit)]);
     // pg возвращает колонки BIGINT (created_at) не числом, а строкой — так драйвер
     // защищается от потери точности у значений больше Number.MAX_SAFE_INTEGER.
     // На клиенте `new Date("1758214528000")` (строка) — это Invalid Date, а
@@ -1142,6 +1164,11 @@ io.on('connection', (socket) => {
         const cleanRoom = String(room || '').trim().slice(0, 80);
         if (!cleanRoom) return;
         if (!socket.data || !socket.data.username) { pendingChatRoomSelect = cleanRoom; return; }
+        // Историю начинаем грузить сразу, параллельно с проверкой членства ниже (раньше —
+        // строго после неё, и задержки двух запросов к БД складывались). Отдаём её клиенту
+        // только после того, как проверка пройдена.
+        const historyPromise = getRecentMessages(cleanRoom, 100, socket.data.username);
+        historyPromise.catch(() => {});
 
         // Пользовательские серверы (custom:КОД): проверяем, что человек ДЕЙСТВИТЕЛЬНО
         // всё ещё состоит в сервере, прежде чем впускать его в комнату чата.
@@ -1204,7 +1231,7 @@ io.on('connection', (socket) => {
         socket.join(`chat:${cleanRoom}`);
 
         try {
-            const history = await getRecentMessages(cleanRoom, 100, socket.data && socket.data.username);
+            const history = await historyPromise;
             socket.emit('chat history', { room: cleanRoom, messages: history });
         } catch (err) {
             console.error('❌ Ошибка чтения истории чата:', err);

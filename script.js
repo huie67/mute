@@ -604,7 +604,7 @@ const remoteVideos = document.getElementById('remote-videos');
 // каналами не ждёт сеть. Храним только ограниченное число комнат, чтобы RAM
 // не росла бесконечно. В кэше лежат данные сообщений, а не декодированные
 // изображения — сами картинки остаются под контролем DOM-лимита.
-const CHAT_HISTORY_CACHE_MAX_ROOMS = 1; // держим в памяти только открытый канал; прошлые каналы не копим
+const CHAT_HISTORY_CACHE_MAX_ROOMS = 5; // только данные (текст), без картинок/DOM — копейки; DOM держится лишь для открытого канала
 const CHAT_HISTORY_CACHE_MAX_MESSAGES = 100;
 const chatHistoryCache = new Map();
 
@@ -4045,6 +4045,7 @@ function setConnectRoomButtonState(connected) {
 setConnectRoomButtonState(false);
 
 let roomSwitchTimer = null;
+let lastRoomSwitchAt = 0;
 function selectRoomButton(btn) {
     const roomName = btn.getAttribute('data-room');
     const displayName = btn.getAttribute('data-display-name') || roomName;
@@ -4105,15 +4106,21 @@ function selectRoomButton(btn) {
 
         // Запрос к серверу чуть откладываем: при быстром листании каналов уходит только
         // запрос последнего, а не пять подряд (каждый — с загрузкой истории и перерисовкой).
-        clearTimeout(roomSwitchTimer);
-        roomSwitchTimer = setTimeout(() => {
+        // Первый переход после паузы отправляем сразу (без задержки); только при быстром
+        // листании подряд откладываем, чтобы ушёл запрос лишь последнего канала.
+        const sendRoomSelect = () => {
             if (selectedRoom !== roomName) return;
             socket.emit('select chat room', { room: roomName });
             // Список участников для автодополнения @упоминаний — запрашиваем явно,
             // чтобы подсказки были готовы, даже если человек начнёт печатать "@" сразу же.
             const mentionCode = customCodeFromRoomName(roomName);
             if (mentionCode) socket.emit('get server members', { code: mentionCode });
-        }, 120);
+        };
+        clearTimeout(roomSwitchTimer);
+        const sinceLast = Date.now() - lastRoomSwitchAt;
+        lastRoomSwitchAt = Date.now();
+        if (sinceLast > 400) sendRoomSelect();
+        else roomSwitchTimer = setTimeout(sendRoomSelect, 120);
     }
 }
 
