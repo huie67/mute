@@ -796,7 +796,7 @@ function closeMentionAutocomplete() {
 function setChatEnabled(enabled) {
     messageInput.disabled = !enabled;
     messageInput.placeholder = enabled ? 'Написать в чат...' : 'Выберите сервер слева, чтобы открыть чат';
-    ['attach-image-btn', 'attach-file-btn', 'emoji-btn'].forEach(id => {
+    ['attach-file-btn', 'emoji-btn'].forEach(id => {
         const b = document.getElementById(id);
         if (b) b.disabled = !enabled;
     });
@@ -6709,6 +6709,9 @@ messagesDiv.addEventListener('click', (e) => {
     const chip = e.target.closest('.reaction-chip');
     if (chip) { toggleReaction(part.dataset.id, chip.dataset.emoji); return; }
 
+    const chatImg = e.target.closest('img.chat-image');
+    if (chatImg) { openImageLightbox(chatImg.currentSrc || chatImg.src); return; }
+
     const reactBtn = e.target.closest('.msg-act-react');
     if (reactBtn) {
         const id = part.dataset.id;
@@ -6733,7 +6736,11 @@ messagesDiv.addEventListener('click', (e) => {
 });
 
 // --- Файлы и фото: загрузка с прогрессом ---
-let activeUpload = null; // XMLHttpRequest текущей загрузки
+const activeUploads = new Set(); // XMLHttpRequest текущих загрузок
+let uploadCancelRequested = false;
+const MAX_ATTACHMENTS_PER_MESSAGE = 10; // должно совпадать с MAX_ATTACHMENTS на сервере
+const UPLOAD_PARALLEL = 3;               // сколько файлов грузим одновременно
+const MAX_CLIENT_IMAGE_MB = 8;
 
 function formatFileSize(bytes) {
     const n = Number(bytes);
@@ -6756,17 +6763,18 @@ function setUploadStatus(name, pct) {
 function postFormWithProgress(url, formData, onProgress) {
     return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        activeUpload = xhr;
+        activeUploads.add(xhr);
         xhr.open('POST', url);
         xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress((e.loaded / e.total) * 100); };
         xhr.onload = () => {
+            activeUploads.delete(xhr);
             let data = {};
             try { data = JSON.parse(xhr.responseText); } catch (e) { /* ignore */ }
             if (xhr.status >= 200 && xhr.status < 300) resolve(data);
             else reject(new Error(data.error || `Ошибка загрузки (${xhr.status})`));
         };
-        xhr.onerror = () => reject(new Error('Нет связи с сервером'));
-        xhr.onabort = () => reject(new Error('cancelled'));
+        xhr.onerror = () => { activeUploads.delete(xhr); reject(new Error('Нет связи с сервером')); };
+        xhr.onabort = () => { activeUploads.delete(xhr); reject(new Error('cancelled')); };
         xhr.send(formData);
     });
 }
@@ -6784,62 +6792,98 @@ function sendChatPayloadAndStick(payload) {
     }
 }
 
+function setAttachButtonsDisabled(disabled) {
+    ['attach-file-btn'].forEach(id => { const b = document.getElementById(id); if (b) b.disabled = disabled; });
+}
+
+// Фото и любые файлы — одним потоком: выбранное (или перетащенное) грузится параллельно
+// и уходит ОДНИМ сообщением со всеми вложениями.
 let chatUploadBusy = false;
 async function sendChatFiles(fileList) {
     const files = Array.from(fileList || []).filter(Boolean);
     if (!files.length || messageInput.disabled) return;
-    if (chatUploadBusy) { showToast('Подождите — предыдущий файл ещё загружается'); return; }
+    if (chatUploadBusy) { showToast('Подождите — предыдущие файлы ещё загружаются'); return; }
+
+    const jobs = [];
+    for (const file of files) {
+        if (file.size === 0) { showToast(`«${file.name}» пустой`); continue; }
+        if (file.size > MAX_CLIENT_FILE_MB * 1024 * 1024) {
+            showToast(`«${file.name}» слишком большой (максимум ${MAX_CLIENT_FILE_MB} МБ)`);
+            continue;
+        }
+        // Фото крупнее лимита для картинок отправляем как обычный файл, а не отбрасываем.
+        const asImage = isChatImageFile(file) && file.size <= MAX_CLIENT_IMAGE_MB * 1024 * 1024;
+        jobs.push({ file, asImage, loaded: 0, result: null });
+    }
+    if (jobs.length > MAX_ATTACHMENTS_PER_MESSAGE) {
+        showToast(`В одном сообщении не больше ${MAX_ATTACHMENTS_PER_MESSAGE} вложений — лишние пропущены`);
+        jobs.length = MAX_ATTACHMENTS_PER_MESSAGE;
+    }
+    if (!jobs.length) return;
+
     chatUploadBusy = true;
-    ['attach-image-btn', 'attach-file-btn'].forEach(id => { const b = document.getElementById(id); if (b) b.disabled = true; });
-    try {
-        for (const file of files) {
-            const asImage = isChatImageFile(file);
-            const limitMb = asImage ? 8 : MAX_CLIENT_FILE_MB;
-            if (file.size > limitMb * 1024 * 1024) {
-                showToast(`«${file.name}» слишком большой (максимум ${limitMb} МБ)`);
-                continue;
-            }
-            if (file.size === 0) { showToast(`«${file.name}» пустой`); continue; }
-            setUploadStatus(file.name, 0);
+    uploadCancelRequested = false;
+    setAttachButtonsDisabled(true);
+
+    const totalBytes = jobs.reduce((n, j) => n + j.file.size, 0);
+    const label = jobs.length === 1 ? jobs[0].file.name : `Файлов: ${jobs.length}`;
+    const refresh = () => {
+        const loaded = jobs.reduce((n, j) => n + j.loaded, 0);
+        setUploadStatus(label, totalBytes ? (loaded / totalBytes) * 100 : 0);
+    };
+    refresh();
+
+    let next = 0;
+    const worker = async () => {
+        while (!uploadCancelRequested) {
+            const job = jobs[next++];
+            if (!job) return;
+            const onP = (p) => { job.loaded = job.file.size * (p / 100); refresh(); };
             try {
                 const formData = new FormData();
-                if (asImage) {
-                    formData.append('image', file);
-                    const data = await postFormWithProgress('/upload', formData, (p) => setUploadStatus(file.name, p));
-                    sendChatPayloadAndStick({ text: '', imageUrl: data.url });
+                if (job.asImage) {
+                    formData.append('image', job.file);
+                    const data = await postFormWithProgress('/upload', formData, onP);
+                    job.result = { kind: 'image', url: data.url, name: job.file.name, size: job.file.size };
                 } else {
-                    formData.append('name', file.name); // до файла: имя в UTF-8 без «кракозябр»
-                    formData.append('file', file);
-                    const data = await postFormWithProgress('/upload-file', formData, (p) => setUploadStatus(file.name, p));
-                    sendChatPayloadAndStick({ text: '', file: { url: data.url, name: data.name, size: data.size } });
+                    formData.append('name', job.file.name); // до файла: имя в UTF-8 без «кракозябр»
+                    formData.append('file', job.file);
+                    const data = await postFormWithProgress('/upload-file', formData, onP);
+                    job.result = { kind: 'file', url: data.url, name: data.name, size: data.size };
                 }
+                job.loaded = job.file.size;
+                refresh();
             } catch (err) {
-                if (err.message === 'cancelled') break;
+                if (err.message === 'cancelled') { uploadCancelRequested = true; return; }
                 console.error('[Ошибка] Загрузка вложения:', err);
-                showToast(`Не удалось загрузить «${file.name}»: ${err.message}`);
+                showToast(`Не удалось загрузить «${job.file.name}»: ${err.message}`);
             }
         }
+    };
+
+    try {
+        await Promise.all(Array.from({ length: Math.min(UPLOAD_PARALLEL, jobs.length) }, worker));
+        if (!uploadCancelRequested) {
+            const attachments = jobs.map(j => j.result).filter(Boolean);
+            if (attachments.length) sendChatPayloadAndStick({ text: '', attachments });
+        }
     } finally {
-        activeUpload = null;
+        activeUploads.clear();
         chatUploadBusy = false;
         setUploadStatus(null);
-        ['attach-image-btn', 'attach-file-btn'].forEach(id => { const b = document.getElementById(id); if (b) b.disabled = messageInput.disabled; });
+        setAttachButtonsDisabled(messageInput.disabled);
     }
 }
 
-document.getElementById('upload-status-cancel')?.addEventListener('click', () => { if (activeUpload) activeUpload.abort(); });
+document.getElementById('upload-status-cancel')?.addEventListener('click', () => {
+    uploadCancelRequested = true;
+    activeUploads.forEach(x => x.abort());
+});
 
 (function initChatAttachments() {
-    const photoBtn = document.getElementById('attach-image-btn');
-    const photoInput = document.getElementById('attach-image-input');
     const fileBtn = document.getElementById('attach-file-btn');
     const fileInput = document.getElementById('attach-file-input');
-    const panel = document.getElementById('chat-panel');
 
-    if (photoBtn && photoInput) {
-        photoBtn.addEventListener('click', () => photoInput.click());
-        photoInput.addEventListener('change', () => { const f = Array.from(photoInput.files); photoInput.value = ''; sendChatFiles(f); });
-    }
     if (fileBtn && fileInput) {
         fileBtn.addEventListener('click', () => fileInput.click());
         fileInput.addEventListener('change', () => { const f = Array.from(fileInput.files); fileInput.value = ''; sendChatFiles(f); });
@@ -6854,21 +6898,48 @@ document.getElementById('upload-status-cancel')?.addEventListener('click', () =>
         sendChatFiles(Array.from(cd.files));
     });
 
-    // Перетаскивание файлов в чат.
-    if (panel) {
-        const hasFiles = (e) => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
-        let depth = 0;
-        panel.addEventListener('dragenter', (e) => { if (!hasFiles(e)) return; e.preventDefault(); depth++; panel.classList.add('drag-over'); });
-        panel.addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
-        panel.addEventListener('dragleave', (e) => { if (!hasFiles(e)) return; depth = Math.max(0, depth - 1); if (!depth) panel.classList.remove('drag-over'); });
-        panel.addEventListener('drop', (e) => {
-            if (!hasFiles(e)) return;
-            e.preventDefault();
-            depth = 0;
-            panel.classList.remove('drag-over');
-            sendChatFiles(Array.from(e.dataTransfer.files));
-        });
-    }
+    // Перетаскивание: файлы можно бросить в ЛЮБОЕ место окна — они уйдут в открытый чат.
+    // Обработчики на window ещё и не дают браузеру открыть брошенный файл вместо приложения.
+    const overlay = document.createElement('div');
+    overlay.id = 'drop-overlay';
+    overlay.innerHTML = '<div class="drop-card"><svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg><span>Отпустите, чтобы отправить в чат</span></div>';
+    document.body.appendChild(overlay);
+
+    const hasFiles = (e) => !!(e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files'));
+    const modalOpen = () => Array.from(document.querySelectorAll('.modal-overlay')).some(m => getComputedStyle(m).display !== 'none');
+    let depth = 0;
+    let dropAllowed = false;
+    const hideOverlay = () => { depth = 0; overlay.classList.remove('visible'); };
+
+    window.addEventListener('dragenter', (e) => {
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        if (depth === 0) dropAllowed = !messageInput.disabled && !modalOpen();
+        depth++;
+        if (dropAllowed) overlay.classList.add('visible');
+    });
+    window.addEventListener('dragover', (e) => {
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = dropAllowed ? 'copy' : 'none';
+    });
+    window.addEventListener('dragleave', (e) => {
+        if (!hasFiles(e)) return;
+        depth = Math.max(0, depth - 1);
+        if (!depth) overlay.classList.remove('visible');
+    });
+    window.addEventListener('drop', (e) => {
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        const dropped = Array.from(e.dataTransfer.files || []);
+        hideOverlay();
+        if (modalOpen()) return;
+        if (messageInput.disabled) { showToast('Сначала откройте чат сервера, потом перетащите файлы'); return; }
+        sendChatFiles(dropped);
+    });
+    // Если перетаскивание оборвали (Esc, ушли за окно) — убираем подсказку.
+    window.addEventListener('dragend', hideOverlay);
+    window.addEventListener('blur', hideOverlay);
 })();
 
 // Ссылка на скачивание идёт через наш сервер (/download) — так файл сохраняется под своим именем.
@@ -6911,6 +6982,32 @@ function buildFileCardHtml(url, name, size) {
         `<span class="cf-dl">${DOWNLOAD_ICON_SVG}</span></a>`;
 }
 
+// Список вложений сообщения: новый формат (attachments) или старые поля image_url / file_*.
+function normalizeAttachments({ image_url, file_url, file_name, file_size, attachments }) {
+    if (Array.isArray(attachments) && attachments.length) return attachments.filter(a => a && a.url);
+    const list = [];
+    if (image_url) list.push({ kind: 'image', url: image_url });
+    if (file_url) list.push({ kind: 'file', url: file_url, name: file_name, size: file_size });
+    return list;
+}
+
+// Фото — сверху (одно крупно или сеткой), файлы — карточками ниже. Клик по фото открывает
+// просмотр (обработчик на всей ленте, см. messagesDiv 'click').
+function buildAttachmentsHtml(list) {
+    const images = list.filter(a => a.kind === 'image');
+    const files = list.filter(a => a.kind !== 'image');
+    const img = (a) => `<img src="${escapeHtml(a.url)}" class="chat-image" alt="Изображение" loading="lazy" decoding="async">`;
+    let html = '';
+    if (images.length === 1) {
+        html += `<div class="chat-image-wrap">${img(images[0])}</div>`;
+    } else if (images.length > 1) {
+        html += `<div class="chat-gallery gallery-${Math.min(images.length, 4)}">` +
+            images.map(a => `<div class="chat-gallery-cell">${img(a)}</div>`).join('') + '</div>';
+    }
+    files.forEach(a => { html += buildFileCardHtml(a.url, a.name, a.size); });
+    return html;
+}
+
 function buildMessageActionsHtml({ id, canInteract, isMine }) {
     let html = '<div class="msg-actions">';
     if (canInteract) {
@@ -6923,7 +7020,7 @@ function buildMessageActionsHtml({ id, canInteract, isMine }) {
     return html + '</div>';
 }
 
-function renderChatMessage({ id, username, user, avatar, text, image_url, file_url, file_name, file_size, reply, reply_to, reactions, created_at, whisper_to }) {
+function renderChatMessage({ id, username, user, avatar, text, image_url, file_url, file_name, file_size, attachments, reply, reply_to, reactions, created_at, whisper_to, cid, pending }) {
     const name = username || user || 'Участник';
     // Прилипать к низу нужно, только если человек и так смотрит на конец чата (или это
     // его собственное сообщение). Измеряем ДО добавления сообщения — после него
@@ -6944,7 +7041,7 @@ function renderChatMessage({ id, username, user, avatar, text, image_url, file_u
     // определяем "это моё сообщение" — иначе из-за малейшего расхождения регистра
     // кнопка удаления могла бы не появиться у собственного же сообщения.
     const normNameForDelete = (n) => String(n || '').trim().toLowerCase();
-    const isMine = id != null && !!normNameForDelete(currentUser.username) && normNameForDelete(name) === normNameForDelete(currentUser.username);
+    const isMine = (id != null || !!pending) && !!normNameForDelete(currentUser.username) && normNameForDelete(name) === normNameForDelete(currentUser.username);
     const isWhisper = Array.isArray(whisper_to) && whisper_to.length > 0;
 
     // Объединение сообщений: подряд идущие сообщения одного автора в пределах одной
@@ -6977,23 +7074,27 @@ function renderChatMessage({ id, username, user, avatar, text, image_url, file_u
         }
     }
     if (text) html += `<span class="msg-text${isEmojiOnlyText(text) ? ' jumbo' : ''}">${renderMessageTextWithMentions(text, getMentionCandidates(), currentUser.username)}</span>`;
-    if (image_url) {
-        // loading="lazy" + decoding="async" — картинка декодируется (и попадает в GPU-текстуру)
-        // только когда реально прокручена в область видимости, а не сразу при рендере
-        // сообщения. В активном чате с историей фото это заметно снижает нагрузку на
-        // GPU-процесс — декодируются только те фото, что вы прямо сейчас видите.
-        html += `<div class="chat-image-wrap"><img src="${image_url}" class="chat-image" alt="Изображение" loading="lazy" decoding="async" onclick="openImageLightbox('${image_url}')"></div>`;
-    }
-    if (file_url) html += buildFileCardHtml(file_url, file_name, file_size);
-    // Время — только у первого сообщения блока (у остальных та же минута).
-    if (!joinGroup) html += `<span class="msg-time">${formatMessageTime(date)}</span>`;
-    // Реакции и панель действий (реакция / ответ / удалить). На шёпот реагировать и
+    // loading="lazy" + decoding="async" (см. buildAttachmentsHtml) — картинка декодируется
+    // только когда реально прокручена в область видимости: в активном чате с историей фото
+    // это заметно снижает нагрузку на GPU.
+    const atts = normalizeAttachments({ image_url, file_url, file_name, file_size, attachments });
+    html += buildAttachmentsHtml(atts);
+    // Реакции — прямо под сообщением, а время уже под ними (если реакций нет — время
+    // остаётся в строке сообщения, см. CSS у .msg-reactions). На шёпот реагировать и
     // отвечать нельзя — сервер такие запросы всё равно отклонит.
     const canInteract = id != null && !isWhisper;
     html += '<div class="msg-reactions"></div>';
+    // Время — только у первого сообщения блока (у остальных та же минута).
+    if (!joinGroup) html += `<span class="msg-time">${formatMessageTime(date)}</span>`;
     if (id != null) html += buildMessageActionsHtml({ id, canInteract, isMine });
     part.innerHTML = html;
-    part._msg = { id, username: name, text: text || '', hasImage: !!image_url, fileName: file_name || null, reactions: reactions || {} };
+    const firstFileAtt = atts.find(a => a.kind !== 'image');
+    part._msg = { id, username: name, text: text || '', hasImage: atts.some(a => a.kind === 'image'), fileName: firstFileAtt ? (firstFileAtt.name || null) : null, reactions: reactions || {} };
+    // Своё сообщение, показанное сразу, не дожидаясь сервера: см. renderPendingMessage.
+    if (pending) {
+        part.classList.add('pending');
+        if (cid) part.dataset.cid = cid;
+    }
     renderReactions(part, reactions || {});
 
     let msg;
@@ -7050,13 +7151,55 @@ function removeMessagePart(part) {
             frag.appendChild(n);
             frag.appendChild(document.createTextNode(' '));
         });
-        // Ник — после цитаты (если у следующего сообщения она есть), время — перед реакциями.
+        // Ник — после цитаты (если у следующего сообщения она есть), время — после реакций.
         const nextQuote = next.querySelector(':scope > .msg-reply-quote');
         next.insertBefore(frag, nextQuote ? nextQuote.nextSibling : next.firstChild);
         const time = part.querySelector(':scope > .msg-time');
-        if (time) next.insertBefore(time, next.querySelector(':scope > .msg-reactions') || next.querySelector(':scope > .msg-actions'));
+        if (time) next.insertBefore(time, next.querySelector(':scope > .msg-actions'));
     }
     part.remove();
+}
+
+// ---------- Мгновенный показ своих сообщений ----------
+// Своё текстовое сообщение рисуем сразу при нажатии Enter (чуть бледнее), а когда сервер
+// пришлёт то же сообщение с тем же cid — просто «подтверждаем» его на месте: ставим
+// настоящий id и панель действий. Без этого автор ждал полный круг до сервера и обратно.
+let clientMsgSeq = 0;
+function makeClientMessageId() {
+    clientMsgSeq++;
+    return `c${Date.now().toString(36)}${clientMsgSeq.toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+
+function renderPendingMessage({ cid, text, replyTarget: rt }) {
+    renderChatMessage({
+        id: null,
+        username: currentUser.username,
+        avatar: currentUser.avatar,
+        text,
+        created_at: Date.now(),
+        reactions: {},
+        reply_to: rt ? rt.id : null,
+        reply: rt ? { id: rt.id, deleted: false, username: rt.username, text: rt.preview, has_image: false, file_name: null } : null,
+        cid,
+        pending: true
+    });
+    // Если сервер так и не ответил (сообщение отклонено) — не оставляем «призрак» в ленте.
+    setTimeout(() => {
+        const part = messagesDiv.querySelector(`.msg-part.pending[data-cid="${CSS.escape(cid)}"]`);
+        if (!part) return;
+        removeMessagePart(part);
+        showToast('Сообщение не отправлено — проверьте соединение');
+    }, 15000);
+}
+
+function confirmPendingMessage(part, payload) {
+    part.classList.remove('pending');
+    delete part.dataset.cid;
+    if (payload.id != null) part.dataset.id = payload.id;
+    if (part._msg) part._msg.id = payload.id;
+    if (payload.id != null && !part.querySelector(':scope > .msg-actions')) {
+        part.insertAdjacentHTML('beforeend', buildMessageActionsHtml({ id: payload.id, canInteract: true, isMine: true }));
+    }
 }
 
 socket.on('delete message', ({ id, room }) => {
@@ -7336,6 +7479,16 @@ socket.on('chat message', (payload) => {
         return;
     }
 
+    // Это эхо нашего же сообщения, уже показанного сразу? Тогда просто подтверждаем его.
+    if (isOwnMessage && payload.cid) {
+        const pend = messagesDiv.querySelector(`.msg-part.pending[data-cid="${CSS.escape(String(payload.cid))}"]`);
+        if (pend) {
+            appendMessageToChatCache(room, payload);
+            confirmPendingMessage(pend, payload);
+            return;
+        }
+    }
+
     appendMessageToChatCache(room, payload);
     try {
         renderChatMessage(payload);
@@ -7487,7 +7640,15 @@ messageInput.addEventListener('keydown', (e) => {
         // Позицию меряем ДО отправки: вниз прокручиваем, только если человек и так
         // находится у конца чата. Если он читает историю выше — не трогаем прокрутку.
         const stickToBottom = chatPinnedToBottom || isChatNearBottom();
-        socket.emit('chat message', withReply({ text: messageInput.value.trim() }));
+        const text = messageInput.value.trim();
+        const cid = makeClientMessageId();
+        const rt = (replyTarget && replyTarget.room === selectedRoom) ? replyTarget : null; // withReply его сбросит
+        socket.emit('chat message', withReply({ text, cid }));
+        // Шёпот (wh@) сервер может отклонить — его мгновенно не рисуем, ждём ответ сервера.
+        if (!/wh@/i.test(text)) {
+            try { renderPendingMessage({ cid, text, replyTarget: rt }); }
+            catch (err) { console.error('❌ Не удалось показать сообщение сразу:', err); }
+        }
         messageInput.value = '';
         closeMentionAutocomplete();
         if (stickToBottom) {

@@ -106,6 +106,8 @@ async function initDb() {
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS file_url TEXT;`);
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS file_name TEXT;`);
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS file_size BIGINT;`);
+    // Несколько вложений в одном сообщении: JSON-массив [{kind, url, name, size}].
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachments TEXT;`);
     // Реакции (эмодзи) на сообщения: один человек — одна реакция каждого вида на сообщение.
     await pool.query(`
         CREATE TABLE IF NOT EXISTS chat_reactions (
@@ -182,13 +184,80 @@ async function initDb() {
     `);
 }
 
-async function insertMessage({ username, avatar, text, imageUrl, room, createdAt, whisperTo = null, replyTo = null, file = null }) {
+// ---------- Быстрая отправка: id резервируем заранее ----------
+// Раньше сервер ждал INSERT в БД (а база удалённая — Neon) и только потом рассылал сообщение,
+// отсюда задержка в каждом сообщении. Теперь пачку id берём из последовательности заранее,
+// рассылаем сообщение сразу, а запись в БД идёт в фоне (см. 'chat message').
+let messageIdPool = [];
+let messageIdRefill = null;
+let messageSeqName = null;
+
+function refillMessageIds() {
+    if (messageIdRefill) return messageIdRefill;
+    messageIdRefill = (async () => {
+        if (!messageSeqName) {
+            const r = await pool.query(`SELECT pg_get_serial_sequence('messages', 'id') AS s`);
+            messageSeqName = r.rows[0] && r.rows[0].s;
+        }
+        if (!messageSeqName) throw new Error('Не найдена последовательность messages.id');
+        const r = await pool.query(`SELECT nextval($1::regclass) AS id FROM generate_series(1, 30)`, [messageSeqName]);
+        const ids = r.rows.map(x => Number(x.id)).sort((x, y) => x - y);
+        messageIdPool.push(...ids);
+    })().finally(() => { messageIdRefill = null; });
+    return messageIdRefill;
+}
+
+// Возвращает заранее зарезервированный id или null (тогда сообщение пишется по-старому).
+async function takeMessageId() {
+    if (messageIdPool.length <= 8) {
+        const p = refillMessageIds().catch(err => console.error('❌ Не удалось зарезервировать id сообщений:', err.message));
+        if (!messageIdPool.length) await p;
+    }
+    return messageIdPool.length ? messageIdPool.shift() : null;
+}
+
+// id -> Promise записи в БД. Пока сообщение дописывается, реакции/удаление/ответы на него ждут.
+const pendingMessageWrites = new Map();
+function awaitPendingMessage(id) {
+    return pendingMessageWrites.get(Number(id)) || Promise.resolve();
+}
+
+const MAX_ATTACHMENTS = 10;
+
+// Вложения из клиента: только наши ссылки Cloudinary, не больше MAX_ATTACHMENTS штук.
+function sanitizeAttachments(raw) {
+    if (!Array.isArray(raw)) return [];
+    const out = [];
+    for (const a of raw.slice(0, MAX_ATTACHMENTS)) {
+        if (!a || !isTrustedUploadUrl(a.url)) continue;
+        const kind = a.kind === 'image' ? 'image' : 'file';
+        const size = Number(a.size);
+        out.push({
+            kind,
+            url: a.url,
+            name: sanitizeDisplayFileName(a.name || (kind === 'image' ? 'image' : 'file')),
+            size: Number.isFinite(size) && size >= 0 ? Math.round(size) : null
+        });
+    }
+    return out;
+}
+
+function parseAttachments(raw) {
+    if (!raw) return null;
+    try {
+        const arr = JSON.parse(raw);
+        return Array.isArray(arr) && arr.length ? arr : null;
+    } catch (e) { return null; }
+}
+
+async function insertMessage({ id = null, username, avatar, text, imageUrl, room, createdAt, whisperTo = null, replyTo = null, file = null, attachments = null }) {
     const result = await pool.query(
-        `INSERT INTO messages (username, avatar, text, image_url, room, created_at, whisper_to, reply_to, file_url, file_name, file_size)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        `INSERT INTO messages (id, username, avatar, text, image_url, room, created_at, whisper_to, reply_to, file_url, file_name, file_size, attachments)
+         VALUES (COALESCE($1::int, nextval(pg_get_serial_sequence('messages', 'id')::regclass)), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
          RETURNING id`,
-        [username, avatar, text, imageUrl, room, createdAt, whisperTo && whisperTo.length ? JSON.stringify(whisperTo) : null,
-         replyTo, file ? file.url : null, file ? file.name : null, file ? file.size : null]
+        [id, username, avatar, text, imageUrl, room, createdAt, whisperTo && whisperTo.length ? JSON.stringify(whisperTo) : null,
+         replyTo, file ? file.url : null, file ? file.name : null, file ? file.size : null,
+         attachments && attachments.length ? JSON.stringify(attachments) : null]
     );
     return result.rows[0].id;
 }
@@ -270,6 +339,8 @@ function invalidateRecentMessagesCache(room) {
 
 // viewerName — кто запрашивает историю: чужие шёпоты (wh@) ему не отдаём.
 async function getRecentMessages(room, limit = 100, viewerName = '') {
+    // Сообщения, которые ещё дописываются в БД, должны попасть в историю.
+    if (pendingMessageWrites.size) await Promise.allSettled([...pendingMessageWrites.values()]);
     const cacheKey = String(room || '');
     const now = Date.now();
     const cached = recentMessagesCache.get(cacheKey);
@@ -315,6 +386,7 @@ async function getRecentMessages(room, limit = 100, viewerName = '') {
             return {
                 ...base,
                 whisper_to: whisperTo,
+                attachments: parseAttachments(row.attachments),
                 created_at: Number(row.created_at),
                 file_size: row.file_size != null ? Number(row.file_size) : null,
                 reply: row.reply_to ? {
@@ -1716,7 +1788,7 @@ io.on('connection', (socket) => {
 
         const text = typeof payload === 'string' ? payload : (payload && payload.text) || '';
         const rawImageUrl = (payload && payload.imageUrl) || null;
-        const imageUrl = isTrustedUploadUrl(rawImageUrl) ? rawImageUrl : null;
+        let imageUrl = isTrustedUploadUrl(rawImageUrl) ? rawImageUrl : null;
 
         // Вложенный файл/архив: { url, name, size }
         let file = null;
@@ -1730,7 +1802,24 @@ io.on('connection', (socket) => {
             };
         }
 
-        if (!text.trim() && !imageUrl && !file) return;
+        // Несколько фото/файлов в одном сообщении. Первое фото и первый файл дублируем в
+        // старые поля (image_url / file_*) — по ним строится превью в ответах и работают старые клиенты.
+        let attachments = sanitizeAttachments(payload && typeof payload === 'object' ? payload.attachments : null);
+        if (!attachments.length) {
+            if (imageUrl) attachments.push({ kind: 'image', url: imageUrl, name: 'image', size: null });
+            if (file) attachments.push({ kind: 'file', url: file.url, name: file.name, size: file.size });
+        } else {
+            const firstImage = attachments.find(a => a.kind === 'image');
+            const firstFile = attachments.find(a => a.kind !== 'image');
+            imageUrl = firstImage ? firstImage.url : null;
+            file = firstFile ? { url: firstFile.url, name: firstFile.name, size: firstFile.size } : null;
+        }
+
+        // cid — id, который клиент придумал для мгновенного показа своего сообщения; возвращаем его как есть.
+        const rawCid = payload && typeof payload === 'object' ? payload.cid : null;
+        const cid = typeof rawCid === 'string' && /^[A-Za-z0-9_-]{1,40}$/.test(rawCid) ? rawCid : null;
+
+        if (!text.trim() && !attachments.length) return;
 
         const username = socket.data.username || 'Участник';
         const avatar = socket.data.avatar || '';
@@ -1780,6 +1869,7 @@ io.on('connection', (socket) => {
             let reply = null;
             const wantedReply = payload && typeof payload === 'object' ? Number(payload.replyTo) : NaN;
             if (Number.isFinite(wantedReply) && wantedReply > 0) {
+                await awaitPendingMessage(wantedReply);
                 const rr = await pool.query(
                     `SELECT id, username, text, image_url, file_name, whisper_to, room FROM messages WHERE id = $1`,
                     [wantedReply]
@@ -1800,9 +1890,15 @@ io.on('connection', (socket) => {
                 }
             }
 
-            const id = await insertMessage({ username, avatar, text: cleanText, imageUrl, room, createdAt, whisperTo, replyTo, file });
-
-            invalidateRecentMessagesCache(room);
+            // id берём из заранее зарезервированных — тогда рассылаем сразу, не дожидаясь БД.
+            let id = await takeMessageId();
+            const record = { username, avatar, text: cleanText, imageUrl, room, createdAt, whisperTo, replyTo, file, attachments };
+            if (id == null) {
+                // Запасной путь (не удалось зарезервировать id): по-старому, с ожиданием записи.
+                id = await insertMessage(record);
+                record.persisted = true;
+                invalidateRecentMessagesCache(room);
+            }
 
             const outgoing = {
                 id,
@@ -1813,6 +1909,8 @@ io.on('connection', (socket) => {
                 file_url: file ? file.url : null,
                 file_name: file ? file.name : null,
                 file_size: file ? file.size : null,
+                attachments: attachments.length ? attachments : null,
+                cid,
                 reply_to: replyTo,
                 reply,
                 reactions: {},
@@ -1834,6 +1932,19 @@ io.on('connection', (socket) => {
                 }
             }
 
+            // Запись в БД — уже после рассылки. Если не вышло, сообщение убираем у всех и говорим автору.
+            if (!record.persisted) {
+                const write = insertMessage({ ...record, id })
+                    .then(() => { invalidateRecentMessagesCache(room); })
+                    .catch(err => {
+                        console.error('❌ Ошибка сохранения сообщения:', err);
+                        io.to(`chat:${room}`).emit('delete message', { id, room });
+                        socket.emit('chat notice', 'Не удалось сохранить сообщение — оно не отправлено.');
+                    })
+                    .finally(() => { pendingMessageWrites.delete(id); });
+                pendingMessageWrites.set(id, write);
+            }
+
             // Остальным участникам сервера (у кого открыт другой чат) — чтобы сработали
             // кружок непрочитанных и звук. Ошибка здесь не должна ломать отправку.
             notifyMembersOutsideChat(room, outgoing, whisperTo)
@@ -1853,6 +1964,7 @@ io.on('connection', (socket) => {
         if (!id || !Number.isFinite(id) || !emoji) return;
 
         try {
+            await awaitPendingMessage(id);
             const found = await pool.query(`SELECT room, whisper_to FROM messages WHERE id = $1`, [id]);
             const row = found.rows[0];
             if (!row || row.room !== currentChatRoom || row.whisper_to) return;
@@ -1900,6 +2012,7 @@ io.on('connection', (socket) => {
         if (!id || !Number.isFinite(id)) return;
 
         try {
+            await awaitPendingMessage(id);
             const deleted = await deleteOwnMessage(id, socket.data.username);
             if (deleted && deleted.room) {
                 invalidateRecentMessagesCache(deleted.room);
