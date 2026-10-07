@@ -1184,30 +1184,13 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 let selectedRoom = null; 
 
-// Запоминаем последний открытый канал/сервер, чтобы после обновления страницы (F5)
-// снова открылась та же вкладка, а не пустой экран без выбранного канала.
+// Последний открытый канал больше НЕ запоминаем: после обновления страницы (F5) ни один
+// канал не выбран. Функции оставлены как заглушки, чтобы не трогать места вызова,
+// а ключ, сохранённый прежними версиями, при загрузке стираем.
 const LAST_ROOM_KEY = 'lastSelectedRoom';
-function saveLastRoom(room) {
-    try {
-        if (room) localStorage.setItem(LAST_ROOM_KEY, room);
-        else localStorage.removeItem(LAST_ROOM_KEY);
-    } catch (e) { /* ignore */ }
-}
-function loadLastRoom() {
-    try { return localStorage.getItem(LAST_ROOM_KEY); } catch (e) { return null; }
-}
-// Восстанавливаем только один раз за загрузку страницы — как только пользователь
-// сам кликнет по какому-то каналу, автоматическое восстановление больше не нужно.
-let lastRoomRestored = false;
-function tryRestoreLastRoom() {
-    if (lastRoomRestored || selectedRoom) return;
-    const room = loadLastRoom();
-    if (!room) return;
-    const btn = document.querySelector(`[data-room="${CSS.escape(room)}"]`);
-    if (!btn) return;
-    lastRoomRestored = true;
-    selectRoomButton(btn);
-}
+try { localStorage.removeItem(LAST_ROOM_KEY); } catch (e) { /* ignore */ }
+function saveLastRoom() { /* не сохраняем */ }
+function tryRestoreLastRoom() { /* не восстанавливаем */ }
 
 let localMediaStream = null; 
 let rawAudioStream = null;
@@ -1882,10 +1865,40 @@ function getNotifyAudio(key) {
     return notifyAudioCache[key];
 }
 
+// ---------- Подсветка на панели задач ----------
+// Когда окно не в фокусе, а пришло сообщение / упоминание / шёпот / начался созвон / кто-то
+// зашёл в канал — мигает кнопка приложения на панели задач (в десктопном приложении) или
+// меняется заголовок вкладки (в браузере). Гаснет само, как только вернётесь в окно.
+// Подсветка идёт вместе со звуком, поэтому подчиняется тем же настройкам звука каналов.
+const TASKBAR_FLASH_KEYS = new Set(['message', 'mention', 'callstart', 'join']);
+const BASE_PAGE_TITLE = document.title || 'Mute';
+let titleFlashOn = false;
+function flashTaskbar() {
+    if (document.hasFocus() && !document.hidden) return;
+    const t = window.__TAURI__;
+    if (t && t.core && typeof t.core.invoke === 'function') {
+        t.core.invoke('flash_window').catch(e => console.warn('[flash]', e));
+        return;
+    }
+    if (!titleFlashOn) {
+        titleFlashOn = true;
+        document.title = `🔴 ${BASE_PAGE_TITLE}`;
+    }
+}
+function clearTitleFlash() {
+    if (!titleFlashOn) return;
+    titleFlashOn = false;
+    document.title = BASE_PAGE_TITLE;
+}
+window.addEventListener('focus', clearTitleFlash);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) clearTitleFlash(); });
+
 // Проигрывает звук уведомления. Клонируем элемент, чтобы звуки могли накладываться
 // друг на друга (например, если несколько человек заходят подряд).
 function playNotifySound(key, volume = 0.6, roomId = null) {
     if (roomId && !isSoundEnabledForChannel(key, roomId)) return null;
+    // Событие, о котором сообщает звук, заодно подсвечивает окно на панели задач.
+    if (TASKBAR_FLASH_KEYS.has(key)) flashTaskbar();
     try {
         const base = getNotifyAudio(key);
         const instance = base.cloneNode(true);
