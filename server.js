@@ -1133,9 +1133,15 @@ io.on('connection', (socket) => {
 
     // Чат теперь свой для каждого сервера — история грузится только когда клиент
     // говорит, какую комнату он открыл (см. 'select chat room' ниже).
-    socket.on('select chat room', async ({ room } = {}) => {
+    // Комната, выбранная ДО 'register user' (после F5 клиент открывает последний сервер сразу,
+    // а регистрация идёт позже — после старта PeerJS). Раньше ник на сокете был ещё пуст, проверка
+    // членства молча отклоняла запрос, и чат оставался пустым, пока не переключишься на другой сервер.
+    // Теперь запоминаем комнату и входим в неё сразу после регистрации.
+    let pendingChatRoomSelect = null;
+    async function handleSelectChatRoom({ room } = {}) {
         const cleanRoom = String(room || '').trim().slice(0, 80);
         if (!cleanRoom) return;
+        if (!socket.data || !socket.data.username) { pendingChatRoomSelect = cleanRoom; return; }
 
         // Пользовательские серверы (custom:КОД): проверяем, что человек ДЕЙСТВИТЕЛЬНО
         // всё ещё состоит в сервере, прежде чем впускать его в комнату чата.
@@ -1210,7 +1216,8 @@ io.on('connection', (socket) => {
         // список обновился сам, без повторного клика по вкладке.
         scheduleBroadcastServerMembers(customCodeFromRoom(cleanRoom));
         if (previousChatRoom && previousChatRoom !== cleanRoom) scheduleBroadcastServerMembers(customCodeFromRoom(previousChatRoom));
-    });
+    }
+    socket.on('select chat room', handleSelectChatRoom);
 
     // ---------- Пользовательские серверы ----------
     // В общий список сервера больше не отдаются — только по конкретным кодам,
@@ -1577,6 +1584,13 @@ io.on('connection', (socket) => {
         }
 
         socket.data = { username, avatar, peerId: userData && userData.peerId, verified };
+
+        // Чат, который клиент попросил открыть до регистрации — открываем сейчас.
+        if (pendingChatRoomSelect) {
+            const queuedRoom = pendingChatRoomSelect;
+            pendingChatRoomSelect = null;
+            handleSelectChatRoom({ room: queuedRoom }).catch(err => console.error('❌ Ошибка отложенного входа в чат:', err));
+        }
 
         // Клиент при переподключении ждёт подтверждения, прежде чем заново входить в канал —
         // иначе 'join room' может обработаться раньше, чем сокет получит ник, и человек
@@ -1965,35 +1979,51 @@ io.on('connection', (socket) => {
 
         try {
             await awaitPendingMessage(id);
-            const found = await pool.query(`SELECT room, whisper_to FROM messages WHERE id = $1`, [id]);
-            const row = found.rows[0];
+            const username = socket.data.username;
+
+            // Проверка сообщения и снятие своей реакции — одним запросом (раньше — отдельными,
+            // а каждый запрос к удалённой БД это лишняя задержка).
+            const first = await pool.query(
+                `WITH msg AS (SELECT room, whisper_to FROM messages WHERE id = $1),
+                      del AS (
+                        DELETE FROM chat_reactions
+                        WHERE message_id = $1 AND emoji = $2 AND LOWER(username) = LOWER($3)
+                          AND EXISTS (SELECT 1 FROM msg WHERE room = $4 AND whisper_to IS NULL)
+                        RETURNING 1
+                      )
+                 SELECT (SELECT room FROM msg) AS room,
+                        (SELECT whisper_to FROM msg) AS whisper_to,
+                        (SELECT COUNT(*) FROM del)::int AS removed`,
+                [id, emoji, username, currentChatRoom]
+            );
+            const row = first.rows[0];
             if (!row || row.room !== currentChatRoom || row.whisper_to) return;
 
-            const username = socket.data.username;
-            const removed = await pool.query(
-                `DELETE FROM chat_reactions WHERE message_id = $1 AND emoji = $2 AND LOWER(username) = LOWER($3)`,
-                [id, emoji, username]
-            );
-            if (removed.rowCount === 0) {
-                const kinds = await pool.query(
-                    `SELECT COUNT(DISTINCT emoji)::int AS n, BOOL_OR(emoji = $2) AS has_this
-                     FROM chat_reactions WHERE message_id = $1`,
-                    [id, emoji]
-                );
-                const k = kinds.rows[0] || {};
-                if (!k.has_this && (k.n || 0) >= MAX_REACTION_KINDS_PER_MESSAGE) {
-                    return socket.emit('chat notice', 'На одно сообщение можно поставить не больше 20 разных реакций.');
-                }
-                await pool.query(
+            let limitHit = false;
+            if (row.removed === 0) {
+                // Новая реакция; лимит видов реакций проверяем прямо в INSERT.
+                const ins = await pool.query(
                     `INSERT INTO chat_reactions (message_id, emoji, username, created_at)
-                     VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
-                    [id, emoji, username, Date.now()]
+                     SELECT $1::int, $2::text, $3::text, $4::bigint
+                     WHERE EXISTS (SELECT 1 FROM chat_reactions WHERE message_id = $1 AND emoji = $2)
+                        OR (SELECT COUNT(DISTINCT emoji) FROM chat_reactions WHERE message_id = $1) < $5::int
+                     ON CONFLICT DO NOTHING
+                     RETURNING 1`,
+                    [id, emoji, username, Date.now(), MAX_REACTION_KINDS_PER_MESSAGE]
                 );
+                limitHit = ins.rowCount === 0;
             }
 
             invalidateRecentMessagesCache(row.room);
             const map = await getReactionsByMessageIds([id]);
-            io.to(`chat:${row.room}`).emit('message reactions', { id, room: row.room, reactions: map[id] || {} });
+            const reactions = map[id] || {};
+            const mine = (reactions[emoji] || []).some(u => String(u).toLowerCase() === String(username).toLowerCase());
+            if (limitHit && !mine) {
+                socket.emit('chat notice', 'На одно сообщение можно поставить не больше 20 разных реакций.');
+                // Клиент уже показал реакцию сразу — возвращаем ему настоящее состояние.
+                return socket.emit('message reactions', { id, room: row.room, reactions });
+            }
+            io.to(`chat:${row.room}`).emit('message reactions', { id, room: row.room, reactions });
         } catch (err) {
             console.error('❌ Ошибка реакции:', err);
         }

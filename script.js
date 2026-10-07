@@ -6675,6 +6675,19 @@ function renderReactions(part, reactions) {
 
 function toggleReaction(messageId, emoji) {
     if (messageId == null || !emoji) return;
+    // Показываем реакцию сразу, не дожидаясь сервера; настоящее состояние придёт
+    // событием 'message reactions' и перерисует её (или откатит, если сервер отказал).
+    const part = messagesDiv.querySelector(`.msg-part[data-id="${CSS.escape(String(messageId))}"]`);
+    if (part && part._msg) {
+        const me = normChatName(currentUser.username);
+        const next = {};
+        Object.entries(part._msg.reactions || {}).forEach(([e, users]) => { next[e] = Array.isArray(users) ? users.slice() : []; });
+        const users = next[emoji] || [];
+        const has = users.some(u => normChatName(u) === me);
+        next[emoji] = has ? users.filter(u => normChatName(u) !== me) : [...users, currentUser.username];
+        if (!next[emoji].length) delete next[emoji];
+        renderReactions(part, next);
+    }
     socket.emit('toggle reaction', { id: messageId, emoji });
 }
 
