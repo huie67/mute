@@ -108,7 +108,7 @@ async function initDb() {
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS file_size BIGINT;`);
     // Реакции (эмодзи) на сообщения: один человек — одна реакция каждого вида на сообщение.
     await pool.query(`
-        CREATE TABLE IF NOT EXISTS message_reactions (
+        CREATE TABLE IF NOT EXISTS chat_reactions (
             message_id INTEGER NOT NULL,
             emoji TEXT NOT NULL,
             username TEXT NOT NULL,
@@ -116,8 +116,8 @@ async function initDb() {
         );
     `);
     await pool.query(`
-        CREATE UNIQUE INDEX IF NOT EXISTS message_reactions_unique_idx
-        ON message_reactions (message_id, emoji, LOWER(username));
+        CREATE UNIQUE INDEX IF NOT EXISTS chat_reactions_unique_idx
+        ON chat_reactions (message_id, emoji, LOWER(username));
     `);
 
     // Аккаунты: вход по паролю.
@@ -205,7 +205,7 @@ async function deleteOwnMessage(id, username) {
     );
     if (result.rows[0]) {
         // Реакции удалённого сообщения больше не нужны.
-        pool.query(`DELETE FROM message_reactions WHERE message_id = $1`, [id])
+        pool.query(`DELETE FROM chat_reactions WHERE message_id = $1`, [id])
             .catch(err => console.error('❌ Ошибка удаления реакций:', err));
     }
     return result.rows[0] || null;
@@ -232,7 +232,7 @@ async function getReactionsByMessageIds(ids) {
     if (!list.length) return out;
     try {
         const res = await pool.query(
-            `SELECT message_id, emoji, username FROM message_reactions
+            `SELECT message_id, emoji, username FROM chat_reactions
              WHERE message_id = ANY($1::int[]) ORDER BY created_at ASC`,
             [list]
         );
@@ -1859,13 +1859,13 @@ io.on('connection', (socket) => {
 
             const username = socket.data.username;
             const removed = await pool.query(
-                `DELETE FROM message_reactions WHERE message_id = $1 AND emoji = $2 AND LOWER(username) = LOWER($3)`,
+                `DELETE FROM chat_reactions WHERE message_id = $1 AND emoji = $2 AND LOWER(username) = LOWER($3)`,
                 [id, emoji, username]
             );
             if (removed.rowCount === 0) {
                 const kinds = await pool.query(
                     `SELECT COUNT(DISTINCT emoji)::int AS n, BOOL_OR(emoji = $2) AS has_this
-                     FROM message_reactions WHERE message_id = $1`,
+                     FROM chat_reactions WHERE message_id = $1`,
                     [id, emoji]
                 );
                 const k = kinds.rows[0] || {};
@@ -1873,7 +1873,7 @@ io.on('connection', (socket) => {
                     return socket.emit('chat notice', 'На одно сообщение можно поставить не больше 20 разных реакций.');
                 }
                 await pool.query(
-                    `INSERT INTO message_reactions (message_id, emoji, username, created_at)
+                    `INSERT INTO chat_reactions (message_id, emoji, username, created_at)
                      VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
                     [id, emoji, username, Date.now()]
                 );
