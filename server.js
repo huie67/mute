@@ -817,6 +817,39 @@ app.put('/auth/theme', async (req, res) => {
 });
 
 const rooms = {}; // Голосовые комнаты: { internalRoomId: { socketId: {...} } }
+
+// ---------- Один аккаунт — одно голосовое подключение ----------
+// Если человек заходит в голосовой канал с нового устройства/вкладки, прежнее подключение
+// этого же аккаунта (в этом или любом другом канале) закрывается — «побеждает последнее».
+const voiceSessionReset = new Map();   // socketId -> функция, сбрасывающая состояние сокета
+const replacedVoicePeers = new Map();  // peerId отключённого, но недоступного клиента -> срок действия метки
+
+function ejectOtherVoiceSessions(username, keepSocketId, newPeerId) {
+    const key = String(username || '').trim().toLowerCase();
+    if (!key) return;
+    for (const room of Object.keys(rooms)) {
+        for (const sId of Object.keys(rooms[room] || {})) {
+            const u = rooms[room][sId];
+            if (sId === keepSocketId || !u || String(u.username || '').trim().toLowerCase() !== key) continue;
+
+            delete rooms[room][sId];
+            const reset = voiceSessionReset.get(sId);
+            if (reset) reset();
+            const oldSock = io.sockets.sockets.get(sId);
+            if (oldSock) {
+                oldSock.leave(room);
+                oldSock.emit('voice session taken', { room });
+            } else if (u.peerId) {
+                // Старый клиент сейчас без связи и не узнает о замене — не даём ему
+                // автоматически вернуться в звонок после переподключения.
+                replacedVoicePeers.set(u.peerId, Date.now() + 10 * 60 * 1000);
+            }
+            if (u.peerId && u.peerId !== newPeerId) io.to(room).emit('user disconnected', u.peerId);
+            if (Object.keys(rooms[room]).length === 0) delete rooms[room];
+            broadcastRoomUsers(room);
+        }
+    }
+}
 // Пользовательские серверы/комнаты кэшируются в памяти для быстрых проверок,
 // но источник истины — Neon Postgres. Поэтому они переживают рестарты Render.
 const customRooms = {}; // { code: { code, name, passwordHash, createdAt } }
@@ -1680,7 +1713,16 @@ io.on('connection', (socket) => {
     // этого при повторном заходе в канал (особенно если 'mute state' почему-то не
     // доходил или обрабатывался с задержкой) у остальных участников значок мьюта
     // мог не появиться вовсе. Теперь состояние приходит атомарно, одним событием.
-    socket.on('join room', ({ room, peerId, micMuted, deafened }) => {
+    socket.on('join room', ({ room, peerId, micMuted, deafened, auto }) => {
+        // Автоматический возврат в звонок после обрыва связи не должен отбирать звонок
+        // у устройства, которое зашло за это время (оно теперь «последнее»).
+        if (auto && peerId && (replacedVoicePeers.get(peerId) || 0) > Date.now()) {
+            replacedVoicePeers.delete(peerId);
+            socket.emit('voice session taken', { room });
+            return;
+        }
+        ejectOtherVoiceSessions(socket.data && socket.data.username, socket.id, peerId);
+        voiceSessionReset.set(socket.id, () => { currentUserRoom = null; currentUserData = null; });
         currentUserRoom = room;
         socket.join(room);
 
@@ -1787,6 +1829,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('disconnect', () => {
+        voiceSessionReset.delete(socket.id);
         // Разрыв связи (сон ноутбука, недолгий обрыв интернета, фоновая вкладка на
         // телефоне) раньше выкидывал из звонка МГНОВЕННО — леталась запись из
         // комнаты и всем остальным сразу летело 'user disconnected', обрывая им

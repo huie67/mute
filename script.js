@@ -3335,7 +3335,7 @@ socket.on('connect', () => {
     // обрыва (фоновая вкладка, сон ноутбука, прокси Render) восстанавливаем всё сами.
     const restoreSubscriptions = () => {
         if (currentUser.room) {
-            socket.emit('join room', { room: currentUser.room, peerId: myPeerId, micMuted: isMuted, deafened: isDeafened });
+            socket.emit('join room', { room: currentUser.room, peerId: myPeerId, micMuted: isMuted, deafened: isDeafened, auto: true });
         }
         if (selectedRoom) {
             // заодно перезагрузит историю чата — подтянет пропущенные сообщения
@@ -4531,6 +4531,13 @@ socket.on('custom room error', (message) => {
         target = currentServerAddTab === 'join' ? joinServerError : createServerError;
     }
     showServerError(target, message);
+});
+
+// Этот же аккаунт зашёл в голосовой канал с другого устройства/вкладки — работает только
+// последнее подключение, поэтому здесь выходим из звонка.
+socket.on('voice session taken', () => {
+    if (currentUser.room) leaveVoiceChannel();
+    showToast('Вы зашли в голосовой канал с другого устройства — здесь звонок завершён');
 });
 
 function leaveVoiceChannel() {
