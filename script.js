@@ -238,6 +238,19 @@ function renderServerMembers(members) {
                     socket.emit('kick server member', { code: currentServerInfo.code, username: m.username });
                 });
                 actions.appendChild(kickBtn);
+
+                // «В ЧС»: выгнать и закрыть возможность вернуться на сервер.
+                const banBtn = document.createElement('button');
+                banBtn.type = 'button';
+                banBtn.className = 'action-btn';
+                banBtn.style.cssText = 'font-size:11px; padding:5px 8px; background:#3a1f24; color:#ff8080; white-space:nowrap;';
+                banBtn.textContent = 'В ЧС';
+                banBtn.title = 'Добавить в чёрный список: выгнать и не пускать обратно';
+                banBtn.addEventListener('click', () => {
+                    if (!confirm(`Добавить «${m.username}» в чёрный список? Он будет исключён и не сможет зайти на сервер, пока вы не уберёте его из списка.`)) return;
+                    socket.emit('ban server member', { code: currentServerInfo.code, username: m.username });
+                });
+                actions.appendChild(banBtn);
             }
 
             row.appendChild(actions);
@@ -246,6 +259,62 @@ function renderServerMembers(members) {
         serverMembersListEl.appendChild(row);
     });
 }
+
+// ---------- Чёрный список сервера ----------
+const serverBansSection = document.getElementById('server-bans-section');
+const serverBansListEl = document.getElementById('server-bans-list');
+const serverBansEmpty = document.getElementById('server-bans-empty');
+let lastBansRequestAt = 0;
+
+// Список запрашиваем только у владельца/модераторов (сервер всем остальным и не ответит).
+function requestServerBans() {
+    if (!currentServerInfo || !currentServerInfo.canModerate && !currentServerInfo.isOwner && !currentServerInfo.isAdmin) {
+        if (serverBansSection) serverBansSection.style.display = 'none';
+        return;
+    }
+    const now = Date.now();
+    if (now - lastBansRequestAt < 2000) return;
+    lastBansRequestAt = now;
+    socket.emit('get server bans', { code: currentServerInfo.code });
+}
+
+function renderServerBans(bans) {
+    if (!serverBansSection || !serverBansListEl) return;
+    serverBansSection.style.display = 'block';
+    serverBansListEl.innerHTML = '';
+    if (serverBansEmpty) serverBansEmpty.style.display = bans.length ? 'none' : 'block';
+    bans.forEach(b => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex; align-items:center; gap:10px; padding:8px; background:var(--bg-input); border-radius:8px;';
+        const info = document.createElement('div');
+        info.style.cssText = 'flex:1; min-width:0;';
+        const nameEl = document.createElement('div');
+        nameEl.style.cssText = 'font-weight:600; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+        nameEl.textContent = b.username;
+        info.appendChild(nameEl);
+        const sub = document.createElement('div');
+        sub.style.cssText = 'font-size:11px; color:var(--text-faint);';
+        const when = b.bannedAt ? new Date(b.bannedAt).toLocaleDateString() : '';
+        sub.textContent = [b.bannedBy ? `добавил(а): ${b.bannedBy}` : '', when].filter(Boolean).join(' · ');
+        info.appendChild(sub);
+        row.appendChild(info);
+        const unbanBtn = document.createElement('button');
+        unbanBtn.type = 'button';
+        unbanBtn.className = 'btn-secondary';
+        unbanBtn.style.cssText = 'font-size:11px; padding:5px 8px; white-space:nowrap;';
+        unbanBtn.textContent = 'Убрать из ЧС';
+        unbanBtn.addEventListener('click', () => {
+            socket.emit('unban server member', { code: currentServerInfo.code, username: b.username });
+        });
+        row.appendChild(unbanBtn);
+        serverBansListEl.appendChild(row);
+    });
+}
+
+socket.on('server bans list', ({ code, bans } = {}) => {
+    if (!currentServerInfo || currentServerInfo.code !== code) return;
+    renderServerBans(Array.isArray(bans) ? bans : []);
+});
 
 // Небольшое всплывающее уведомление внизу экрана
 function showToast(text, ms = 4500) {
@@ -372,6 +441,7 @@ socket.on('server members list', ({ code, members } = {}) => {
         currentServerInfo.canModerate = !!(me.isOwner || me.isAdmin);
     }
     renderServerMembers(members || []);
+    requestServerBans();
 });
 
 // Нам выдали или сняли права модератора — узнаём сразу, на каком бы сервере ни находились.
@@ -946,6 +1016,64 @@ function saveThemeToStorage(theme) {
     try { localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify(theme)); } catch (e) { /* ignore */ }
 }
 
+// ---------- Иконка приложения в цвет темы ----------
+// Значок микрофона (app-icon.png — одноцветный силуэт) перекрашивается в акцентный цвет:
+// во вкладке браузера — через favicon, в десктопном приложении — иконка окна и кнопка на
+// панели задач (команда set_app_icon). Файл .exe и ярлык на рабочем столе остаются прежними:
+// их иконка зашита в файл при сборке и на лету не меняется.
+// (var, а не let: applyTheme может сработать раньше, чем выполнится эта строка.)
+var appIconBaseImage = null;
+var appIconTimer = null;
+function loadAppIconBase() {
+    return new Promise((resolve) => {
+        if (appIconBaseImage) return resolve(appIconBaseImage);
+        const img = new Image();
+        img.onload = () => { appIconBaseImage = img; resolve(img); };
+        img.onerror = () => resolve(null);
+        img.src = '/app-icon.png';
+    });
+}
+async function renderTintedAppIcon(color, size) {
+    const base = await loadAppIconBase();
+    if (!base) return null;
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = size;
+    const ctx = cv.getContext('2d');
+    ctx.drawImage(base, 0, 0, size, size);
+    ctx.globalCompositeOperation = 'source-in'; // красим только сам силуэт, прозрачность сохраняется
+    ctx.fillStyle = color;
+    ctx.fillRect(0, 0, size, size);
+    return cv;
+}
+async function updateAppIcon(color) {
+    try {
+        const small = await renderTintedAppIcon(color, 64);
+        if (!small) return;
+        let link = document.getElementById('app-favicon');
+        if (!link) {
+            link = document.createElement('link');
+            link.id = 'app-favicon';
+            link.rel = 'icon';
+            document.head.appendChild(link);
+        }
+        link.type = 'image/png';
+        link.href = small.toDataURL('image/png');
+
+        const t = window.__TAURI__;
+        if (t && t.core && typeof t.core.invoke === 'function') {
+            const big = await renderTintedAppIcon(color, 128);
+            if (!big) return;
+            const rgba = big.getContext('2d').getImageData(0, 0, 128, 128).data;
+            await t.core.invoke('set_app_icon', { rgba: Array.from(rgba), width: 128, height: 128 });
+        }
+    } catch (e) { console.warn('[icon]', e); }
+}
+// Выбор цвета отдаёт десятки значений в секунду — обновляем иконку, когда выбор «устоялся».
+function scheduleAppIconUpdate(color) {
+    clearTimeout(appIconTimer);
+    appIconTimer = setTimeout(() => updateAppIcon(color), 300);
+}
+
 // Красит всё приложение: --accent используется во всех кнопках, ссылках, акцентах,
 // подсветке активных элементов и т.д. по всему index.html через CSS-переменные.
 function applyTheme(theme) {
@@ -955,6 +1083,7 @@ function applyTheme(theme) {
     root.setProperty('--accent', accent);
     root.setProperty('--accent-hover', shadeHex(accent, -15));
     root.setProperty('--accent-soft', hexToRgbaString(accent, 0.15));
+    scheduleAppIconUpdate(accent);
 
     const isDark = currentTheme.textMode === 'dark';
     const textColor = isDark ? '#0f1117' : '#f3f4f6';

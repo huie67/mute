@@ -182,6 +182,20 @@ async function initDb() {
         CREATE UNIQUE INDEX IF NOT EXISTS custom_room_members_unique_idx
         ON custom_room_members (code, LOWER(username));
     `);
+    // Чёрный список сервера: попавшие сюда не могут войти на сервер повторно (даже по коду и паролю).
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS custom_room_bans (
+            id SERIAL PRIMARY KEY,
+            code VARCHAR(6) NOT NULL REFERENCES custom_rooms(code) ON DELETE CASCADE,
+            username TEXT NOT NULL,
+            banned_by TEXT,
+            banned_at BIGINT NOT NULL
+        );
+    `);
+    await pool.query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS custom_room_bans_unique_idx
+        ON custom_room_bans (code, LOWER(username));
+    `);
 }
 
 // ---------- Быстрая отправка: id резервируем заранее ----------
@@ -995,6 +1009,23 @@ async function removeRoomMember(code, username) {
     }
 }
 
+async function isRoomBanned(code, username) {
+    if (!code || !username) return false;
+    const r = await pool.query(
+        `SELECT 1 FROM custom_room_bans WHERE code = $1 AND LOWER(username) = LOWER($2)`,
+        [code, username]
+    );
+    return r.rowCount > 0;
+}
+
+async function getRoomBans(code) {
+    const r = await pool.query(
+        `SELECT username, banned_by, banned_at FROM custom_room_bans WHERE code = $1 ORDER BY banned_at DESC`,
+        [code]
+    );
+    return r.rows.map(x => ({ username: x.username, bannedBy: x.banned_by || null, bannedAt: Number(x.banned_at) }));
+}
+
 // Публичные поля сервера для списка иконок — хеш пароля и владелец (username)
 // в общую рассылку никогда не уходят.
 function publicCustomRoom(room) {
@@ -1490,6 +1521,10 @@ io.on('connection', (socket) => {
             const isOwner = !!(custom.ownerUsername && socket.data && socket.data.username &&
                 custom.ownerUsername.toLowerCase() === socket.data.username.toLowerCase());
             // Владельцу пароль на вход в свой же сервер спрашивать незачем.
+            // Чёрный список: сюда не пускаем ни по паролю, ни по коду.
+            if (!isOwner && socket.data && socket.data.username && await isRoomBanned(cleanCode, socket.data.username)) {
+                return socket.emit('custom room error', 'Вы в чёрном списке этого сервера — войти нельзя.');
+            }
             if (custom.passwordHash && !isOwner) {
                 const ok = await bcrypt.compare(cleanPassword, custom.passwordHash);
                 if (!ok) return socket.emit('custom room error', 'Неверный пароль.');
@@ -1611,31 +1646,9 @@ io.on('connection', (socket) => {
         socket.emit('server members list', { code: cleanCode, members: await getServerMembers(cleanCode) });
     });
 
-    // Кик: доступен владельцу (может выгнать любого, кроме себя) и модераторам
-    // (могут выгонять только обычных участников — не владельца и не других модераторов).
-    // Кик убирает человека и из постоянного списка участников — при желании он
-    // сможет зайти обратно по коду сервера, и тогда появится в списке заново.
-    socket.on('kick server member', async ({ code, username } = {}) => {
-        const cleanCode = String(code || '').trim().toUpperCase();
-        const targetUsername = String(username || '').trim();
-        const custom = customRooms[cleanCode];
-        if (!custom) return socket.emit('custom room error', 'Сервер с таким кодом не найден.');
-        if (!targetUsername) return;
-
-        const actorUsername = socket.data && socket.data.username;
-        if (!canModerateRoom(custom, actorUsername)) {
-            return socket.emit('custom room error', 'Исключать участников может только создатель или модератор сервера.');
-        }
-        if (actorUsername && targetUsername.toLowerCase() === actorUsername.toLowerCase()) {
-            return socket.emit('custom room error', 'Нельзя исключить самого себя.');
-        }
-        if (isRoomOwner(custom, targetUsername)) {
-            return socket.emit('custom room error', 'Нельзя исключить создателя сервера.');
-        }
-        if (isRoomAdmin(custom, targetUsername) && !isRoomOwner(custom, actorUsername)) {
-            return socket.emit('custom room error', 'Только создатель сервера может исключить модератора.');
-        }
-
+    // Убирает человека с сервера: выгоняет из чата и голоса на всех его устройствах и стирает
+    // из списка участников (общая часть «Выгнать» и «В чёрный список»).
+    async function removeUserFromServer(cleanCode, custom, targetUsername) {
         const chatRoomName = chatRoomForCode(cleanCode);
         const voiceRoom = voiceRoomForCode(cleanCode);
         let kickedAny = false;
@@ -1665,6 +1678,104 @@ io.on('connection', (socket) => {
         // онлайн в момент кика — иначе он остался бы висеть в списке до следующего входа.
         await removeRoomMember(cleanCode, targetUsername);
         await broadcastServerMembers(cleanCode);
+    }
+
+    // Кик: доступен владельцу (может выгнать любого, кроме себя) и модераторам
+    // (могут выгонять только обычных участников — не владельца и не других модераторов).
+    // Кик убирает человека и из постоянного списка участников — при желании он
+    // сможет зайти обратно по коду сервера, и тогда появится в списке заново.
+    socket.on('kick server member', async ({ code, username } = {}) => {
+        const cleanCode = String(code || '').trim().toUpperCase();
+        const targetUsername = String(username || '').trim();
+        const custom = customRooms[cleanCode];
+        if (!custom) return socket.emit('custom room error', 'Сервер с таким кодом не найден.');
+        if (!targetUsername) return;
+
+        const actorUsername = socket.data && socket.data.username;
+        if (!canModerateRoom(custom, actorUsername)) {
+            return socket.emit('custom room error', 'Исключать участников может только создатель или модератор сервера.');
+        }
+        if (actorUsername && targetUsername.toLowerCase() === actorUsername.toLowerCase()) {
+            return socket.emit('custom room error', 'Нельзя исключить самого себя.');
+        }
+        if (isRoomOwner(custom, targetUsername)) {
+            return socket.emit('custom room error', 'Нельзя исключить создателя сервера.');
+        }
+        if (isRoomAdmin(custom, targetUsername) && !isRoomOwner(custom, actorUsername)) {
+            return socket.emit('custom room error', 'Только создатель сервера может исключить модератора.');
+        }
+
+        await removeUserFromServer(cleanCode, custom, targetUsername);
+    });
+
+    // Те же правила, что у «Выгнать»: владелец может любого, кроме себя; модератор — только обычных участников.
+    function moderationError(custom, actorUsername, targetUsername, action) {
+        if (!canModerateRoom(custom, actorUsername)) {
+            return `${action} участников может только создатель или модератор сервера.`;
+        }
+        if (actorUsername && targetUsername.toLowerCase() === actorUsername.toLowerCase()) {
+            return 'Нельзя сделать это с самим собой.';
+        }
+        if (isRoomOwner(custom, targetUsername)) return 'Нельзя сделать это с создателем сервера.';
+        if (isRoomAdmin(custom, targetUsername) && !isRoomOwner(custom, actorUsername)) {
+            return 'Только создатель сервера может сделать это с модератором.';
+        }
+        return null;
+    }
+
+    // Чёрный список: человека выгоняют, и вернуться на сервер он уже не сможет, пока его не уберут из списка.
+    socket.on('ban server member', async ({ code, username } = {}) => {
+        const cleanCode = String(code || '').trim().toUpperCase();
+        const targetUsername = String(username || '').trim();
+        const custom = customRooms[cleanCode];
+        if (!custom) return socket.emit('custom room error', 'Сервер с таким кодом не найден.');
+        if (!targetUsername) return;
+        const actorUsername = socket.data && socket.data.username;
+        const err = moderationError(custom, actorUsername, targetUsername, 'Добавлять в чёрный список');
+        if (err) return socket.emit('custom room error', err);
+        try {
+            await pool.query(
+                `INSERT INTO custom_room_bans (code, username, banned_by, banned_at)
+                 VALUES ($1, $2, $3, $4)
+                 ON CONFLICT (code, LOWER(username)) DO NOTHING`,
+                [cleanCode, targetUsername, actorUsername || null, Date.now()]
+            );
+            await removeUserFromServer(cleanCode, custom, targetUsername);
+            socket.emit('server bans list', { code: cleanCode, bans: await getRoomBans(cleanCode) });
+        } catch (e) {
+            console.error('❌ Ошибка добавления в чёрный список:', e);
+            socket.emit('custom room error', 'Не удалось добавить в чёрный список.');
+        }
+    });
+
+    socket.on('unban server member', async ({ code, username } = {}) => {
+        const cleanCode = String(code || '').trim().toUpperCase();
+        const targetUsername = String(username || '').trim();
+        const custom = customRooms[cleanCode];
+        if (!custom) return socket.emit('custom room error', 'Сервер с таким кодом не найден.');
+        if (!targetUsername) return;
+        if (!canModerateRoom(custom, socket.data && socket.data.username)) {
+            return socket.emit('custom room error', 'Убирать из чёрного списка может только создатель или модератор сервера.');
+        }
+        try {
+            await pool.query(
+                `DELETE FROM custom_room_bans WHERE code = $1 AND LOWER(username) = LOWER($2)`,
+                [cleanCode, targetUsername]
+            );
+            socket.emit('server bans list', { code: cleanCode, bans: await getRoomBans(cleanCode) });
+        } catch (e) {
+            console.error('❌ Ошибка снятия из чёрного списка:', e);
+            socket.emit('custom room error', 'Не удалось убрать из чёрного списка.');
+        }
+    });
+
+    socket.on('get server bans', async ({ code } = {}) => {
+        const cleanCode = String(code || '').trim().toUpperCase();
+        const custom = customRooms[cleanCode];
+        if (!custom || !canModerateRoom(custom, socket.data && socket.data.username)) return;
+        try {
+            socket.emit('server bans list', { code: cleanCode, bans: await getRoomBans(cleanCode) });
+        } catch (e) { console.error('❌ Ошибка чтения чёрного списка:', e); }
     });
 
     // Повышение до модератора — доступно владельцу и уже назначенным модераторам.

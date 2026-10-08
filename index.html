@@ -3020,6 +3020,13 @@
                 <div id="server-members-list" style="display:flex; flex-direction:column; gap:8px;"></div>
                 <div class="profile-hint" id="server-members-empty" style="display:none;">Никого нет</div>
                 <p class="auth-error" id="server-members-error" style="display:none"></p>
+
+                <!-- Чёрный список: виден только владельцу и модераторам -->
+                <div id="server-bans-section" style="display:none; margin-top:18px;">
+                    <div class="profile-hint" style="margin-bottom:8px;"><b>Чёрный список</b> — этим людям нельзя зайти на сервер</div>
+                    <div id="server-bans-list" style="display:flex; flex-direction:column; gap:8px;"></div>
+                    <div class="profile-hint" id="server-bans-empty" style="display:none;">Список пуст</div>
+                </div>
             </div>
 
             <!-- Главное действие внизу; закрытие — крестиком в шапке -->
