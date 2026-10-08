@@ -294,8 +294,7 @@ function shortenForReply(text) {
     return t.length > 140 ? t.slice(0, 140) + '…' : t;
 }
 
-// Реакции: { emoji: [ники...] } на каждое сообщение, в порядке появления.
-async // Реакции последних сообщений комнаты одним запросом — его можно слать параллельно с самой
+// Реакции последних сообщений комнаты одним запросом — его можно слать параллельно с самой
 // историей (раньше сначала ждали сообщения, потом отдельным запросом реакции).
 async function getReactionsByRoom(room, limit) {
     const out = {};
@@ -316,6 +315,7 @@ async function getReactionsByRoom(room, limit) {
     return out;
 }
 
+// Реакции: { emoji: [ники...] } на каждое сообщение, в порядке появления.
 async function getReactionsByMessageIds(ids) {
     const out = {};
     const list = (ids || []).filter(n => Number.isFinite(Number(n)));
