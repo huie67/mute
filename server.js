@@ -445,6 +445,14 @@ cloudinary.config({
     api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
+// Короткий текст причины ошибки Cloudinary для пользователя (без секретов): например
+// «Invalid cloud_name …», «Invalid api_key …», «Resource type raw not allowed».
+function cloudErrorText(e) {
+    const msg = String((e && (e.message || (e.error && e.error.message))) || e || '').replace(/\s+/g, ' ').trim();
+    const code = e && (e.http_code || (e.error && e.error.http_code));
+    return (msg ? msg.slice(0, 200) : 'неизвестная ошибка') + (code ? ` (HTTP ${code})` : '');
+}
+
 const ALLOWED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 
 const upload = multer({
@@ -471,6 +479,27 @@ function uploadBufferToCloudinary(buffer) {
     });
 }
 
+// Диагностика загрузки файлов: открыть в браузере https://<сайт>/api/upload-status.
+// Показывает, заданы ли переменные CLOUDINARY_* и отвечает ли Cloudinary на эти ключи.
+// Сами ключи не раскрываются.
+app.get('/api/upload-status', async (req, res) => {
+    const cloud = String(process.env.CLOUDINARY_CLOUD_NAME || '');
+    const out = {
+        CLOUDINARY_CLOUD_NAME: cloud ? cloud.trim() : null,
+        cloudNameHasSpaces: cloud !== cloud.trim(),
+        CLOUDINARY_API_KEY_set: !!(process.env.CLOUDINARY_API_KEY || '').trim(),
+        CLOUDINARY_API_SECRET_set: !!(process.env.CLOUDINARY_API_SECRET || '').trim(),
+        maxFileMb: Math.round(MAX_FILE_BYTES / 1024 / 1024)
+    };
+    try {
+        await cloudinary.api.ping();
+        out.cloudinary = 'ok';
+    } catch (e) {
+        out.cloudinary = 'error: ' + cloudErrorText(e);
+    }
+    res.json(out);
+});
+
 app.post('/upload', (req, res) => {
     upload.single('image')(req, res, async (err) => {
         if (err) return res.status(400).json({ error: err.message });
@@ -481,7 +510,7 @@ app.post('/upload', (req, res) => {
             res.json({ url: result.secure_url });
         } catch (uploadErr) {
             console.error('❌ Ошибка загрузки в Cloudinary:', uploadErr);
-            res.status(500).json({ error: 'Не удалось загрузить изображение' });
+            res.status(500).json({ error: `Не удалось загрузить изображение: ${cloudErrorText(uploadErr)}` });
         }
     });
 });
@@ -546,7 +575,7 @@ app.post('/upload-file', (req, res) => {
             res.json({ url: result.secure_url, name, size: req.file.size });
         } catch (uploadErr) {
             console.error('❌ Ошибка загрузки файла в Cloudinary:', uploadErr);
-            res.status(500).json({ error: 'Не удалось загрузить файл' });
+            res.status(500).json({ error: `Не удалось загрузить файл: ${cloudErrorText(uploadErr)}` });
         }
     });
 });
@@ -584,7 +613,7 @@ function isTrustedUploadUrl(u) {
         const p = new URL(u);
         return p.protocol === 'https:'
             && p.hostname === 'res.cloudinary.com'
-            && p.pathname.startsWith(`/${process.env.CLOUDINARY_CLOUD_NAME}/`);
+            && p.pathname.toLowerCase().startsWith(`/${String(process.env.CLOUDINARY_CLOUD_NAME || '').trim().toLowerCase()}/`);
     } catch (e) { return false; }
 }
 
@@ -1924,7 +1953,15 @@ io.on('connection', (socket) => {
         const rawCid = payload && typeof payload === 'object' ? payload.cid : null;
         const cid = typeof rawCid === 'string' && /^[A-Za-z0-9_-]{1,40}$/.test(rawCid) ? rawCid : null;
 
-        if (!text.trim() && !attachments.length) return;
+        if (!text.trim() && !attachments.length) {
+            // Раньше сообщение с отклонёнными вложениями молча пропадало: файл загружался, а в чате ничего не появлялось.
+            const sentSomething = (payload && typeof payload === 'object') && ((Array.isArray(payload.attachments) && payload.attachments.length) || payload.imageUrl || payload.file);
+            if (sentSomething) {
+                console.warn('⚠️ Вложение отклонено: ссылка не прошла проверку isTrustedUploadUrl (проверьте CLOUDINARY_CLOUD_NAME).');
+                socket.emit('chat notice', 'Вложение не отправлено: сервер не принял ссылку на файл. Проверьте настройку Cloudinary (/api/upload-status).');
+            }
+            return;
+        }
 
         const username = socket.data.username || 'Участник';
         const avatar = socket.data.avatar || '';
