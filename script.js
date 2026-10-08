@@ -1072,26 +1072,60 @@ async function updateAppIcon(color) {
 // Иконка ярлыков (рабочий стол, «Пуск», панель задач) — переписываем у существующих .lnk,
 // удалять и создавать их заново не нужно. Только Windows-приложение; для того же цвета
 // повторно не делаем (чтобы не гонять PowerShell при каждом запуске).
-async function syncShortcutIcon(color) {
+function setShortcutIconStatus(text, isError) {
+    const el = document.getElementById('shortcut-icon-status');
+    if (!el) return;
+    el.textContent = text;
+    el.style.display = text ? '' : 'none';
+    el.style.color = isError ? 'var(--danger)' : 'var(--text-muted)';
+}
+// force=true — по кнопке: игнорируем запомненный цвет, а если ярлыков нет совсем — создаём
+// ярлык на рабочем столе. Возвращает число обновлённых ярлыков или null при ошибке.
+async function syncShortcutIcon(color, force) {
+    const key = 'mute_shortcut_icon_color';
     try {
         const t = window.__TAURI__;
-        if (!t || !t.core) return;
-        const key = 'mute_shortcut_icon_color';
+        if (!t || !t.core) return null;
         let prev = null;
         try { prev = localStorage.getItem(key); } catch (e) {}
-        if (prev === color) return;
+        if (!force && prev === color) return null;
         const cv = await renderTintedAppIcon(color, 256);
-        if (!cv) return;
+        if (!cv) throw new Error('не удалось нарисовать иконку');
         const blob = await new Promise((r) => cv.toBlob(r, 'image/png'));
-        if (!blob) return;
+        if (!blob) throw new Error('не удалось сохранить PNG');
         const png = Array.from(new Uint8Array(await blob.arrayBuffer()));
-        const n = await t.core.invoke('update_shortcut_icon', { png });
+        const res = await t.core.invoke('update_shortcut_icon', { png, create: !!force });
+        const n = Array.isArray(res) ? res[0] : Number(res) || 0;
+        const log = Array.isArray(res) ? String(res[1] || '') : '';
         if (n > 0) { try { localStorage.setItem(key, color); } catch (e) {} } // 0 ярлыков — попробуем снова
-        if (n > 0 && prev) {
-            showToast('Иконка ярлыков обновлена. Если на панели задач осталась старая — открепите и закрепите приложение заново.', 7000);
-        }
-    } catch (e) { console.warn('[shortcut-icon]', e); }
+        const msg = n > 0
+            ? `Иконка обновлена у ярлыков: ${n}. Если на панели задач осталась старая — нажмите «Перезапустить Проводник».`
+            : 'Ярлыки приложения не найдены. Нажмите «Обновить иконку ярлыков» в настройках → Кастомизация, чтобы создать ярлык на рабочем столе.';
+        setShortcutIconStatus(msg + (force && log ? '\n\n' + log.trim() : ''), n === 0);
+        if (force || n === 0 || prev) showToast(msg, 7000);
+        return n;
+    } catch (e) {
+        console.warn('[shortcut-icon]', e);
+        const m = 'Не удалось обновить иконку ярлыков: ' + (e && e.message ? e.message : String(e));
+        setShortcutIconStatus(m, true);
+        if (force) showToast(m, 7000);
+        return null;
+    }
 }
+document.addEventListener('DOMContentLoaded', () => {
+    const upd = document.getElementById('shortcut-icon-update-btn');
+    const rst = document.getElementById('shortcut-icon-explorer-btn');
+    if (upd) upd.addEventListener('click', async () => {
+        upd.disabled = true;
+        setShortcutIconStatus('Обновляю…', false);
+        await syncShortcutIcon(currentTheme.accent, true);
+        upd.disabled = false;
+    });
+    if (rst) rst.addEventListener('click', async () => {
+        if (!confirm('Проводник перезапустится: на пару секунд пропадут панель задач и рабочий стол. Окна программ не закроются. Продолжить?')) return;
+        try { await window.__TAURI__.core.invoke('restart_explorer'); } catch (e) { showToast('Не удалось перезапустить Проводник: ' + e, 6000); }
+    });
+});
 // Выбор цвета отдаёт десятки значений в секунду — обновляем иконку, когда выбор «устоялся».
 function scheduleAppIconUpdate(color) {
     clearTimeout(appIconTimer);
