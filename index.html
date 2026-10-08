@@ -1018,8 +1018,11 @@
 
         #messages {
             flex: 1;
+            min-width: 0;
             padding: 16px;
             overflow-y: auto;
+            overflow-x: hidden; /* длинные ссылки/слова не должны давать горизонтальную полосу */
+            overflow-wrap: anywhere;
             display: flex;
             flex-direction: column;
             gap: 10px;
@@ -1027,7 +1030,9 @@
         }
 
         .chat-input-area {
-            padding: 16px;
+            padding: 12px 12px 14px;
+            box-sizing: border-box;
+            min-width: 0;
             border-top: 1px solid var(--border-soft);
             display: flex;
             align-items: flex-end; /* кнопки остаются внизу, когда поле ввода вырастает */
@@ -1037,7 +1042,8 @@
 
         .chat-input-area input,
         .chat-input-area textarea {
-            flex: 1;
+            flex: 1 1 0;
+            min-width: 0; /* без этого поле не сужается меньше своей «естественной» ширины и ломает строку */
             width: 100%;
             background: var(--bg-input);
             border: 1px solid var(--border);
@@ -1051,13 +1057,20 @@
         .chat-input-area textarea:focus {
             border-color: var(--accent);
         }
+        /* Подсказка в пустом поле — в одну строку с многоточием, а не в две: иначе при узком
+           чате поле «разъезжалось» на два уровня и появлялась полоса прокрутки. */
+        .chat-input-area textarea::placeholder {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
         /* Поле ввода растёт вместе с текстом (Shift+Enter — новая строка), но не выше 40% окна */
         .chat-input-area textarea {
             resize: none;
             font: inherit;
             line-height: 1.4;
             box-sizing: border-box;
-            min-height: 40px;
+            min-height: 44px;
             max-height: 40vh;
             overflow-y: auto;
         }
@@ -1140,15 +1153,24 @@
             border: 1px solid var(--border);
             color: #fff;
             border-radius: var(--radius-sm);
-            padding: 0 9px;
+            padding: 0;
             font-size: 16px;
             cursor: pointer;
-            flex-shrink: 0;
+            /* Размер задан явно и равен высоте однострочного поля ввода: раньше при
+               align-items:flex-end кнопки сжимались до высоты иконки (≈18px) и были
+               крошечными, а при узком чате ещё и ужимались по ширине. */
+            box-sizing: border-box;
+            width: 44px;
+            height: 44px;
+            min-width: 44px;
+            flex: 0 0 44px;
+            align-self: flex-end;
             transition: background 0.15s;
             display: flex;
             align-items: center;
             justify-content: center;
         }
+        .attach-btn svg { width: 18px; height: 18px; flex-shrink: 0; }
         .attach-btn:hover { background: var(--border-soft); }
         .attach-btn:disabled {
             opacity: 0.5;
