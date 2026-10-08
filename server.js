@@ -508,6 +508,38 @@ app.get('/api/upload-status', async (req, res) => {
     } catch (e) {
         out.cloudinary = 'error: ' + cloudErrorText(e);
     }
+
+    // Пробная загрузка крошечной картинки: /api/upload-status?test=1. Идёт напрямую (не через SDK),
+    // чтобы увидеть настоящий ответ Cloudinary — SDK при 403 пишет лишь «unexpected status code».
+    if (req.query.test) {
+        try {
+            const timestamp = Math.floor(Date.now() / 1000);
+            const params = { folder: 'voicechat', timestamp };
+            const signature = cloudinary.utils.api_sign_request(params, cleanEnvValue(process.env.CLOUDINARY_API_SECRET));
+            const tinyPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+            const form = new URLSearchParams({
+                file: tinyPng,
+                folder: 'voicechat',
+                timestamp: String(timestamp),
+                api_key: cleanEnvValue(process.env.CLOUDINARY_API_KEY),
+                signature
+            });
+            const r = await fetch(`https://api.cloudinary.com/v1_1/${cleanEnvValue(process.env.CLOUDINARY_CLOUD_NAME)}/image/upload`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: form
+            });
+            const text = await r.text();
+            out.testUpload = {
+                status: r.status,
+                contentType: r.headers.get('content-type'),
+                server: r.headers.get('server'),
+                body: text.replace(/\s+/g, ' ').slice(0, 400)
+            };
+        } catch (e) {
+            out.testUpload = { error: String((e && e.message) || e) };
+        }
+    }
     res.json(out);
 });
 
