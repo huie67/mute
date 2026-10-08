@@ -1086,7 +1086,7 @@ async function syncShortcutIcon(color) {
         if (!blob) return;
         const png = Array.from(new Uint8Array(await blob.arrayBuffer()));
         const n = await t.core.invoke('update_shortcut_icon', { png });
-        try { localStorage.setItem(key, color); } catch (e) {}
+        if (n > 0) { try { localStorage.setItem(key, color); } catch (e) {} } // 0 ярлыков — попробуем снова
         if (n > 0 && prev) {
             showToast('Иконка ярлыков обновлена. Если на панели задач осталась старая — открепите и закрепите приложение заново.', 7000);
         }
