@@ -1019,8 +1019,8 @@ function saveThemeToStorage(theme) {
 // ---------- Иконка приложения в цвет темы ----------
 // Значок микрофона (app-icon.png — одноцветный силуэт) перекрашивается в акцентный цвет:
 // во вкладке браузера — через favicon, в десктопном приложении — иконка окна и кнопка на
-// панели задач (команда set_app_icon). Файл .exe и ярлык на рабочем столе остаются прежними:
-// их иконка зашита в файл при сборке и на лету не меняется.
+// панели задач (команда set_app_icon). Иконка самого .exe остаётся
+// прежней (зашита при сборке), а у ярлыков иконка переписывается — см. syncShortcutIcon.
 // (var, а не let: applyTheme может сработать раньше, чем выполнится эта строка.)
 var appIconBaseImage = null;
 var appIconTimer = null;
@@ -1065,8 +1065,32 @@ async function updateAppIcon(color) {
             if (!big) return;
             const rgba = big.getContext('2d').getImageData(0, 0, 128, 128).data;
             await t.core.invoke('set_app_icon', { rgba: Array.from(rgba), width: 128, height: 128 });
+            syncShortcutIcon(color);
         }
     } catch (e) { console.warn('[icon]', e); }
+}
+// Иконка ярлыков (рабочий стол, «Пуск», панель задач) — переписываем у существующих .lnk,
+// удалять и создавать их заново не нужно. Только Windows-приложение; для того же цвета
+// повторно не делаем (чтобы не гонять PowerShell при каждом запуске).
+async function syncShortcutIcon(color) {
+    try {
+        const t = window.__TAURI__;
+        if (!t || !t.core) return;
+        const key = 'mute_shortcut_icon_color';
+        let prev = null;
+        try { prev = localStorage.getItem(key); } catch (e) {}
+        if (prev === color) return;
+        const cv = await renderTintedAppIcon(color, 256);
+        if (!cv) return;
+        const blob = await new Promise((r) => cv.toBlob(r, 'image/png'));
+        if (!blob) return;
+        const png = Array.from(new Uint8Array(await blob.arrayBuffer()));
+        const n = await t.core.invoke('update_shortcut_icon', { png });
+        try { localStorage.setItem(key, color); } catch (e) {}
+        if (n > 0 && prev) {
+            showToast('Иконка ярлыков обновлена. Если на панели задач осталась старая — открепите и закрепите приложение заново.', 7000);
+        }
+    } catch (e) { console.warn('[shortcut-icon]', e); }
 }
 // Выбор цвета отдаёт десятки значений в секунду — обновляем иконку, когда выбор «устоялся».
 function scheduleAppIconUpdate(color) {
