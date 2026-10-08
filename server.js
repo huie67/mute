@@ -439,10 +439,16 @@ if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !pr
     process.exit(1);
 }
 
+// Значения из панели хостинга часто копируются с пробелом/переводом строки на конце или в
+// кавычках — Cloudinary тогда считает подпись неверной («Invalid Signature», HTTP 401).
+// Поэтому перед использованием чистим пробелы и обрамляющие кавычки.
+function cleanEnvValue(v) {
+    return String(v || '').trim().replace(/^["'`]+|["'`]+$/g, '').trim();
+}
 cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-    api_key: process.env.CLOUDINARY_API_KEY,
-    api_secret: process.env.CLOUDINARY_API_SECRET
+    cloud_name: cleanEnvValue(process.env.CLOUDINARY_CLOUD_NAME),
+    api_key: cleanEnvValue(process.env.CLOUDINARY_API_KEY),
+    api_secret: cleanEnvValue(process.env.CLOUDINARY_API_SECRET)
 });
 
 // Короткий текст причины ошибки Cloudinary для пользователя (без секретов): например
@@ -489,6 +495,11 @@ app.get('/api/upload-status', async (req, res) => {
         cloudNameHasSpaces: cloud !== cloud.trim(),
         CLOUDINARY_API_KEY_set: !!(process.env.CLOUDINARY_API_KEY || '').trim(),
         CLOUDINARY_API_SECRET_set: !!(process.env.CLOUDINARY_API_SECRET || '').trim(),
+        // Длины (сами ключи не раскрываем): у Cloudinary api_key — 15 цифр, api_secret — 27 символов.
+        apiKeyLength: cleanEnvValue(process.env.CLOUDINARY_API_KEY).length,
+        apiSecretLength: cleanEnvValue(process.env.CLOUDINARY_API_SECRET).length,
+        envHadExtraWhitespaceOrQuotes: ['CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET']
+            .some(k => process.env[k] && process.env[k] !== cleanEnvValue(process.env[k])),
         maxFileMb: Math.round(MAX_FILE_BYTES / 1024 / 1024)
     };
     try {
