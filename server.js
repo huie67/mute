@@ -1286,15 +1286,14 @@ io.on('connection', (socket) => {
     // (таблица участников сервера), поэтому одинаковый в браузере и в приложении.
     // Для гостей (без аккаунта) нет способа узнать «это тот же человек», поэтому у них
     // список остаётся локальным — по кодам, которые присылает сам клиент.
-    socket.on('get my custom rooms', async ({ codes } = {}) => {
-        const wanted = new Set(
-            Array.isArray(codes)
-                ? codes.map(c => String(c || '').trim().toUpperCase()).filter(Boolean).slice(0, 200)
-                : []
-        );
-
-        const username = socket.data && socket.data.username;
-        if (socket.data && socket.data.verified && username) {
+    // Список серверов для конкретного сокета. Для аккаунта — только то, что записано на сервере
+    // (иначе сервер, из которого вышли на одном устройстве, «возвращался» бы с другого из его
+    // локального списка). Для гостей — по кодам, которые прислал сам клиент.
+    async function buildMyRoomsList(sock, codes) {
+        const username = sock.data && sock.data.username;
+        const verified = !!(sock.data && sock.data.verified && username);
+        const wanted = new Set();
+        if (verified) {
             try {
                 const result = await pool.query(
                     `SELECT code FROM custom_room_members WHERE LOWER(username) = LOWER($1)`,
@@ -1307,14 +1306,33 @@ io.on('connection', (socket) => {
             for (const code of Object.keys(customRooms)) {
                 if (isRoomOwner(customRooms[code], username)) wanted.add(code);
             }
+        } else if (Array.isArray(codes)) {
+            codes.map(c => String(c || '').trim().toUpperCase()).filter(Boolean).slice(0, 200).forEach(c => wanted.add(c));
         }
-
-        const found = [...wanted]
+        return [...wanted]
             .map(code => customRooms[code])
             .filter(Boolean)
             .map(room => publicCustomRoom(room));
-        socket.emit('custom rooms list', found);
+    }
+
+    socket.on('get my custom rooms', async ({ codes } = {}) => {
+        socket.emit('custom rooms list', await buildMyRoomsList(socket, codes));
     });
+
+    // Сервер добавлен/покинут/создан на одном устройстве — остальные устройства этого же
+    // аккаунта (браузер, приложение, другие вкладки) сразу получают обновлённый список.
+    async function syncRoomsToAccount() {
+        const username = socket.data && socket.data.username;
+        if (!(socket.data && socket.data.verified && username)) return;
+        const key = username.toLowerCase();
+        for (const other of io.sockets.sockets.values()) {
+            if (other.id === socket.id) continue;
+            const d = other.data;
+            if (d && d.verified && String(d.username || '').toLowerCase() === key) {
+                other.emit('custom rooms list', await buildMyRoomsList(other));
+            }
+        }
+    }
 
     // «Покинуть сервер» — убираем себя из участников, чтобы сервер не вернулся
     // в список на другом устройстве. Владелец покинуть свой сервер не может (только удалить).
@@ -1325,6 +1343,7 @@ io.on('connection', (socket) => {
         if (!custom || !username || isRoomOwner(custom, username)) return;
         await removeRoomMember(cleanCode, username);
         scheduleBroadcastServerMembers(cleanCode);
+        syncRoomsToAccount().catch(() => {});
     });
 
     socket.on('create custom room', async ({ name, password, avatar }) => {
@@ -1382,6 +1401,7 @@ io.on('connection', (socket) => {
             // Только создателю — остальные о новом сервере ничего не узнают, пока
             // сами не войдут по коду.
             socket.emit('custom room created', customRoomInfoFor(room, socket));
+            syncRoomsToAccount().catch(() => {});
         } catch (err) {
             console.error('❌ Ошибка создания пользовательского сервера:', err);
             socket.emit('custom room error', 'Не удалось создать сервер.');
@@ -1407,6 +1427,7 @@ io.on('connection', (socket) => {
                 scheduleBroadcastServerMembers(cleanCode);
             }
             socket.emit('custom room joined', customRoomInfoFor(custom, socket));
+            syncRoomsToAccount().catch(() => {});
         } catch (err) {
             console.error('❌ Ошибка входа в пользовательский сервер:', err);
             socket.emit('custom room error', 'Не удалось войти на сервер.');

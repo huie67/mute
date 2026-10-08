@@ -4245,6 +4245,20 @@ document.getElementById('close-created-server')?.addEventListener('click', () =>
 
 socket.on('custom rooms list', (rooms) => {
     if (!Array.isArray(rooms)) return;
+
+    // Сервер убрали на другом устройстве этого же аккаунта (вышли с него) — закрываем
+    // его и здесь, если он был сейчас открыт, чтобы не остаться в «пустом» канале.
+    if (selectedRoom && selectedRoom.startsWith('custom:') && !rooms.some(r => `custom:${r.code}` === selectedRoom)) {
+        const gone = selectedRoom;
+        if (currentUser.room === gone) leaveVoiceChannel();
+        selectedRoom = null;
+        saveLastRoom(null);
+        setChatEnabled(false);
+        roomTitle.innerText = 'Выберите канал';
+        connectRoomBtn.style.display = 'none';
+        document.querySelectorAll('.custom-room-btn').forEach(b => b.classList.remove('active'));
+    }
+
     customServersList.innerHTML = '';
     for (const room of rooms) {
         addCustomServerButton(room);
