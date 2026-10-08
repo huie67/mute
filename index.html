@@ -53,6 +53,8 @@
             -webkit-user-select: text;
         }
         .msg-text {
+            white-space: pre-wrap; /* переносы строк из многострочных сообщений */
+            overflow-wrap: anywhere;
             user-select: text;
             -webkit-user-select: text;
             cursor: text;
@@ -1028,11 +1030,13 @@
             padding: 16px;
             border-top: 1px solid var(--border-soft);
             display: flex;
+            align-items: flex-end; /* кнопки остаются внизу, когда поле ввода вырастает */
             gap: 8px;
             position: relative;
         }
 
-        .chat-input-area input {
+        .chat-input-area input,
+        .chat-input-area textarea {
             flex: 1;
             width: 100%;
             background: var(--bg-input);
@@ -1043,8 +1047,19 @@
             outline: none;
             transition: border-color 0.2s;
         }
-        .chat-input-area input:focus {
+        .chat-input-area input:focus,
+        .chat-input-area textarea:focus {
             border-color: var(--accent);
+        }
+        /* Поле ввода растёт вместе с текстом (Shift+Enter — новая строка), но не выше 40% окна */
+        .chat-input-area textarea {
+            resize: none;
+            font: inherit;
+            line-height: 1.4;
+            box-sizing: border-box;
+            min-height: 40px;
+            max-height: 40vh;
+            overflow-y: auto;
         }
 
         /* Автодополнение упоминаний (@ник) — всплывает над полем ввода чата */
@@ -2857,7 +2872,7 @@
                         <button type="button" id="upload-status-cancel" title="Отменить загрузку" aria-label="Отменить загрузку">✕</button>
                     </div>
                     <div class="chat-input-area">
-                        <input type="text" id="message-input" placeholder="Выберите сервер слева, чтобы открыть чат" disabled autocomplete="off">
+                        <textarea id="message-input" rows="1" maxlength="4000" placeholder="Выберите сервер слева, чтобы открыть чат" disabled autocomplete="off" spellcheck="true"></textarea>
                         <div class="mention-autocomplete" id="mention-autocomplete"></div>
                         <button class="attach-btn" id="emoji-btn" type="button" title="Смайлики" disabled>
                             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

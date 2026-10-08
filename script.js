@@ -7714,6 +7714,7 @@ function applyMention(idx) {
     const insertion = `@${item.username} `;
 
     messageInput.value = before + insertion + after;
+    autosizeMessageInput();
     const newCursor = (before + insertion).length;
     closeMentionAutocomplete();
     messageInput.focus();
@@ -7726,6 +7727,15 @@ messageInput.addEventListener('blur', () => {
     // Небольшая задержка, чтобы клик по подсказке (mousedown) успел обработаться раньше закрытия.
     setTimeout(closeMentionAutocomplete, 150);
 });
+
+// Поле ввода — textarea: растёт по мере набора, Enter отправляет, Shift+Enter — новая строка.
+function autosizeMessageInput() {
+    messageInput.style.height = 'auto';
+    const borders = messageInput.offsetHeight - messageInput.clientHeight;
+    messageInput.style.height = `${messageInput.scrollHeight + borders}px`;
+}
+messageInput.addEventListener('input', autosizeMessageInput);
+window.addEventListener('resize', autosizeMessageInput);
 
 messageInput.addEventListener('keydown', (e) => {
     e.stopPropagation();
@@ -7755,7 +7765,8 @@ messageInput.addEventListener('keydown', (e) => {
         }
     }
 
-    if (e.key === 'Enter' && messageInput.value.trim() && !messageInput.disabled) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) e.preventDefault(); // не вставлять перенос строки при отправке
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && messageInput.value.trim() && !messageInput.disabled) {
         // Позицию меряем ДО отправки: вниз прокручиваем, только если человек и так
         // находится у конца чата. Если он читает историю выше — не трогаем прокрутку.
         const stickToBottom = chatPinnedToBottom || isChatNearBottom();
@@ -7769,6 +7780,7 @@ messageInput.addEventListener('keydown', (e) => {
             catch (err) { console.error('❌ Не удалось показать сообщение сразу:', err); }
         }
         messageInput.value = '';
+        autosizeMessageInput();
         closeMentionAutocomplete();
         if (stickToBottom) {
             scrollChatToBottom();

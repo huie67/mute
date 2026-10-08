@@ -1930,7 +1930,7 @@ io.on('connection', (socket) => {
         const avatar = socket.data.avatar || '';
         const createdAt = Date.now();
         const room = currentChatRoom;
-        const cleanText = text.trim();
+        const cleanText = text.trim().slice(0, 4000); // потолок длины сообщения (совпадает с maxlength поля ввода)
 
         // Шёпот: "wh@ник" — сообщение получают только отмеченные (через wh@ник или @ник) и автор.
         // Проверяем ДО сохранения: если адресатов найти не удалось, ничего не отправляем —
