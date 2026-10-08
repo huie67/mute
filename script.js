@@ -6773,6 +6773,17 @@ socket.on('message reactions', ({ id, room, reactions } = {}) => {
 // --- Клики по сообщениям (одним обработчиком на всю ленту) ---
 const HOVER_NONE = window.matchMedia ? window.matchMedia('(hover: none)') : { matches: false };
 messagesDiv.addEventListener('click', (e) => {
+    // Скачивание файла. В десктопном приложении (WebView2) ссылка с target=_blank и
+    // скачивание «молча» не срабатывают — просим приложение открыть ссылку в браузере
+    // по умолчанию, который и скачает файл (сервер отдаёт его под настоящим именем).
+    const fileLink = e.target.closest('a.chat-file');
+    if (fileLink && window.__TAURI__ && window.__TAURI__.core && typeof window.__TAURI__.core.invoke === 'function') {
+        e.preventDefault();
+        window.__TAURI__.core.invoke('open_download', { url: fileLink.href })
+            .catch(err => { console.warn('[download]', err); showToast('Не удалось начать скачивание'); });
+        return;
+    }
+
     const part = e.target.closest('.msg-part');
     if (!part) return;
 
