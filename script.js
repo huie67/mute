@@ -1017,7 +1017,8 @@ function saveThemeToStorage(theme) {
 }
 
 // ---------- Иконка приложения в цвет темы ----------
-// Значок микрофона (app-icon.png — одноцветный силуэт) перекрашивается в акцентный цвет:
+// Значок микрофона (app-icon.png — одноцветный силуэт) перекрашивается в акцентный цвет
+// (или вместо него берётся иконка, загруженная пользователем — см. importCustomIcon):
 // во вкладке браузера — через favicon, в десктопном приложении — иконка окна и кнопка на
 // панели задач (команда set_app_icon). Иконка самого .exe остаётся
 // прежней (зашита при сборке), а у ярлыков иконка переписывается — см. syncShortcutIcon.
@@ -1033,7 +1034,44 @@ function loadAppIconBase() {
         img.src = '/app-icon.png';
     });
 }
+// Своя иконка пользователя (PNG 256x256 в виде data-URL). Если задана — используется вместо
+// иконки в цвет темы: и для вкладки/окна/панели задач, и для ярлыков.
+var CUSTOM_ICON_KEY = 'mute_custom_app_icon';
+var customIconImage = null;
+var customIconImageSrc = null;
+function getCustomAppIcon() {
+    try { return localStorage.getItem(CUSTOM_ICON_KEY) || null; } catch (e) { return null; }
+}
+function loadCustomIconImage(src) {
+    return new Promise((resolve) => {
+        if (customIconImage && customIconImageSrc === src) return resolve(customIconImage);
+        const img = new Image();
+        img.onload = () => { customIconImage = img; customIconImageSrc = src; resolve(img); };
+        img.onerror = () => resolve(null);
+        img.src = src;
+    });
+}
+// Подпись текущей иконки: по ней решаем, нужно ли заново переписывать ярлыки.
+function appIconSignature(color) {
+    const c = getCustomAppIcon();
+    if (!c) return color;
+    let h = 0;
+    for (let i = 0; i < c.length; i += 7) h = (h * 31 + c.charCodeAt(i)) | 0;
+    return 'custom:' + c.length + ':' + h;
+}
 async function renderTintedAppIcon(color, size) {
+    const custom = getCustomAppIcon();
+    if (custom) {
+        const img = await loadCustomIconImage(custom);
+        if (img) {
+            const cv = document.createElement('canvas');
+            cv.width = cv.height = size;
+            const ctx = cv.getContext('2d');
+            ctx.imageSmoothingQuality = 'high';
+            ctx.drawImage(img, 0, 0, size, size);
+            return cv;
+        }
+    }
     const base = await loadAppIconBase();
     if (!base) return null;
     const cv = document.createElement('canvas');
@@ -1044,6 +1082,45 @@ async function renderTintedAppIcon(color, size) {
     ctx.fillStyle = color;
     ctx.fillRect(0, 0, size, size);
     return cv;
+}
+// Читает выбранную картинку и приводит к квадрату 256x256 (с прозрачными полями, без обрезки).
+async function importCustomIcon(file) {
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) throw new Error('файл больше 5 МБ');
+    const url = URL.createObjectURL(file);
+    try {
+        const img = await new Promise((resolve, reject) => {
+            const i = new Image();
+            i.onload = () => resolve(i);
+            i.onerror = () => reject(new Error('не удалось прочитать картинку'));
+            i.src = url;
+        });
+        const w = img.naturalWidth || 256, h = img.naturalHeight || 256;
+        const k = Math.min(256 / w, 256 / h);
+        const dw = Math.round(w * k), dh = Math.round(h * k);
+        const cv = document.createElement('canvas');
+        cv.width = cv.height = 256;
+        const ctx = cv.getContext('2d');
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(img, Math.round((256 - dw) / 2), Math.round((256 - dh) / 2), dw, dh);
+        localStorage.setItem(CUSTOM_ICON_KEY, cv.toDataURL('image/png'));
+        customIconImage = null;
+        customIconImageSrc = null;
+    } finally {
+        URL.revokeObjectURL(url);
+    }
+}
+async function refreshIconPreview() {
+    const img = document.getElementById('custom-icon-preview');
+    const label = document.getElementById('custom-icon-state');
+    const resetBtn = document.getElementById('custom-icon-reset-btn');
+    const custom = !!getCustomAppIcon();
+    if (label) label.textContent = custom ? 'Сейчас используется ваша иконка.' : 'Сейчас используется стандартная иконка в цвет темы.';
+    if (resetBtn) resetBtn.style.display = custom ? '' : 'none';
+    if (img) {
+        const cv = await renderTintedAppIcon((typeof currentTheme !== 'undefined' && currentTheme.accent) || '#6366f1', 96);
+        if (cv) img.src = cv.toDataURL('image/png');
+    }
 }
 async function updateAppIcon(color) {
     try {
@@ -1058,6 +1135,7 @@ async function updateAppIcon(color) {
         }
         link.type = 'image/png';
         link.href = small.toDataURL('image/png');
+        refreshIconPreview();
 
         const t = window.__TAURI__;
         if (t && t.core && typeof t.core.invoke === 'function') {
@@ -1088,7 +1166,8 @@ async function syncShortcutIcon(color, force) {
         if (!t || !t.core) return null;
         let prev = null;
         try { prev = localStorage.getItem(key); } catch (e) {}
-        if (!force && prev === color) return null;
+        const sig = appIconSignature(color);
+        if (!force && prev === sig) return null;
         const cv = await renderTintedAppIcon(color, 256);
         if (!cv) throw new Error('не удалось нарисовать иконку');
         const blob = await new Promise((r) => cv.toBlob(r, 'image/png'));
@@ -1097,7 +1176,7 @@ async function syncShortcutIcon(color, force) {
         const res = await t.core.invoke('update_shortcut_icon', { png, create: !!force });
         const n = Array.isArray(res) ? res[0] : Number(res) || 0;
         const log = Array.isArray(res) ? String(res[1] || '') : '';
-        if (n > 0) { try { localStorage.setItem(key, color); } catch (e) {} } // 0 ярлыков — попробуем снова
+        if (n > 0) { try { localStorage.setItem(key, sig); } catch (e) {} } // 0 ярлыков — попробуем снова
         const msg = n > 0
             ? `Иконка обновлена у ярлыков: ${n}. Если на панели задач осталась старая — нажмите «Перезапустить Проводник».`
             : 'Ярлыки приложения не найдены. Нажмите «Обновить иконку ярлыков» в настройках → Кастомизация, чтобы создать ярлык на рабочем столе.';
@@ -1115,6 +1194,37 @@ async function syncShortcutIcon(color, force) {
 document.addEventListener('DOMContentLoaded', () => {
     const upd = document.getElementById('shortcut-icon-update-btn');
     const rst = document.getElementById('shortcut-icon-explorer-btn');
+    const pick = document.getElementById('custom-icon-upload-btn');
+    const file = document.getElementById('custom-icon-file');
+    const reset = document.getElementById('custom-icon-reset-btn');
+    refreshIconPreview();
+    if (pick && file) pick.addEventListener('click', () => file.click());
+    if (file) file.addEventListener('change', async () => {
+        const f = file.files && file.files[0];
+        file.value = '';
+        if (!f) return;
+        try {
+            await importCustomIcon(f);
+        } catch (e) {
+            const m = 'Не удалось загрузить иконку: ' + (e && e.message ? e.message : String(e));
+            setShortcutIconStatus(m, true);
+            showToast(m, 6000);
+            return;
+        }
+        setShortcutIconStatus('Иконка загружена, применяю…', false);
+        await updateAppIcon(currentTheme.accent);
+        await refreshIconPreview();
+        if (!(window.__TAURI__ && window.__TAURI__.core)) setShortcutIconStatus('Иконка вкладки обновлена.', false);
+    });
+    if (reset) reset.addEventListener('click', async () => {
+        try { localStorage.removeItem(CUSTOM_ICON_KEY); } catch (e) {}
+        customIconImage = null;
+        customIconImageSrc = null;
+        setShortcutIconStatus('Вернул иконку в цвет темы, применяю…', false);
+        await updateAppIcon(currentTheme.accent);
+        await refreshIconPreview();
+        if (!(window.__TAURI__ && window.__TAURI__.core)) setShortcutIconStatus('', false);
+    });
     if (upd) upd.addEventListener('click', async () => {
         upd.disabled = true;
         setShortcutIconStatus('Обновляю…', false);

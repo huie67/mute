@@ -3484,10 +3484,22 @@
                 </div>
 
                 <div class="settings-section tauri-only-setting" id="shortcut-icon-section">
-                    <div class="settings-section-title">Иконка ярлыков</div>
+                    <div class="settings-section-title">Иконка приложения</div>
                     <div class="control-group">
-                        <span class="profile-hint">Иконка на рабочем столе, в «Пуске» и на панели задач окрашивается в цвет темы автоматически. Если этого не произошло — нажмите кнопку (если ярлыка нет, он будет создан на рабочем столе). Иконка на панели задач может обновиться только после перезапуска Проводника.</span>
+                        <div style="display:flex; align-items:center; gap:14px;">
+                            <img id="custom-icon-preview" alt="" width="48" height="48" style="width:48px; height:48px; border-radius:10px; background:var(--bg-tertiary, rgba(255,255,255,.06)); object-fit:contain; flex:none;">
+                            <span class="profile-hint" id="custom-icon-state" style="margin:0;"></span>
+                        </div>
+                        <span class="profile-hint">Загрузите свою картинку (PNG, JPG, WebP, SVG, ICO — до 5 МБ, лучше квадратную, с прозрачным фоном). Она станет иконкой окна, панели задач и ярлыков. Если своей иконки нет, значок окрашивается в цвет темы автоматически.</span>
+                        <input type="file" id="custom-icon-file" accept="image/png,image/jpeg,image/webp,image/svg+xml,image/x-icon,image/vnd.microsoft.icon,.ico" style="display:none">
                         <p class="profile-hint" id="shortcut-icon-status" style="display:none; white-space:pre-wrap;"></p>
+                    </div>
+                    <div class="theme-actions-row">
+                        <button type="button" class="btn-secondary-ghost" id="custom-icon-upload-btn">Загрузить свою иконку</button>
+                        <button type="button" class="btn-secondary-ghost" id="custom-icon-reset-btn" style="display:none">Вернуть иконку по цвету темы</button>
+                    </div>
+                    <div class="control-group" style="margin-top:12px;">
+                        <span class="profile-hint">Иконка в ярлыках обновляется сама. Если этого не произошло — нажмите «Обновить иконку ярлыков» (если ярлыка нет, он будет создан на рабочем столе). Иконка на панели задач может обновиться только после перезапуска Проводника.</span>
                     </div>
                     <div class="theme-actions-row">
                         <button type="button" class="btn-secondary-ghost" id="shortcut-icon-update-btn">Обновить иконку ярлыков</button>
