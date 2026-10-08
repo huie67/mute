@@ -1710,6 +1710,38 @@
         }
         #settings-tabs .settings-tab.active svg { color: var(--accent); opacity: 1; }
 
+        /* Подтемы под выбранным пунктом настроек (строятся из заголовков секций панели) */
+        #settings-tabs .settings-subtopics {
+            display: none;
+            flex-direction: column;
+            gap: 1px;
+            margin: 2px 0 8px 21px;
+            padding-left: 10px;
+            border-left: 1px solid var(--border-soft);
+        }
+        #settings-tabs .settings-subtopics.open { display: flex; animation: subtopicsIn .18s ease; }
+        .settings-subtopic {
+            background: none;
+            border: none;
+            text-align: left;
+            padding: 6px 10px;
+            font-size: 13px;
+            font-family: inherit;
+            color: var(--text-muted);
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+        }
+        .settings-subtopic:hover { color: var(--text); background: rgba(255,255,255,0.04); }
+        .settings-section.flash-section { animation: sectionFlash 1.2s ease; }
+        @keyframes subtopicsIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+        @keyframes sectionFlash {
+            0%, 60% { box-shadow: 0 0 0 2px var(--accent); border-radius: var(--radius-md); }
+            100% { box-shadow: 0 0 0 2px transparent; border-radius: var(--radius-md); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            #settings-tabs .settings-subtopics.open, .settings-section.flash-section { animation: none; }
+        }
+
         .settings-content {
             flex: 1;
             min-width: 0;
@@ -1781,6 +1813,7 @@
             #settings-tabs { flex-direction: row; }
             #settings-tabs .settings-tab { flex: 1; justify-content: center; padding: 8px 6px; }
             #settings-tabs .settings-tab span { display: none; }
+            #settings-tabs .settings-subtopics { display: none !important; }
         }
 
         /* Баннер разрыва соединения — в отличие от тостов НЕ исчезает сам по себе,
@@ -3480,6 +3513,22 @@
                     </div>
                     <div class="theme-actions-row">
                         <button type="button" class="btn-secondary-ghost" id="ui-scale-reset-btn">Сбросить масштаб (100%)</button>
+                    </div>
+                </div>
+
+                <div class="settings-section tauri-only-setting" id="app-update-section">
+                    <div class="settings-section-title">Обновление приложения</div>
+                    <div class="control-group">
+                        <span class="profile-hint" id="app-update-version">Версия: …</span>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="auto-update-check" checked> Устанавливать обновления автоматически
+                        </label>
+                        <span class="profile-hint">При запуске приложение проверяет, нет ли новой версии, и само её скачивает и ставит. Во время звонка не обновляется — дождётся, пока вы выйдете.</span>
+                        <p class="profile-hint" id="app-update-status" style="display:none; white-space:pre-wrap;"></p>
+                    </div>
+                    <div class="theme-actions-row">
+                        <button type="button" class="btn-secondary-ghost" id="app-update-check-btn">Проверить обновления</button>
+                        <button type="button" class="btn-secondary-ghost" id="app-update-install-btn" style="display:none">Установить обновление</button>
                     </div>
                 </div>
 

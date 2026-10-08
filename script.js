@@ -1236,6 +1236,97 @@ document.addEventListener('DOMContentLoaded', () => {
         try { await window.__TAURI__.core.invoke('restart_explorer'); } catch (e) { showToast('Не удалось перезапустить Проводник: ' + e, 6000); }
     });
 });
+
+// ---------- Автообновление приложения (Tauri updater) ----------
+var appUpdateInfo = null;
+var appUpdateBusy = false;
+var APP_AUTO_UPDATE_KEY = 'mute_auto_update';
+function isAutoUpdateOn() {
+    try { return localStorage.getItem(APP_AUTO_UPDATE_KEY) !== '0'; } catch (e) { return true; }
+}
+function setUpdateStatus(text, isError) {
+    const el = document.getElementById('app-update-status');
+    if (!el) return;
+    el.textContent = text;
+    el.style.display = text ? '' : 'none';
+    el.style.color = isError ? 'var(--danger)' : 'var(--text-muted)';
+}
+function isInCallNow() {
+    try {
+        return !!(typeof currentUser !== 'undefined' && currentUser && currentUser.room) ||
+               (typeof activeCalls !== 'undefined' && Object.keys(activeCalls).length > 0);
+    } catch (e) { return false; }
+}
+async function installAppUpdate() {
+    const t = window.__TAURI__;
+    if (!t || !t.core || appUpdateBusy) return;
+    appUpdateBusy = true;
+    const btn = document.getElementById('app-update-install-btn');
+    if (btn) btn.disabled = true;
+    setUpdateStatus('Скачиваю и устанавливаю версию ' + (appUpdateInfo ? appUpdateInfo.version : '') + '… Приложение перезапустится само.', false);
+    showToast('Устанавливаю обновление, приложение перезапустится…', 6000);
+    try {
+        await t.core.invoke('install_update');
+    } catch (e) {
+        appUpdateBusy = false;
+        if (btn) btn.disabled = false;
+        const m = 'Не удалось установить обновление: ' + (e && e.message ? e.message : String(e));
+        setUpdateStatus(m, true);
+        showToast(m, 7000);
+    }
+}
+async function checkAppUpdate(manual) {
+    const t = window.__TAURI__;
+    if (!t || !t.core || appUpdateBusy) return null;
+    const checkBtn = document.getElementById('app-update-check-btn');
+    const installBtn = document.getElementById('app-update-install-btn');
+    if (manual) { if (checkBtn) checkBtn.disabled = true; setUpdateStatus('Проверяю…', false); }
+    try {
+        const r = await t.core.invoke('check_update');
+        if (!r) {
+            appUpdateInfo = null;
+            if (installBtn) installBtn.style.display = 'none';
+            if (manual) setUpdateStatus('У вас последняя версия.', false);
+            return null;
+        }
+        appUpdateInfo = { version: r[0], current: r[1], notes: r[2] };
+        if (installBtn) installBtn.style.display = '';
+        setUpdateStatus('Доступна версия ' + r[0] + ' (у вас ' + r[1] + ').' + (r[2] ? '\n' + r[2] : ''), false);
+        if (!manual && isAutoUpdateOn()) {
+            if (isInCallNow()) showToast('Доступна новая версия ' + r[0] + ' — обновлюсь, когда вы выйдете из звонка.', 6000);
+            else installAppUpdate();
+        } else if (!manual) {
+            showToast('Доступна новая версия ' + r[0] + '. Настройки → Кастомизация → «Обновление приложения».', 7000);
+        }
+        return appUpdateInfo;
+    } catch (e) {
+        console.warn('[update]', e);
+        if (manual) setUpdateStatus('Не удалось проверить обновления: ' + (e && e.message ? e.message : String(e)), true);
+        return null;
+    } finally {
+        if (manual && checkBtn) checkBtn.disabled = false;
+    }
+}
+document.addEventListener('DOMContentLoaded', () => {
+    const t = window.__TAURI__;
+    if (!t || !t.core) return;
+    const ver = document.getElementById('app-update-version');
+    const auto = document.getElementById('auto-update-check');
+    const checkBtn = document.getElementById('app-update-check-btn');
+    const installBtn = document.getElementById('app-update-install-btn');
+    t.core.invoke('app_version').then((v) => { if (ver) ver.textContent = 'Версия: ' + v; }).catch(() => {});
+    if (auto) {
+        auto.checked = isAutoUpdateOn();
+        auto.addEventListener('change', () => {
+            try { localStorage.setItem(APP_AUTO_UPDATE_KEY, auto.checked ? '1' : '0'); } catch (e) {}
+        });
+    }
+    if (checkBtn) checkBtn.addEventListener('click', () => checkAppUpdate(true));
+    if (installBtn) installBtn.addEventListener('click', () => installAppUpdate());
+    setTimeout(() => checkAppUpdate(false), 8000);          // после запуска
+    setInterval(() => { if (!appUpdateBusy) checkAppUpdate(false); }, 30 * 60 * 1000); // и раз в 30 минут
+});
+
 // Выбор цвета отдаёт десятки значений в секунду — обновляем иконку, когда выбор «устоялся».
 function scheduleAppIconUpdate(color) {
     clearTimeout(appIconTimer);
@@ -6026,9 +6117,55 @@ function switchSettingsTab(tabName) {
     const activeBtn = Array.from(settingsTabButtons).find(btn => btn.dataset.tab === tabName);
     if (settingsSectionTitle && activeBtn) settingsSectionTitle.innerText = activeBtn.innerText.trim();
     if (tabName === 'sound' && typeof renderSoundChannelLists === 'function') renderSoundChannelLists();
+    renderSettingsSubtopics(tabName);
+}
+// Подтемы: под выбранным пунктом появляется список его секций, клик по подтеме прокручивает к секции.
+function settingsSectionLabel(sec) {
+    const t = sec.querySelector('.settings-section-title');
+    return t ? t.textContent.replace(/\s+/g, ' ').trim() : '';
+}
+function renderSettingsSubtopics(tabName) {
+    settingsTabButtons.forEach(btn => {
+        let list = btn.nextElementSibling;
+        if (!list || !list.classList.contains('settings-subtopics')) {
+            list = document.createElement('div');
+            list.className = 'settings-subtopics';
+            btn.insertAdjacentElement('afterend', list);
+        }
+        list.textContent = '';
+        if (btn.dataset.tab !== tabName) { list.classList.remove('open'); return; }
+        const panel = document.querySelector('#settings-modal .settings-tab-panel[data-tab-panel="' + tabName + '"]');
+        if (!panel) return;
+        panel.querySelectorAll('.settings-section').forEach(sec => {
+            if (getComputedStyle(sec).display === 'none') return; // например, пункты только для десктопа в браузере
+            const label = settingsSectionLabel(sec);
+            if (!label) return;
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'settings-subtopic';
+            b.textContent = label;
+            b.addEventListener('click', () => {
+                sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                sec.classList.remove('flash-section');
+                void sec.offsetWidth;
+                sec.classList.add('flash-section');
+                setTimeout(() => sec.classList.remove('flash-section'), 1300);
+            });
+            list.appendChild(b);
+        });
+        list.classList.toggle('open', list.children.length > 0);
+    });
 }
 settingsTabButtons.forEach(btn => {
-    btn.addEventListener('click', () => switchSettingsTab(btn.dataset.tab));
+    btn.addEventListener('click', () => {
+        if (btn.classList.contains('active')) {
+            // повторный клик по открытому пункту сворачивает / разворачивает подтемы
+            const list = btn.nextElementSibling;
+            if (list && list.classList.contains('settings-subtopics') && list.children.length) list.classList.toggle('open');
+        } else {
+            switchSettingsTab(btn.dataset.tab);
+        }
+    });
 });
 
 closeSettings.addEventListener('click', () => {
