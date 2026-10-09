@@ -1682,6 +1682,42 @@
             scrollbar-width: thin;
         }
         .settings-sidebar > * { flex-shrink: 0; }
+        /* Поиск по настройкам */
+        .settings-search {
+            width: 100%;
+            box-sizing: border-box;
+            margin: 0 0 8px;
+            padding: 8px 10px;
+            font-size: 13px;
+            font-family: inherit;
+            color: var(--text);
+            background: var(--bg-tertiary, rgba(255,255,255,0.05));
+            border: 1px solid var(--border-soft);
+            border-radius: var(--radius-sm);
+            outline: none;
+        }
+        .settings-search:focus { border-color: var(--accent); }
+        .settings-search-results { display: none; flex-direction: column; gap: 2px; }
+        .settings-sidebar.searching .settings-search-results { display: flex; }
+        .settings-sidebar.searching #settings-tabs { display: none; }
+        .settings-search-item {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 1px;
+            padding: 7px 10px;
+            background: none;
+            border: none;
+            border-radius: var(--radius-sm);
+            font-family: inherit;
+            font-size: 13px;
+            color: var(--text);
+            text-align: left;
+            cursor: pointer;
+        }
+        .settings-search-item small { font-size: 11px; color: var(--text-faint); }
+        .settings-search-item:hover { background: rgba(255,255,255,0.05); }
+        .settings-search-empty { padding: 8px 10px; font-size: 13px; color: var(--text-muted); }
         .settings-sidebar-title {
             font-size: 12px;
             font-weight: 600;
@@ -1822,6 +1858,7 @@
             #settings-tabs .settings-tab { flex: 1; justify-content: center; padding: 8px 6px; }
             #settings-tabs .settings-tab span { display: none; }
             #settings-tabs .settings-subtopics { display: none !important; }
+            .settings-search, .settings-search-results { display: none !important; }
         }
 
         /* Баннер разрыва соединения — в отличие от тостов НЕ исчезает сам по себе,
@@ -3118,6 +3155,8 @@
         <div class="modal-card fade-in settings-modal-card">
             <aside class="settings-sidebar">
                 <div class="settings-sidebar-title">Настройки</div>
+                <input type="search" id="settings-search" class="settings-search" placeholder="Поиск по настройкам" autocomplete="off">
+                <div id="settings-search-results" class="settings-search-results"></div>
                 <div class="settings-tabs" id="settings-tabs">
                     <button type="button" class="settings-tab active" data-tab="profile"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg><span>Профиль</span></button>
                     <button type="button" class="settings-tab" data-tab="mic"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line></svg><span>Микрофон</span></button>
@@ -3164,10 +3203,10 @@
                             <input type="checkbox" id="app-mic-allowed" checked> Разрешить приложению использовать микрофон
                         </label>
                         <span class="profile-hint" id="app-mic-state"></span>
-                        <span class="profile-hint">Если снять галочку, микрофон полностью отключится (в системе пропадёт индикатор записи), а собеседники будут слышать тишину. Работает как разрешение в браузере, но только для Mute.</span>
+                        <span class="profile-hint">Без доступа микрофон отключён, собеседники слышат тишину.</span>
                     </div>
                     <div class="theme-actions-row">
-                        <button type="button" class="btn-secondary-ghost" id="app-mic-request-btn">Запросить разрешение у системы</button>
+                        <button type="button" class="btn-secondary-ghost" id="app-mic-request-btn">Запросить у системы</button>
                     </div>
                 </div>
                 <div class="settings-section">
@@ -3178,6 +3217,10 @@
                     <div class="control-group">
                         <label>Микрофон</label>
                         <select id="mic-select"></select>
+                    </div>
+                    <div class="control-group">
+                        <label>Вывод звука</label>
+                        <select id="output-select"></select>
                     </div>
                     <div class="control-group">
                         <label>Громкость: <span id="mic-volume-value">100%</span></label>
@@ -3537,14 +3580,36 @@
                     </div>
                 </div>
 
+                <div class="settings-section" id="settings-backup-section">
+                    <div class="settings-section-title">Перенос настроек</div>
+                    <div class="control-group">
+                        <span class="profile-hint">Без профиля и плейлиста.</span>
+                        <input type="file" id="settings-import-file" accept="application/json,.json" style="display:none">
+                    </div>
+                    <div class="theme-actions-row">
+                        <button type="button" class="btn-secondary-ghost" id="settings-export-btn">Экспорт в файл</button>
+                        <button type="button" class="btn-secondary-ghost" id="settings-import-btn">Импорт из файла</button>
+                    </div>
+                </div>
+
+                <div class="settings-section tauri-only-setting" id="window-section">
+                    <div class="settings-section-title">Окно</div>
+                    <div class="control-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="close-to-tray-check" checked> Закрывать в трей
+                        </label>
+                        <span class="profile-hint">Крестик сворачивает в трей, звонок продолжается.</span>
+                    </div>
+                </div>
+
                 <div class="settings-section tauri-only-setting" id="app-update-section">
                     <div class="settings-section-title">Обновление приложения</div>
                     <div class="control-group">
                         <span class="profile-hint" id="app-update-version">Версия: …</span>
                         <label class="checkbox-label">
-                            <input type="checkbox" id="auto-update-check" checked> Устанавливать обновления автоматически
+                            <input type="checkbox" id="auto-update-check" checked> Обновлять автоматически
                         </label>
-                        <span class="profile-hint">При запуске приложение проверяет, нет ли новой версии, и само её скачивает и ставит. Во время звонка не обновляется — дождётся, пока вы выйдете.</span>
+                        <span class="profile-hint">Во время звонка не обновляется.</span>
                         <p class="profile-hint" id="app-update-status" style="display:none; white-space:pre-wrap;"></p>
                     </div>
                     <div class="theme-actions-row">
@@ -3560,7 +3625,7 @@
                             <img id="custom-icon-preview" alt="" width="48" height="48" style="width:48px; height:48px; border-radius:10px; background:var(--bg-tertiary, rgba(255,255,255,.06)); object-fit:contain; flex:none;">
                             <span class="profile-hint" id="custom-icon-state" style="margin:0;"></span>
                         </div>
-                        <span class="profile-hint">Загрузите свою картинку (PNG, JPG, WebP, SVG, ICO — до 5 МБ, лучше квадратную, с прозрачным фоном). Она станет иконкой окна, панели задач и ярлыков. Если своей иконки нет, значок окрашивается в цвет темы автоматически.</span>
+                        <span class="profile-hint">PNG, JPG, WebP, SVG или ICO до 5 МБ, лучше квадратная.</span>
                         <input type="file" id="custom-icon-file" accept="image/png,image/jpeg,image/webp,image/svg+xml,image/x-icon,image/vnd.microsoft.icon,.ico" style="display:none">
                         <p class="profile-hint" id="shortcut-icon-status" style="display:none; white-space:pre-wrap;"></p>
                     </div>
@@ -3569,7 +3634,7 @@
                         <button type="button" class="btn-secondary-ghost" id="custom-icon-reset-btn" style="display:none">Вернуть иконку по цвету темы</button>
                     </div>
                     <div class="control-group" style="margin-top:12px;">
-                        <span class="profile-hint">Иконка в ярлыках обновляется сама. Если этого не произошло — нажмите «Обновить иконку ярлыков» (если ярлыка нет, он будет создан на рабочем столе). Иконка на панели задач может обновиться только после перезапуска Проводника.</span>
+                        <span class="profile-hint">Если иконка на панели задач не сменилась — перезапустите Проводник.</span>
                     </div>
                     <div class="theme-actions-row">
                         <button type="button" class="btn-secondary-ghost" id="shortcut-icon-update-btn">Обновить иконку ярлыков</button>

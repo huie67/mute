@@ -1,4 +1,37 @@
 const socket = io();
+// ---------- Устройство вывода звука ----------
+// Голоса идут через общий AudioContext, уведомления и плейлист — через <audio>. Выбранное
+// устройство применяем и к контексту (setSinkId), и к каждому медиа-элементу перед play().
+var OUTPUT_DEVICE_KEY = 'mute_output_device';
+var outputDeviceId = '';
+try { outputDeviceId = localStorage.getItem(OUTPUT_DEVICE_KEY) || ''; } catch (e) {}
+function applySinkToContext(ctx) {
+    if (ctx && typeof ctx.setSinkId === 'function') {
+        try { ctx.setSinkId(outputDeviceId || '').catch(() => {}); } catch (e) {}
+    }
+}
+function applySinkToElement(el) {
+    if (el && typeof el.setSinkId === 'function' && (el.__muteSink || '') !== outputDeviceId) {
+        el.__muteSink = outputDeviceId;
+        try { el.setSinkId(outputDeviceId || '').catch(() => {}); } catch (e) {}
+    }
+}
+(function () {
+    const Base = window.AudioContext || window.webkitAudioContext;
+    if (Base && !Base.__muteSink) {
+        class MuteAudioContext extends Base {
+            constructor(...a) { super(...a); if (outputDeviceId) applySinkToContext(this); }
+        }
+        MuteAudioContext.__muteSink = true;
+        window.AudioContext = MuteAudioContext;
+    }
+    const origPlay = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function (...a) {
+        applySinkToElement(this);
+        return origPlay.apply(this, a);
+    };
+})();
+
 
 const loginContainer = document.getElementById('login-container');
 const appContainer = document.getElementById('app-container');
@@ -1115,7 +1148,7 @@ async function refreshIconPreview() {
     const label = document.getElementById('custom-icon-state');
     const resetBtn = document.getElementById('custom-icon-reset-btn');
     const custom = !!getCustomAppIcon();
-    if (label) label.textContent = custom ? 'Сейчас используется ваша иконка.' : 'Сейчас используется стандартная иконка в цвет темы.';
+    if (label) label.textContent = custom ? 'Своя иконка.' : 'Иконка в цвет темы.';
     if (resetBtn) resetBtn.style.display = custom ? '' : 'none';
     if (img) {
         const cv = await renderTintedAppIcon((typeof currentTheme !== 'undefined' && currentTheme.accent) || '#6366f1', 96);
@@ -1263,8 +1296,8 @@ async function installAppUpdate() {
     appUpdateBusy = true;
     const btn = document.getElementById('app-update-install-btn');
     if (btn) btn.disabled = true;
-    setUpdateStatus('Скачиваю и устанавливаю версию ' + (appUpdateInfo ? appUpdateInfo.version : '') + '… Приложение перезапустится само.', false);
-    showToast('Устанавливаю обновление, приложение перезапустится…', 6000);
+    setUpdateStatus('Устанавливаю ' + (appUpdateInfo ? appUpdateInfo.version : '') + '…', false);
+    showToast('Устанавливаю обновление…', 6000);
     try {
         await t.core.invoke('install_update');
     } catch (e) {
@@ -1293,10 +1326,10 @@ async function checkAppUpdate(manual) {
         if (installBtn) installBtn.style.display = '';
         setUpdateStatus('Доступна версия ' + r[0] + ' (у вас ' + r[1] + ').' + (r[2] ? '\n' + r[2] : ''), false);
         if (!manual && isAutoUpdateOn()) {
-            if (isInCallNow()) showToast('Доступна новая версия ' + r[0] + ' — обновлюсь, когда вы выйдете из звонка.', 6000);
+            if (isInCallNow()) showToast('Доступна версия ' + r[0] + ' — обновлюсь после звонка.', 6000);
             else installAppUpdate();
         } else if (!manual) {
-            showToast('Доступна новая версия ' + r[0] + '. Настройки → Кастомизация → «Обновление приложения».', 7000);
+            showToast('Доступна версия ' + r[0] + '. Настройки → Кастомизация.', 7000);
         }
         return appUpdateInfo;
     } catch (e) {
@@ -1352,7 +1385,7 @@ async function checkPageVersion() {
         if (!canReloadPageNow()) {
             if (!pageReloadNotified) {
                 pageReloadNotified = true;
-                showToast('Вышла новая версия — страница обновится, когда вы закончите звонок или отправите сообщение.', 7000);
+                showToast('Вышла новая версия — обновлю после звонка.', 7000);
             }
             return;
         }
@@ -1360,7 +1393,7 @@ async function checkPageVersion() {
         const last = Number(sessionStorage.getItem('mute_last_auto_reload') || 0);
         if (Date.now() - last < 30000) return;
         sessionStorage.setItem('mute_last_auto_reload', String(Date.now()));
-        showToast('Вышла новая версия — обновляю страницу…', 2000);
+        showToast('Обновляю страницу…', 2000);
         setTimeout(() => location.reload(), 1500);
     } catch (e) { /* сервер недоступен (идёт деплой) — проверим позже */ }
 }
@@ -1400,16 +1433,16 @@ async function refreshAppMicState() {
     if (check) check.checked = allowed;
     if (btn) btn.disabled = !allowed;
     if (!label) return;
-    if (!allowed) { label.textContent = 'Доступ забран: микрофон отключён, в звонке тишина.'; return; }
+    if (!allowed) { label.textContent = 'Доступ забран.'; return; }
     let sys = '';
     try {
         const st = await navigator.permissions.query({ name: 'microphone' });
-        sys = st.state === 'granted' ? ' Системное разрешение выдано.'
-            : st.state === 'denied' ? ' Система запретила микрофон — разрешите его в настройках Windows (Конфиденциальность → Микрофон).'
-            : ' Системное разрешение ещё не запрашивалось — нажмите «Запросить разрешение».';
+        sys = st.state === 'granted' ? ' Система: разрешено.'
+            : st.state === 'denied' ? ' Система: запрещено (Windows → Конфиденциальность → Микрофон).'
+            : ' Система: ещё не запрашивалось.';
         st.onchange = () => refreshAppMicState();
     } catch (e) { /* permissions API недоступен */ }
-    label.textContent = 'Доступ выдан: приложение может использовать микрофон.' + sys;
+    label.textContent = 'Доступ выдан.' + sys;
 }
 document.addEventListener('DOMContentLoaded', () => {
     const check = document.getElementById('app-mic-allowed');
@@ -1433,9 +1466,183 @@ document.addEventListener('DOMContentLoaded', () => {
             await loadMicrophones();
             showToast('Система разрешила микрофон.', 3500);
         } catch (e) {
-            showToast('Система не дала доступ к микрофону. Разрешите его в настройках Windows: Конфиденциальность → Микрофон.', 7000);
+            showToast('Система не дала доступ. Windows → Конфиденциальность → Микрофон.', 7000);
         }
         refreshAppMicState();
+    });
+});
+
+
+// ---------- Выбор устройства вывода ----------
+async function loadOutputDevices() {
+    const sel = document.getElementById('output-select');
+    if (!sel) return;
+    if (typeof HTMLMediaElement.prototype.setSinkId !== 'function') {
+        sel.innerHTML = '<option>Не поддерживается</option>';
+        sel.disabled = true;
+        return;
+    }
+    try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        sel.innerHTML = '';
+        sel.appendChild(new Option('По умолчанию', ''));
+        devices.filter(d => d.kind === 'audiooutput' && d.deviceId !== 'default' && d.deviceId !== 'communications')
+            .forEach((d, i) => sel.appendChild(new Option(d.label || ('Устройство ' + (i + 1)), d.deviceId)));
+        sel.value = Array.from(sel.options).some(o => o.value === outputDeviceId) ? outputDeviceId : '';
+    } catch (e) { console.warn(e); }
+}
+function applyOutputDeviceEverywhere() {
+    if (typeof audioContext !== 'undefined') applySinkToContext(audioContext);
+    document.querySelectorAll('audio, video').forEach(applySinkToElement);
+    try { Object.values(notifyAudioCache || {}).forEach(applySinkToElement); } catch (e) {}
+    try { applySinkToElement(playlistAudio); } catch (e) {}
+    try { applySinkToElement(listenGuestAudio); } catch (e) {}
+}
+document.addEventListener('DOMContentLoaded', () => {
+    const sel = document.getElementById('output-select');
+    loadOutputDevices();
+    if (sel) sel.addEventListener('change', () => {
+        outputDeviceId = sel.value;
+        try { localStorage.setItem(OUTPUT_DEVICE_KEY, outputDeviceId); } catch (e) {}
+        applyOutputDeviceEverywhere();
+        showToast('Устройство вывода изменено.', 2500);
+    });
+    if (navigator.mediaDevices) navigator.mediaDevices.addEventListener('devicechange', () => loadOutputDevices());
+});
+
+// ---------- Поиск по настройкам ----------
+(function () {
+    const input = document.getElementById('settings-search');
+    const box = document.getElementById('settings-search-results');
+    const sidebar = document.querySelector('.settings-sidebar');
+    if (!input || !box || !sidebar) return;
+    const norm = (x) => String(x || '').toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
+    const tabNames = {};
+    settingsTabButtons.forEach(b => { tabNames[b.dataset.tab] = ((b.querySelector('span') || b).textContent || '').trim(); });
+    function collect() {
+        const out = [];
+        document.querySelectorAll('#settings-modal .settings-section').forEach(sec => {
+            if (getComputedStyle(sec).display === 'none') return;
+            const panel = sec.closest('.settings-tab-panel');
+            if (!panel) return;
+            const title = settingsSectionLabel(sec);
+            out.push({ sec, tab: panel.dataset.tabPanel, title, tText: norm(title), text: norm(sec.textContent) });
+        });
+        return out;
+    }
+    function go(it) {
+        input.value = '';
+        run();
+        switchSettingsTab(it.tab);
+        setTimeout(() => {
+            it.sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            it.sec.classList.remove('flash-section');
+            void it.sec.offsetWidth;
+            it.sec.classList.add('flash-section');
+            setTimeout(() => it.sec.classList.remove('flash-section'), 1300);
+        }, 60);
+    }
+    function run() {
+        const q = norm(input.value);
+        sidebar.classList.toggle('searching', !!q);
+        box.textContent = '';
+        if (!q) return;
+        const words = q.split(' ');
+        const res = collect()
+            .map(it => ({ it, score: words.every(w => it.tText.includes(w)) ? 2 : (words.every(w => it.text.includes(w)) ? 1 : 0) }))
+            .filter(r => r.score)
+            .sort((a, b) => b.score - a.score);
+        if (!res.length) {
+            const d = document.createElement('div');
+            d.className = 'settings-search-empty';
+            d.textContent = 'Ничего не найдено';
+            box.appendChild(d);
+            return;
+        }
+        res.forEach(({ it }) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'settings-search-item';
+            const t = document.createElement('span');
+            t.textContent = it.title || tabNames[it.tab];
+            const g = document.createElement('small');
+            g.textContent = tabNames[it.tab];
+            b.append(t, g);
+            b.addEventListener('click', () => go(it));
+            box.appendChild(b);
+        });
+    }
+    input.addEventListener('input', run);
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { input.value = ''; run(); e.stopPropagation(); }
+        else if (e.key === 'Enter') { const f = box.querySelector('.settings-search-item'); if (f) f.click(); }
+    });
+})();
+
+// ---------- Экспорт / импорт настроек ----------
+// В файл попадают только настройки интерфейса и звука. Профиль, серверы, плейлист (он лежит
+// в IndexedDB) и служебные значения конкретного компьютера не выгружаются.
+function isExportableSettingKey(k) {
+    if (k === 'voicechat_theme' || k === 'demoVolumes') return true;
+    if (!/^mute[_:]/.test(k)) return false;
+    return !/^(mute:chatReadPosition|mute_shortcut_icon_color|mute_output_device|mute:playlist\w*)$/.test(k);
+}
+document.addEventListener('DOMContentLoaded', () => {
+    const exp = document.getElementById('settings-export-btn');
+    const imp = document.getElementById('settings-import-btn');
+    const file = document.getElementById('settings-import-file');
+    if (exp) exp.addEventListener('click', () => {
+        const data = {};
+        try {
+            for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if (isExportableSettingKey(k)) data[k] = localStorage.getItem(k);
+            }
+        } catch (e) {}
+        const blob = new Blob([JSON.stringify({ app: 'mute', version: 1, exported: new Date().toISOString(), data }, null, 2)], { type: 'application/json' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'mute-settings-' + new Date().toISOString().slice(0, 10) + '.json';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+        showToast('Настройки сохранены в файл.', 3500);
+    });
+    if (imp && file) {
+        imp.addEventListener('click', () => file.click());
+        file.addEventListener('change', async () => {
+            const f = file.files && file.files[0];
+            file.value = '';
+            if (!f) return;
+            try {
+                const obj = JSON.parse(await f.text());
+                if (!obj || obj.app !== 'mute' || typeof obj.data !== 'object' || !obj.data) throw new Error('это не файл настроек Mute');
+                const entries = Object.entries(obj.data).filter(([k, v]) => isExportableSettingKey(k) && typeof v === 'string');
+                if (!entries.length) throw new Error('в файле нет настроек');
+                if (!confirm('Загрузить настройки (' + entries.length + ')? Текущие будут заменены, страница перезагрузится.')) return;
+                entries.forEach(([k, v]) => localStorage.setItem(k, v));
+                showToast('Настройки загружены, перезагружаю…', 2500);
+                setTimeout(() => location.reload(), 1200);
+            } catch (e) {
+                showToast('Не удалось загрузить настройки: ' + (e && e.message ? e.message : e), 6000);
+            }
+        });
+    }
+});
+
+// ---------- Закрытие в трей (только десктоп) ----------
+document.addEventListener('DOMContentLoaded', () => {
+    const t = window.__TAURI__;
+    if (!t || !t.core) return;
+    const check = document.getElementById('close-to-tray-check');
+    let on = true;
+    try { on = localStorage.getItem('mute_close_to_tray') !== '0'; } catch (e) {}
+    if (check) check.checked = on;
+    t.core.invoke('set_close_to_tray', { enabled: on }).catch(() => {});
+    if (check) check.addEventListener('change', () => {
+        try { localStorage.setItem('mute_close_to_tray', check.checked ? '1' : '0'); } catch (e) {}
+        t.core.invoke('set_close_to_tray', { enabled: check.checked }).catch(() => {});
     });
 });
 
@@ -6260,6 +6467,7 @@ function switchSettingsTab(tabName) {
     const activeBtn = Array.from(settingsTabButtons).find(btn => btn.dataset.tab === tabName);
     if (settingsSectionTitle && activeBtn) settingsSectionTitle.innerText = activeBtn.innerText.trim();
     if (tabName === 'sound' && typeof renderSoundChannelLists === 'function') renderSoundChannelLists();
+    if (tabName === 'mic' && typeof loadOutputDevices === 'function') loadOutputDevices();
     renderSettingsSubtopics(tabName);
 }
 // Подтемы: под выбранным пунктом появляется список его секций, клик по подтеме прокручивает к секции.
