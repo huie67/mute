@@ -1327,6 +1327,48 @@ document.addEventListener('DOMContentLoaded', () => {
     setInterval(() => { if (!appUpdateBusy) checkAppUpdate(false); }, 30 * 60 * 1000); // и раз в 30 минут
 });
 
+
+// ---------- Автообновление страницы после деплоя ----------
+// Сервер отдаёт идентификатор версии клиента (/api/app-version). Если он изменился с момента загрузки
+// страницы — перезагружаем её, но не во время звонка и не пока в поле сообщения набран текст.
+var pageBuildId = null;
+var pageReloadNotified = false;
+function canReloadPageNow() {
+    try {
+        if (typeof isInCallNow === 'function' && isInCallNow()) return false;
+        const input = document.getElementById('message-input');
+        if (input && String(input.value || '').trim()) return false;
+    } catch (e) {}
+    return true;
+}
+async function checkPageVersion() {
+    try {
+        const r = await fetch('/api/app-version', { cache: 'no-store' });
+        if (!r.ok) return;
+        const { build } = await r.json();
+        if (!build) return;
+        if (pageBuildId === null) { pageBuildId = build; return; }
+        if (build === pageBuildId) return;
+        if (!canReloadPageNow()) {
+            if (!pageReloadNotified) {
+                pageReloadNotified = true;
+                showToast('Вышла новая версия — страница обновится, когда вы закончите звонок или отправите сообщение.', 7000);
+            }
+            return;
+        }
+        // защита от цикла перезагрузок
+        const last = Number(sessionStorage.getItem('mute_last_auto_reload') || 0);
+        if (Date.now() - last < 30000) return;
+        sessionStorage.setItem('mute_last_auto_reload', String(Date.now()));
+        showToast('Вышла новая версия — обновляю страницу…', 2000);
+        setTimeout(() => location.reload(), 1500);
+    } catch (e) { /* сервер недоступен (идёт деплой) — проверим позже */ }
+}
+checkPageVersion();
+setInterval(checkPageVersion, 60 * 1000);
+window.addEventListener('focus', checkPageVersion);
+socket.on('connect', () => setTimeout(checkPageVersion, 1500)); // после деплоя сокет переподключается
+
 // Выбор цвета отдаёт десятки значений в секунду — обновляем иконку, когда выбор «устоялся».
 function scheduleAppIconUpdate(color) {
     clearTimeout(appIconTimer);

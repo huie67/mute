@@ -20,7 +20,32 @@ const io = new Server(server, {
     pingInterval: 25000
 });
 
-app.use(express.static(__dirname)); // Клиентские файлы лежат в корне репозитория
+// Клиентские файлы лежат в корне репозитория. html/js/css отдаём с no-cache (браузер каждый раз
+// сверяет их с сервером), иначе после деплоя страница могла бы остаться на старой версии.
+app.use(express.static(__dirname, {
+    setHeaders: (res, filePath) => {
+        if (/\.(html|js|css)$/i.test(filePath)) res.setHeader('Cache-Control', 'no-cache');
+    }
+}));
+
+// Идентификатор версии клиента: хэш index.html + script.js, считается при старте сервера.
+// Клиент периодически сверяет его и сам перезагружает страницу, когда после деплоя он изменился.
+const fs = require('fs');
+const path = require('path');
+function computeClientBuildId() {
+    try {
+        const h = crypto.createHash('sha1');
+        for (const f of ['index.html', 'script.js']) h.update(fs.readFileSync(path.join(__dirname, f)));
+        return h.digest('hex').slice(0, 12);
+    } catch (e) {
+        return String(Date.now());
+    }
+}
+const CLIENT_BUILD_ID = computeClientBuildId();
+app.get('/api/app-version', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ build: CLIENT_BUILD_ID });
+});
 app.use(express.json());
 
 // ---------- TURN/STUN-серверы: dashboard.metered.ca ----------
