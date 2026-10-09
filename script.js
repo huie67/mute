@@ -1511,7 +1511,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // ---------- Поиск по настройкам ----------
-(function () {
+document.addEventListener('DOMContentLoaded', function () {
     const input = document.getElementById('settings-search');
     const box = document.getElementById('settings-search-results');
     const sidebar = document.querySelector('.settings-sidebar');
@@ -1577,7 +1577,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (e.key === 'Escape') { input.value = ''; run(); e.stopPropagation(); }
         else if (e.key === 'Enter') { const f = box.querySelector('.settings-search-item'); if (f) f.click(); }
     });
-})();
+});
 
 // ---------- Экспорт / импорт настроек ----------
 // В файл попадают только настройки интерфейса и звука. Профиль, серверы, плейлист (он лежит
