@@ -1675,7 +1675,13 @@
             padding: 24px 14px;
             background: var(--bg-raised);
             border-right: 1px solid var(--border-soft);
+            /* Меню можно прокручивать, если пунктов с подтемами больше, чем помещается по высоте */
+            min-height: 0;
+            overflow-y: auto;
+            overscroll-behavior: contain;
+            scrollbar-width: thin;
         }
+        .settings-sidebar > * { flex-shrink: 0; }
         .settings-sidebar-title {
             font-size: 12px;
             font-weight: 600;
@@ -1808,7 +1814,7 @@
         html.tauri-app .settings-modal-card { max-height: calc(100vh - 36px - 16px); }
         @media (max-width: 640px) {
             .settings-modal-card { flex-direction: column; height: 92vh; }
-            .settings-sidebar { width: auto; flex-direction: column; padding: 14px; border-right: none; border-bottom: 1px solid var(--border-soft); }
+            .settings-sidebar { width: auto; flex-direction: column; padding: 14px; border-right: none; border-bottom: 1px solid var(--border-soft); overflow: visible; }
             .settings-sidebar-title { display: none; }
             #settings-tabs { flex-direction: row; }
             #settings-tabs .settings-tab { flex: 1; justify-content: center; padding: 8px 6px; }
