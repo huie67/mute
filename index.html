@@ -1716,6 +1716,8 @@
         }
         #settings-tabs .settings-tab.active svg { color: var(--accent); opacity: 1; }
 
+        .mic-revoked-tag { margin-left: 6px; font-size: 10px; color: var(--danger); opacity: .85; flex: none; white-space: nowrap; }
+
         /* Подтемы под выбранным пунктом настроек (строятся из заголовков секций панели) */
         #settings-tabs .settings-subtopics {
             display: none;
@@ -3155,6 +3157,19 @@
             </div>
 
             <div class="settings-tab-panel" data-tab-panel="mic">
+                <div class="settings-section" id="app-mic-access-section">
+                    <div class="settings-section-title">Доступ к микрофону</div>
+                    <div class="control-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="app-mic-allowed" checked> Разрешить приложению использовать микрофон
+                        </label>
+                        <span class="profile-hint" id="app-mic-state"></span>
+                        <span class="profile-hint">Если снять галочку, микрофон полностью отключится (в системе пропадёт индикатор записи), а собеседники будут слышать тишину. Работает как разрешение в браузере, но только для Mute.</span>
+                    </div>
+                    <div class="theme-actions-row">
+                        <button type="button" class="btn-secondary-ghost" id="app-mic-request-btn">Запросить разрешение у системы</button>
+                    </div>
+                </div>
                 <div class="settings-section">
                     <div class="settings-section-title">
                         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"></rect><path d="M5 10a7 7 0 0 0 14 0"></path><line x1="12" y1="19" x2="12" y2="22"></line><line x1="8" y1="22" x2="16" y2="22"></line></svg>

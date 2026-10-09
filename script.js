@@ -1369,6 +1369,76 @@ setInterval(checkPageVersion, 60 * 1000);
 window.addEventListener('focus', checkPageVersion);
 socket.on('connect', () => setTimeout(checkPageVersion, 1500)); // после деплоя сокет переподключается
 
+
+// ---------- Доступ приложения к микрофону (как разрешение в браузере, но только для Mute) ----------
+// Это переключатель внутри приложения: когда доступ забран, микрофон физически отпускается
+// (индикатор записи в системе гаснет), а в звонке вместо голоса идёт тишина. Системное разрешение
+// Windows/браузера при этом не трогается — его по-прежнему можно менять в настройках системы.
+var APP_MIC_KEY = 'mute_app_mic_allowed';
+var appMicSilentTrack = null;
+function appMicAllowed() {
+    try { return localStorage.getItem(APP_MIC_KEY) !== '0'; } catch (e) { return true; }
+}
+async function releaseMicForApp() {
+    if (appMicSilentTrack && !rawAudioStream && !processedTrack) return; // уже отпущен
+    const old = processedTrack;
+    if (rawAudioStream) { rawAudioStream.getTracks().forEach(t => t.stop()); rawAudioStream = null; }
+    teardownAudioGraph(); // останавливает и processedTrack
+    const silent = createSilentAudioTrack();
+    if (!localMediaStream) localMediaStream = new MediaStream();
+    if (old && localMediaStream.getAudioTracks().includes(old)) localMediaStream.removeTrack(old);
+    localMediaStream.addTrack(silent);
+    appMicSilentTrack = silent;
+    replaceMicTrackForAllPeers(silent, old);
+    applyGateToMicTrack();
+}
+async function refreshAppMicState() {
+    const check = document.getElementById('app-mic-allowed');
+    const label = document.getElementById('app-mic-state');
+    const btn = document.getElementById('app-mic-request-btn');
+    const allowed = appMicAllowed();
+    if (check) check.checked = allowed;
+    if (btn) btn.disabled = !allowed;
+    if (!label) return;
+    if (!allowed) { label.textContent = 'Доступ забран: микрофон отключён, в звонке тишина.'; return; }
+    let sys = '';
+    try {
+        const st = await navigator.permissions.query({ name: 'microphone' });
+        sys = st.state === 'granted' ? ' Системное разрешение выдано.'
+            : st.state === 'denied' ? ' Система запретила микрофон — разрешите его в настройках Windows (Конфиденциальность → Микрофон).'
+            : ' Системное разрешение ещё не запрашивалось — нажмите «Запросить разрешение».';
+        st.onchange = () => refreshAppMicState();
+    } catch (e) { /* permissions API недоступен */ }
+    label.textContent = 'Доступ выдан: приложение может использовать микрофон.' + sys;
+}
+document.addEventListener('DOMContentLoaded', () => {
+    const check = document.getElementById('app-mic-allowed');
+    const btn = document.getElementById('app-mic-request-btn');
+    refreshAppMicState();
+    if (check) check.addEventListener('change', async () => {
+        try { localStorage.setItem(APP_MIC_KEY, check.checked ? '1' : '0'); } catch (e) {}
+        if (check.checked) {
+            await initMediaStream(micSelect.value || null);
+            showToast('Доступ к микрофону выдан.', 3500);
+        } else {
+            await releaseMicForApp();
+            showToast('Доступ к микрофону забран.', 3500);
+        }
+        refreshAppMicState();
+    });
+    if (btn) btn.addEventListener('click', async () => {
+        try {
+            const st = await navigator.mediaDevices.getUserMedia({ audio: true });
+            st.getTracks().forEach(t => t.stop());
+            await loadMicrophones();
+            showToast('Система разрешила микрофон.', 3500);
+        } catch (e) {
+            showToast('Система не дала доступ к микрофону. Разрешите его в настройках Windows: Конфиденциальность → Микрофон.', 7000);
+        }
+        refreshAppMicState();
+    });
+});
+
 // Выбор цвета отдаёт десятки значений в секунду — обновляем иконку, когда выбор «устоялся».
 function scheduleAppIconUpdate(color) {
     clearTimeout(appIconTimer);
@@ -1960,8 +2030,10 @@ let pttReleaseTimer = null;
 const PTT_RELEASE_DELAY_MS = 250;
 
 // Единое правило «микрофон сейчас передаёт»: учитывает мьют/дефен, рацию и гейт.
+// Модератор забрал у нас доступ к микрофону (см. событие 'mic access changed').
+var micAccessRevoked = false;
 function micShouldTransmit() {
-    if (isMuted || isDeafened) return false;
+    if (micAccessRevoked || !appMicAllowed() || isMuted || isDeafened) return false;
     if (pttEnabled) return pttHeld;
     return !gateEnabled || gateOpen;
 }
@@ -2095,7 +2167,12 @@ function setRemoteLocallyMuted(username, muted) {
 }
 // Итоговая громкость голоса участника: 0 при дефене или локальном мьюте, иначе выставленная.
 function remoteGainValue(username) {
-    return (isDeafened || isRemoteLocallyMuted(username)) ? 0 : getRemoteVolumePercent(username) / 100;
+    return (isDeafened || isRemoteLocallyMuted(username) || isUserMicRevoked(username)) ? 0 : getRemoteVolumePercent(username) / 100;
+}
+// Участнику забрали микрофон — его звук не воспроизводим (на случай, если его клиент всё равно шлёт аудио).
+function isUserMicRevoked(username) {
+    if (!username || typeof connectedUsers === 'undefined') return false;
+    return Object.values(connectedUsers || {}).some(u => u && u.username === username && u.micRevoked);
 }
 
 (function applySavedAudioSettings() {
@@ -3976,12 +4053,14 @@ async function initPeer() {
 }
 
 async function initMediaStream(deviceId = null) {
+    // Пользователь сам забрал у приложения доступ к микрофону (Настройки → Микрофон → Доступ к микрофону).
+    if (!appMicAllowed()) { await releaseMicForApp(); return; }
     try {
         // Запоминаем старый ИСХОДЯЩИЙ трек (тот, что реально уходит собеседникам) ДО его
         // остановки — он понадобится, чтобы найти нужный сендер в активных звонках и
         // точечно его заменить. Это трек из графа обработки (processedTrack), а не сырой
         // трек микрофона — именно он лежит в localMediaStream и передаётся по WebRTC.
-        const oldOutputTrack = processedTrack;
+        const oldOutputTrack = processedTrack || appMicSilentTrack; // после возврата доступа заменяем «тихий» трек
 
         if (rawAudioStream) {
             rawAudioStream.getTracks().forEach(t => t.stop());
@@ -4023,6 +4102,7 @@ async function initMediaStream(deviceId = null) {
         // вас слышать, хотя локально всё выглядело нормально. Теперь подменяем трек
         // во всех активных соединениях так же, как это уже делается для видео.
         replaceMicTrackForAllPeers(newOutputTrack, oldOutputTrack);
+        if (appMicSilentTrack) { try { appMicSilentTrack.stop(); } catch (e) {} appMicSilentTrack = null; }
 
         if (activeVideoStream) {
             activeVideoStream.getVideoTracks().forEach(track => {
@@ -5086,8 +5166,14 @@ socket.on('room users', (usersInRoom, room) => {
         username: currentUser.username,
         avatar: currentUser.avatar,
         micMuted: isMuted,
-        deafened: isDeafened
+        deafened: isDeafened,
+        micRevoked: micAccessRevoked
     };
+    // Громкость пересчитываем заново: у тех, кому забрали микрофон, звук обнуляется, у кого вернули — восстанавливается.
+    Object.keys(remoteVoiceGainNodes).forEach(pid => {
+        const un = (connectedUsers[pid] && connectedUsers[pid].username) || '';
+        if (remoteVoiceGainNodes[pid]) remoteVoiceGainNodes[pid].gain.value = remoteGainValue(un);
+    });
     // Список звонка рисуем всегда — он не зависит от того, какой канал открыт в чате.
     updateVoiceUsersList();
 
@@ -5591,6 +5677,7 @@ function buildVoiceUserRow(id, user, interactive = true) {
             <span class="status-badge deafen-badge${user.deafened ? ' visible' : ''}" ${ids('deafen-badge')} title="Наушники выключены">${DEAFEN_OFF_ICON_SVG}</span>
         </div>
         <span class="voice-user-name" title="${escapeHtml(user.username || 'Участник')}" style="color:${getUserColor(user.username)}">${escapeHtml(user.username || 'Участник')}</span>
+        ${user.micRevoked ? '<span class="mic-revoked-tag" title="Модератор отключил этому участнику микрофон">без микрофона</span>' : ''}
         ${netQualityHtml}
     `;
     // Громкость каждого собеседника можно менять только у себя — по клику на его
@@ -5761,6 +5848,11 @@ function openUserVolumePopover(peerId, anchorEl, username) {
     closeUserVolumePopover();
 
     const percent = getRemoteVolumePercent(username);
+    // Модератору (создателю сервера или админу) в звонке сервера доступно управление чужим микрофоном.
+    const roomCode = customCodeFromRoomName(currentUser.room);
+    const canModMic = !!(currentServerInfo && currentServerInfo.canModerate && roomCode &&
+        String(currentServerInfo.code).toUpperCase() === String(roomCode).toUpperCase());
+    const micRevoked = !!(connectedUsers[peerId] && connectedUsers[peerId].micRevoked);
     const pop = document.createElement('div');
     pop.id = 'user-volume-popover';
     pop.className = 'user-volume-popover fade-in';
@@ -5770,6 +5862,8 @@ function openUserVolumePopover(peerId, anchorEl, username) {
         <div class="user-volume-popover-value">${percent}%</div>
         <span class="profile-hint">Меняется только у вас — собеседник об этом не узнает</span>
         <button type="button" class="listen-invite-btn" id="user-local-mute-btn"></button>
+        ${canModMic ? `<div class="user-volume-popover-divider"></div>
+        <button type="button" class="listen-invite-btn${micRevoked ? ' is-active' : ''}" id="user-mic-access-btn"><span>${micRevoked ? 'Вернуть доступ к микрофону' : 'Забрать доступ к микрофону'}</span></button>` : ''}
         <div class="user-volume-popover-divider"></div>
         <button type="button" class="listen-invite-btn${listenSession && listenSession.peerId === peerId ? ' is-active' : ''}" id="listen-invite-popover-btn">
             <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
@@ -5777,6 +5871,13 @@ function openUserVolumePopover(peerId, anchorEl, username) {
         </button>
     `;
     document.body.appendChild(pop);
+
+    const micAccessBtn = pop.querySelector('#user-mic-access-btn');
+    if (micAccessBtn) micAccessBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeUserVolumePopover();
+        socket.emit('set mic access', { username, allowed: micRevoked });
+    });
 
     pop.querySelector('#listen-invite-popover-btn').addEventListener('click', (e) => {
         e.stopPropagation();
@@ -6352,6 +6453,10 @@ function broadcastMuteState() {
 
 muteBtn.addEventListener('click', () => {
     if (isDeafened) return;
+    if (micAccessRevoked && isMuted) {
+        showToast('Модератор отключил вам микрофон — включить его нельзя.', 4000);
+        return;
+    }
     isMuted = !isMuted;
     applyGateToMicTrack();
     muteBtn.classList.toggle('active', isMuted);
@@ -6379,6 +6484,28 @@ deafenBtn.addEventListener('click', () => {
     muteBtn.disabled = isDeafened;
     playDeafenSound();
     broadcastMuteState();
+});
+
+// Модератор забрал / вернул нам доступ к микрофону (или сервер сообщает текущее состояние при входе в канал).
+socket.on('mic access changed', ({ allowed, initial } = {}) => {
+    const wasRevoked = micAccessRevoked;
+    micAccessRevoked = !allowed;
+    if (micAccessRevoked) {
+        isMuted = true;
+        muteBtn.classList.add('active');
+        applyGateToMicTrack();
+        broadcastMuteState();
+        if (!wasRevoked) {
+            playMuteSound();
+            showToast('Модератор отключил вам микрофон.', 5000);
+        }
+    } else if (wasRevoked && !initial) {
+        showToast('Вам вернули доступ к микрофону — можете включить его.', 5000);
+    }
+    if (myPeerId && connectedUsers[myPeerId]) {
+        connectedUsers[myPeerId].micRevoked = micAccessRevoked;
+        updateVoiceUsersList();
+    }
 });
 
 // ---------- Язык интерфейса (подготовка под будущие переводы) ----------

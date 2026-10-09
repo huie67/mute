@@ -1114,6 +1114,14 @@ async function resolveFreeGuestUsername(requested, excludeSocketId) {
 // участников (в том числе повышение до модератора) не доходили ни до кого.
 function voiceRoomForCode(code) { return `custom:${code}`; }
 function chatRoomForCode(code) { return `chat:custom:${code}`; }
+// Кому модератор «забрал» микрофон: код сервера → множество имён (в нижнем регистре).
+// Хранится в памяти процесса: после перезапуска сервера все доступы возвращаются.
+const micRevocations = {};
+function isMicRevoked(code, username) {
+    const set = code && micRevocations[code];
+    return !!(set && username && set.has(String(username).toLowerCase()));
+}
+
 function customCodeFromRoom(room) {
     const r = String(room || '');
     return r.startsWith('custom:') ? r.slice('custom:'.length).trim().toUpperCase() : null;
@@ -1847,6 +1855,39 @@ io.on('connection', (socket) => {
     // Помимо занятых аккаунтов, также проверяем, не сидит ли прямо сейчас под этим же
     // ником другой гость (см. isUsernameActiveElsewhere) — иначе два человека без
     // аккаунта могут одновременно оказаться под одинаковым именем.
+    // Забрать / вернуть участнику доступ к микрофону в голосовом канале сервера.
+    // Могут создатель и модераторы (те же правила, что у «Выгнать»). Пока доступ забран, человек
+    // не может включить микрофон, а остальные клиенты не воспроизводят его звук.
+    socket.on('set mic access', ({ username, allowed } = {}) => {
+        const targetUsername = String(username || '').trim();
+        if (!targetUsername) return;
+        const room = currentUserRoom;
+        const code = customCodeFromRoom(room);
+        const custom = code && customRooms[code];
+        if (!custom) return socket.emit('custom room error', 'Управлять микрофоном можно только в голосовом канале сервера.');
+        const actorUsername = socket.data && socket.data.username;
+        const err = moderationError(custom, actorUsername, targetUsername, 'Управлять микрофоном у');
+        if (err) return socket.emit('custom room error', err);
+
+        const lower = targetUsername.toLowerCase();
+        if (!micRevocations[code]) micRevocations[code] = new Set();
+        if (allowed) micRevocations[code].delete(lower); else micRevocations[code].add(lower);
+
+        const inRoom = rooms[room] || {};
+        for (const sId of Object.keys(inRoom)) {
+            const u = inRoom[sId];
+            if (!u || String(u.username || '').toLowerCase() !== lower) continue;
+            u.micRevoked = !allowed;
+            if (!allowed) u.micMuted = true;
+            io.to(sId).emit('mic access changed', { allowed: !!allowed, by: actorUsername || '' });
+            if (u.peerId) {
+                socket.to(room).emit('mute state', { peerId: u.peerId, micMuted: !!u.micMuted, deafened: !!u.deafened });
+            }
+        }
+        broadcastRoomUsers(room);
+        broadcastRoomUsersToWatchers(room);
+    });
+
     socket.on('register user', async (userData, ack) => {
         const requested = ((userData && userData.username) || '').trim() || 'Гость';
         let username = requested;
@@ -1969,10 +2010,18 @@ io.on('connection', (socket) => {
             peerId: peerId,
             sharing: false,
             micMuted: !!micMuted,
-            deafened: !!deafened
+            deafened: !!deafened,
+            micRevoked: false
         };
 
         currentUserData = rooms[room][socket.id];
+        // Если модератор забрал у человека микрофон, то при повторном заходе он остаётся без доступа.
+        const joinedCode = customCodeFromRoom(room);
+        if (isMicRevoked(joinedCode, currentUserData.username)) {
+            currentUserData.micRevoked = true;
+            currentUserData.micMuted = true;
+        }
+        socket.emit('mic access changed', { allowed: !currentUserData.micRevoked, initial: true });
 
         // Оповещаем всех в комнате о новом участнике
         broadcastRoomUsers(room);
@@ -2044,8 +2093,14 @@ io.on('connection', (socket) => {
     // и рассылаем остальным участникам, чтобы у них обновился значок.
     socket.on('mute state', ({ micMuted, deafened }) => {
         if (currentUserRoom && rooms[currentUserRoom] && rooms[currentUserRoom][socket.id]) {
-            rooms[currentUserRoom][socket.id].micMuted = !!micMuted;
-            rooms[currentUserRoom][socket.id].deafened = !!deafened;
+            const entry = rooms[currentUserRoom][socket.id];
+            // Пока доступ к микрофону забран, включить его нельзя — остаётся «выключен».
+            if (entry.micRevoked && !micMuted) {
+                micMuted = true;
+                socket.emit('mic access changed', { allowed: false, initial: true });
+            }
+            entry.micMuted = !!micMuted;
+            entry.deafened = !!deafened;
             broadcastRoomUsersToWatchers(currentUserRoom);
         }
         if (currentUserRoom && socket.data && socket.data.peerId) {
@@ -2408,7 +2463,8 @@ function getRoomUsers(room) {
                 avatar: u.avatar,
                 sharing: !!u.sharing,
                 micMuted: !!u.micMuted,
-                deafened: !!u.deafened
+                deafened: !!u.deafened,
+                micRevoked: !!u.micRevoked
             };
         }
     }
