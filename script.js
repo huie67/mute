@@ -8832,6 +8832,20 @@ document.addEventListener('DOMContentLoaded', () => {
     const check = document.getElementById('overlay-enable-check');
     const editBtn = document.getElementById('overlay-edit-btn');
     const KEY = 'mute_overlay_enabled';
+    const GAME_KEY = 'mute_overlay_game_only';
+    const gameCheck = document.getElementById('overlay-game-only-check');
+    let gameOnly = true;
+    try { gameOnly = localStorage.getItem(GAME_KEY) !== '0'; } catch (e) {}
+    const sendGameOnly = () => t.core.invoke('overlay_set_game_only', { enabled: gameOnly }).catch(() => {});
+    sendGameOnly();
+    if (gameCheck) {
+        gameCheck.checked = gameOnly;
+        gameCheck.addEventListener('change', () => {
+            gameOnly = gameCheck.checked;
+            try { localStorage.setItem(GAME_KEY, gameOnly ? '1' : '0'); } catch (e) {}
+            sendGameOnly();
+        });
+    }
     let enabled = false;
     let editing = false;
     try { enabled = localStorage.getItem(KEY) === '1'; } catch (e) {}
