@@ -1,11 +1,11 @@
 {
-  "version": "1.0.3",
-  "notes": "Mute 1.0.3",
-  "pub_date": "2026-10-09T13:16:45.492Z",
+  "version": "1.0.4",
+  "notes": "Mute 1.0.4",
+  "pub_date": "2026-10-10T08:15:07.734Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRK1J1cEV0c0RFVjNrSVFsWnVKeUF1WGhyWmJCZEx2WmEvaVNUT3F5bHVBMlR4ZDZPRncrWDBqOUY1OWFuZEFGcjdXaDV0MG1ydUVSbGs3ZWhqVExsVDdvZm1MZHFvbndjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxNTUxODA0CWZpbGU6TXV0ZV8xLjAuM194NjQtc2V0dXAuZXhlCXZlcnNpb246MS4wLjMKUGRCNlN2U3JtQzdyTU9NUFp1STZXNEJKTFZnOStVc3ZnSUptc0NQZW5ld2tOakhsMEFVeHlwR2pkOGM1TWhIVGFhQzdWcm5tVG5NeXFtZ0hqRkk5QXc9PQo=",
-      "url": "https://mute67.onrender.com/updates/Mute_1.0.3_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRK1J1cEV0c0RFVjdiMVhTcjhQeXYyNFoyTlRwQ2VHbk1mN0V3Y2RPMFNpZFY2VGcwNjNHTVpTUWpyTHBuOS82Qk5lT2xxSFAxYmFhUEdlR1c4YjZDaXhRRXdXclV3QlFrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxNjIwMTA2CWZpbGU6TXV0ZV8xLjAuNF94NjQtc2V0dXAuZXhlCXZlcnNpb246MS4wLjQKeVpxa2gyanNTRE85ancxQUQrNitaSjlkdy96MG40aFFCNTYxU1VLWXFEME9pUzN4WncxUUs3ck5GY2U5ZWJBSVkrQWtseVFKSXFuMDg0NkNhQ29zRHc9PQo=",
+      "url": "https://mute67.onrender.com/updates/Mute_1.0.4_x64-setup.exe"
     }
   }
 }
