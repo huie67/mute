@@ -107,6 +107,18 @@
     display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
     text-shadow: 0 0 3px #000, 0 1px 4px rgba(0, 0, 0, 0.9), 0 0 8px rgba(0, 0, 0, 0.6); }
 
+  /* Демонстрация экрана */
+  #w-video { width: 360px; padding: 0; }
+  #demo-frame { position: relative; width: 100%; aspect-ratio: 16 / 9; border-radius: 8px; overflow: hidden; background: rgba(0, 0, 0, 0.35); }
+  #demo-video { width: 100%; height: 100%; display: block; object-fit: contain; background: #000; }
+  #demo-video.off { display: none; }
+  #demo-name {
+    position: absolute; left: 8px; bottom: 6px; font-weight: 600; font-size: 13px;
+    text-shadow: 0 0 3px #000, 0 1px 4px rgba(0, 0, 0, 0.9);
+  }
+  #demo-ph { display: none; position: absolute; inset: 0; place-items: center; color: #cfd4df; font-size: 14px; }
+  body.edit #demo-ph { display: grid; }
+
   /* ---------- Панель настройки ---------- */
   #panel {
     display: none;
@@ -165,6 +177,15 @@
   <div id="msg-list"></div>
 </div>
 
+<div class="widget" id="w-video" data-key="video">
+  <div class="widget-label">Демонстрация экрана</div>
+  <div id="demo-frame">
+    <video id="demo-video" class="off" autoplay muted playsinline></video>
+    <div id="demo-ph">Демонстрация экрана</div>
+    <div id="demo-name"></div>
+  </div>
+</div>
+
 <div id="panel">
   <h1>Настройка оверлея</h1>
   <p class="hint">Перетаскивайте блоки мышью. Здесь же — показать/скрыть, прозрачность и размер.</p>
@@ -179,9 +200,18 @@
     <div class="slider"><span>Размер: <b class="v-scale"></b></span><input type="range" class="r-scale" min="60" max="200" step="5"></div>
   </div>
   <div class="prow" data-key="messages">
-    <label class="check"><input type="checkbox" class="c-visible"> Сообщения</label>
+    <label class="check"><input type="checkbox" class="c-visible"> Чат</label>
     <div class="slider"><span>Прозрачность: <b class="v-opacity"></b></span><input type="range" class="r-opacity" min="20" max="100" step="5"></div>
     <div class="slider"><span>Размер: <b class="v-scale"></b></span><input type="range" class="r-scale" min="60" max="200" step="5"></div>
+  </div>
+  <div class="prow" data-key="video">
+    <label class="check"><input type="checkbox" class="c-visible"> Демонстрация</label>
+    <div class="slider"><span>Прозрачность: <b class="v-opacity"></b></span><input type="range" class="r-opacity" min="20" max="100" step="5"></div>
+    <div class="slider"><span>Размер: <b class="v-scale"></b></span><input type="range" class="r-scale" min="60" max="200" step="5"></div>
+  </div>
+  <div class="popts">
+    <label><input type="checkbox" id="c-chat-dm"> Чат: личные (шёпот) и упоминания</label>
+    <label><input type="checkbox" id="c-chat-all"> Чат: все сообщения</label>
   </div>
   <div class="popts">
     <label><input type="checkbox" id="c-only-speaking"> Показывать только говорящих</label>
@@ -203,10 +233,13 @@
     voice: { x: 0.015, y: 0.30, opacity: 100, scale: 100, visible: true },
     music: { x: 0.015, y: 0.88, opacity: 100, scale: 100, visible: true },
     messages: { x: 0.70, y: 0.04, opacity: 100, scale: 100, visible: true },
+    video: { x: 0.70, y: 0.30, opacity: 100, scale: 100, visible: false },
+    chatDm: true,
+    chatAll: false,
     onlySpeaking: false
   };
 
-  var KEYS = ['voice', 'music', 'messages'];
+  var KEYS = ['voice', 'music', 'messages', 'video'];
   var MSG_MS = 5000;
   var MSG_MAX = 4;
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
@@ -221,6 +254,8 @@
           }
         });
         if (typeof raw.onlySpeaking === 'boolean') s.onlySpeaking = raw.onlySpeaking;
+        if (typeof raw.chatDm === 'boolean') s.chatDm = raw.chatDm;
+        if (typeof raw.chatAll === 'boolean') s.chatAll = raw.chatAll;
       }
     } catch (e) { /* ignore */ }
     return s;
@@ -228,14 +263,18 @@
   var settings = load();
   function save() { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(settings)); } catch (e) { /* ignore */ } }
 
-  var state = { inCall: false, users: [], music: { title: '', playing: false } };
+  var state = { inCall: false, users: [], music: { title: '', playing: false }, demo: { available: false, name: '' } };
   var editing = false;
 
   var els = {
     voice: document.getElementById('w-voice'),
     music: document.getElementById('w-music'),
-    messages: document.getElementById('w-msgs')
+    messages: document.getElementById('w-msgs'),
+    video: document.getElementById('w-video')
   };
+  var demoVideo = document.getElementById('demo-video');
+  var demoName = document.getElementById('demo-name');
+  var videoLive = false;
   var msgList = document.getElementById('msg-list');
   var msgs = [];
   var DEMO_MSGS = [
@@ -321,6 +360,9 @@
     applyVisibility('voice', users.length > 0);
     applyVisibility('music', showMusic);
     applyVisibility('messages', list.length > 0);
+    applyVisibility('video', videoLive || (state.demo && state.demo.available && settings.video.visible && wantVideo()));
+    demoName.textContent = (videoLive && state.demo && state.demo.name) ? state.demo.name : '';
+    demoVideo.classList.toggle('off', !videoLive);
     els.music.classList.toggle('playing', !!m.playing || editing);
   }
 
@@ -380,6 +422,7 @@
   });
 
   // ---------- Панель ----------
+  function notifyConfig() { if (tEvent) tEvent.emit('overlay-config-changed', settings).catch(function () {}); }
   function visMap() { var o = {}; KEYS.forEach(function (k) { o[k] = settings[k].visible; }); return o; }
 
   function syncPanel() {
@@ -392,13 +435,15 @@
       row.querySelector('.v-scale').textContent = s.scale + '%';
     });
     document.getElementById('c-only-speaking').checked = settings.onlySpeaking;
+    document.getElementById('c-chat-dm').checked = settings.chatDm;
+    document.getElementById('c-chat-all').checked = settings.chatAll;
   }
 
   document.querySelectorAll('.prow').forEach(function (row) {
     var key = row.getAttribute('data-key');
     row.querySelector('.c-visible').addEventListener('change', function (e) {
       settings[key].visible = e.target.checked; save(); render(); applyLayout();
-      if (tEvent) tEvent.emit('overlay-config-changed', visMap()).catch(function () {});
+      notifyConfig(); syncVideo();
     });
     row.querySelector('.r-opacity').addEventListener('input', function (e) {
       settings[key].opacity = parseInt(e.target.value, 10);
@@ -411,6 +456,8 @@
       applyLayout(); save();
     });
   });
+  document.getElementById('c-chat-dm').addEventListener('change', function (e) { settings.chatDm = e.target.checked; save(); notifyConfig(); });
+  document.getElementById('c-chat-all').addEventListener('change', function (e) { settings.chatAll = e.target.checked; save(); notifyConfig(); });
   document.getElementById('c-only-speaking').addEventListener('change', function (e) {
     settings.onlySpeaking = e.target.checked; save(); render();
   });
@@ -435,6 +482,43 @@
 
   window.addEventListener('resize', applyLayout);
 
+  // ---------- Видео демонстрации (локальный WebRTC между окнами приложения) ----------
+  // Основное окно отдаёт видеотрек чужой демонстрации, оверлей его показывает. Запрашиваем поток
+  // только когда блок включён, оверлей виден (мы в игре) и демонстрация реально идёт.
+  var pc = null, pendingIce = [], remoteSet = false;
+  function wantVideo() {
+    return !!(settings.video.visible && state.demo && state.demo.available && !document.body.classList.contains('away'));
+  }
+  function stopVideo(notify) {
+    if (pc) { try { pc.close(); } catch (e) { /* ignore */ } pc = null; }
+    pendingIce = []; remoteSet = false;
+    try { demoVideo.srcObject = null; } catch (e) { /* ignore */ }
+    var was = videoLive; videoLive = false;
+    if (notify && tEvent) tEvent.emit('ov-rtc-stop', null).catch(function () {});
+    if (was) render();
+  }
+  function startVideo() {
+    if (pc || !tEvent || typeof RTCPeerConnection === 'undefined') return;
+    var mine = new RTCPeerConnection({ iceServers: [] });
+    pc = mine; pendingIce = []; remoteSet = false;
+    mine.addTransceiver('video', { direction: 'recvonly' });
+    mine.ontrack = function (e) {
+      if (pc !== mine) return;
+      demoVideo.srcObject = new MediaStream([e.track]);
+      demoVideo.play().catch(function () {});
+      videoLive = true; render(); applyLayout();
+    };
+    mine.onicecandidate = function (e) {
+      if (e.candidate && pc === mine) tEvent.emit('ov-rtc-ice', { c: e.candidate.toJSON() }).catch(function () {});
+    };
+    mine.createOffer().then(function (o) { return mine.setLocalDescription(o); }).then(function () {
+      if (pc === mine) tEvent.emit('ov-rtc-offer', { sdp: mine.localDescription.sdp }).catch(function () {});
+    }).catch(function () { if (pc === mine) stopVideo(false); });
+  }
+  function syncVideo() {
+    if (wantVideo()) startVideo(); else if (pc || videoLive) stopVideo(true);
+  }
+
   // ---------- Связь с основным окном ----------
   if (tEvent) {
     tEvent.listen('overlay-state', function (ev) {
@@ -443,15 +527,34 @@
       state = {
         inCall: !!p.inCall,
         users: Array.isArray(p.users) ? p.users : [],
-        music: p.music && typeof p.music === 'object' ? p.music : { title: '', playing: false }
+        music: p.music && typeof p.music === 'object' ? p.music : { title: '', playing: false },
+        demo: p.demo && typeof p.demo === 'object' ? p.demo : { available: false, name: '' }
       };
+      syncVideo();
       render();
       applyLayout();
     });
-    tEvent.listen('overlay-visible', function (ev) { document.body.classList.toggle('away', !(ev && ev.payload)); });
+    tEvent.listen('overlay-visible', function (ev) { document.body.classList.toggle('away', !(ev && ev.payload)); syncVideo(); });
+    tEvent.listen('ov-rtc-answer', function (ev) {
+      var mine = pc; var sdp = ev && ev.payload && ev.payload.sdp;
+      if (!mine || !sdp) return;
+      mine.setRemoteDescription({ type: 'answer', sdp: sdp }).then(function () {
+        if (pc !== mine) return;
+        remoteSet = true;
+        pendingIce.splice(0).forEach(function (c) { mine.addIceCandidate(c).catch(function () {}); });
+      }).catch(function () { if (pc === mine) stopVideo(false); });
+    });
+    tEvent.listen('ov-rtc-ice', function (ev) {
+      var c = ev && ev.payload && ev.payload.c;
+      if (!pc || !c) return;
+      if (remoteSet) pc.addIceCandidate(c).catch(function () {}); else pendingIce.push(c);
+    });
+    tEvent.listen('ov-rtc-none', function () { stopVideo(false); });
+    tEvent.listen('ov-rtc-restart', function () { stopVideo(false); syncVideo(); });
     tEvent.listen('overlay-message', function (ev) {
       var p = ev && ev.payload;
       if (!p || typeof p !== 'object' || !settings.messages.visible) return;
+      if (p.kind === 'dm' || p.kind === 'mention' ? !settings.chatDm : !settings.chatAll) return;
       var item = {
         id: String(p.id || Date.now() + Math.random()),
         name: String(p.name || 'Участник').slice(0, 40),
@@ -468,8 +571,10 @@
         if (i >= 0) { msgs.splice(i, 1); render(); applyLayout(); }
       }, MSG_MS);
     });
-    tEvent.listen('overlay-config', function () {
-      settings = load(); syncPanel(); render(); applyLayout();
+    tEvent.listen('overlay-config', function (ev) {
+      var c = ev && ev.payload && ev.payload.cfg;
+      if (c && typeof c === 'object') { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(c)); } catch (e) { /* ignore */ } }
+      settings = load(); syncPanel(); syncVideo(); render(); applyLayout();
     });
     tEvent.listen('overlay-edit', function (ev) { setEditing(!!(ev && ev.payload)); });
     tEvent.emit('overlay-request-state', null).catch(function () {});

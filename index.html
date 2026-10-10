@@ -3617,13 +3617,15 @@
                         <span class="profile-hint">Показывать, только когда активно окно на весь экран. На рабочем столе и в обычных окнах оверлей скрыт. Отключите, чтобы он был виден всегда.</span>
                     </div>
                     <div class="control-group">
-                        <span class="profile-hint">Что рисовать в оверлее. Выключенный блок не отображается и не обрабатывается совсем.</span>
-                        <label class="checkbox-label"><input type="checkbox" id="overlay-block-voice" checked> Участники звонка</label>
-                        <label class="checkbox-label"><input type="checkbox" id="overlay-block-music" checked> Музыка</label>
-                        <label class="checkbox-label"><input type="checkbox" id="overlay-block-messages" checked> Сообщения</label>
+                        <span class="profile-hint">Что рисовать в оверлее. Выключенный блок не отображается и не обрабатывается совсем. То же самое можно сделать в режиме настройки, прямо в оверлее.</span>
+                        <label class="checkbox-label"><input type="checkbox" id="overlay-block-voice" checked> Участники звонка (кто говорит)</label>
+                        <label class="checkbox-label"><input type="checkbox" id="overlay-block-music" checked> Музыка (что сейчас играет)</label>
+                        <label class="checkbox-label"><input type="checkbox" id="overlay-block-messages" checked> Чат (новые сообщения на 5 секунд)</label>
+                        <label class="checkbox-label"><input type="checkbox" id="overlay-block-video"> Видео демонстрации экрана</label>
+                        <span class="profile-hint">Видео демонстрации передаётся в оверлей с пониженным качеством (до ~20 кадров/с), но всё равно нагружает компьютер. Включайте, если нужно. Показывается чужая демонстрация, пока вы в игре.</span>
                     </div>
                     <div class="control-group">
-                        <span class="profile-hint">Новые сообщения показываются в оверлее около 5 секунд.</span>
+                        <div class="settings-section-title" style="margin:0 0 4px">Чат в оверлее</div>
                         <label class="checkbox-label"><input type="checkbox" id="overlay-msg-dm-check" checked> Личные сообщения (шёпот) и упоминания</label>
                         <label class="checkbox-label"><input type="checkbox" id="overlay-msg-all-check"> Все остальные сообщения</label>
                     </div>

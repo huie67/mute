@@ -8888,7 +8888,8 @@ document.addEventListener('DOMContentLoaded', () => {
             title = name && name !== 'Нет трека' ? name : '';
             playing = !playlistAudio.paused;
         }
-        return { inCall, users, music: { title, playing } };
+        const demo = blockVisible('video') ? pickDemo() : null;
+        return { inCall, users, music: { title, playing }, demo: { available: !!demo, name: demo ? demo.name : '' } };
     }
 
     let lastJson = '';
@@ -8903,13 +8904,14 @@ document.addEventListener('DOMContentLoaded', () => {
     let timer = null;
     function schedulePush() {
         if (!enabled || timer) return;
-        timer = setTimeout(() => { timer = null; pushState(false); }, 60);
+        timer = setTimeout(() => { timer = null; checkRtcSource(); pushState(false); }, 60);
     }
 
     // Следим за списком участников (класс .speaking, бейджи мьюта, вход/выход) и за плеером.
     new MutationObserver(schedulePush).observe(voiceUsersContainer, {
         subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'src']
     });
+    new MutationObserver(schedulePush).observe(remoteVideos, { childList: true });
     [playlistTrackNameEl, listenSessionTrackName].forEach((el) => {
         if (el) new MutationObserver(schedulePush).observe(el, { subtree: true, childList: true, characterData: true });
     });
@@ -8952,45 +8954,48 @@ document.addEventListener('DOMContentLoaded', () => {
         setEditUi();
     }
 
-    // ----- Блоки оверлея (синхронно с настройками самого оверлея через localStorage) -----
+    // ----- Настройки оверлея. Хранятся в одном ключе (его же читает и сам оверлей), синхронизируются событиями -----
     const CFG_KEY = 'mute_overlay_v1';
-    const BLOCKS = ['voice', 'music', 'messages'];
+    const BLOCKS = ['voice', 'music', 'messages', 'video'];
+    const BLOCK_DEFAULT_VISIBLE = { voice: true, music: true, messages: true, video: false };
     function readCfg() { try { return JSON.parse(localStorage.getItem(CFG_KEY) || '{}') || {}; } catch (e) { return {}; } }
-    function blockVisible(k) { const c = readCfg(); return !(c[k] && c[k].visible === false); }
+    function writeCfg(c) { try { localStorage.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {} }
+    function blockVisible(k) {
+        const c = readCfg();
+        return c[k] && typeof c[k].visible === 'boolean' ? c[k].visible : BLOCK_DEFAULT_VISIBLE[k];
+    }
+    function chatFlag(name, def) { const c = readCfg(); return typeof c[name] === 'boolean' ? c[name] : def; }
+    function pushCfgToOverlay() { t.event.emit('overlay-config', { cfg: readCfg() }).catch(() => {}); }
     function setBlockVisible(k, v) {
         const c = readCfg();
         c[k] = Object.assign({}, c[k], { visible: !!v });
-        try { localStorage.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {}
-        t.event.emit('overlay-config', null).catch(() => {});
+        writeCfg(c); pushCfgToOverlay(); schedulePush();
     }
-    function syncBlockChecks() { BLOCKS.forEach((k) => { const el = document.getElementById('overlay-block-' + k); if (el) el.checked = blockVisible(k); }); }
+    function setChatFlag(name, v) { const c = readCfg(); c[name] = !!v; writeCfg(c); pushCfgToOverlay(); }
+    const dmCheck = document.getElementById('overlay-msg-dm-check');
+    const allCheck = document.getElementById('overlay-msg-all-check');
+    function syncChecks() {
+        BLOCKS.forEach((k) => { const el = document.getElementById('overlay-block-' + k); if (el) el.checked = blockVisible(k); });
+        if (dmCheck) dmCheck.checked = chatFlag('chatDm', true);
+        if (allCheck) allCheck.checked = chatFlag('chatAll', false);
+    }
     BLOCKS.forEach((k) => {
         const el = document.getElementById('overlay-block-' + k);
         if (el) el.addEventListener('change', () => setBlockVisible(k, el.checked));
     });
-    syncBlockChecks();
-    // Блок выключили/включили в самом оверлее (режим настройки)
+    if (dmCheck) dmCheck.addEventListener('change', () => setChatFlag('chatDm', dmCheck.checked));
+    if (allCheck) allCheck.addEventListener('change', () => setChatFlag('chatAll', allCheck.checked));
+    syncChecks();
+    // Что-то изменили в панели самого оверлея (режим настройки) — берём его настройки целиком
     t.event.listen('overlay-config-changed', (ev) => {
         const m = ev && ev.payload;
-        if (!m) return;
-        const c = readCfg();
-        BLOCKS.forEach((k) => { if (typeof m[k] === 'boolean') c[k] = Object.assign({}, c[k], { visible: m[k] }); });
-        try { localStorage.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {}
-        syncBlockChecks();
+        if (m && typeof m === 'object') writeCfg(m);
+        syncChecks(); schedulePush();
     });
 
-    // ----- Сообщения в оверлее -----
-    const DM_KEY = 'mute_overlay_msg_dm', ALL_KEY = 'mute_overlay_msg_all';
-    const dmCheck = document.getElementById('overlay-msg-dm-check');
-    const allCheck = document.getElementById('overlay-msg-all-check');
-    let showDm = true, showAll = false;
-    try { showDm = localStorage.getItem(DM_KEY) !== '0'; showAll = localStorage.getItem(ALL_KEY) === '1'; } catch (e) {}
-    if (dmCheck) { dmCheck.checked = showDm; dmCheck.addEventListener('change', () => { showDm = dmCheck.checked; try { localStorage.setItem(DM_KEY, showDm ? '1' : '0'); } catch (e) {} }); }
-    if (allCheck) { allCheck.checked = showAll; allCheck.addEventListener('change', () => { showAll = allCheck.checked; try { localStorage.setItem(ALL_KEY, showAll ? '1' : '0'); } catch (e) {} }); }
-
+    // ----- Чат в оверлее: показывать ли сообщение, решает сам оверлей по своим настройкам -----
     window.muteOverlayMessage = (payload, kind, senderName) => {
         if (!enabled || !payload || !blockVisible('messages')) return;
-        if (kind === 'msg' ? !showAll : !showDm) return;
         let text = String(payload.text || '').trim();
         if (!text) text = (payload.image_url || payload.file_url || (payload.attachments && payload.attachments.length)) ? '📎 вложение' : '';
         if (!text) return;
@@ -9003,6 +9008,71 @@ document.addEventListener('DOMContentLoaded', () => {
             avatar: payload.avatar || ''
         }).catch(() => {});
     };
+
+    // ----- Видео чужой демонстрации экрана в оверлее -----
+    // Оверлей — отдельное окно, поэтому видеотрек передаём ему локальным WebRTC-соединением
+    // (сигналы идут событиями Tauri). Битрейт и частота кадров ограничены, чтобы не грузить игру.
+    let rtc = null;
+    function pickDemo() {
+        if (typeof sharingPeers === 'undefined') return null;
+        for (const id of sharingPeers) {
+            const st = remoteStreamsByPeer[id];
+            const tr = st && st.getVideoTracks().find((x) => x.readyState === 'live');
+            if (tr) return { id, track: tr, name: (connectedUsers[id] && connectedUsers[id].username) || '' };
+        }
+        return null;
+    }
+    function closeRtc() {
+        if (!rtc) return;
+        const r = rtc; rtc = null;
+        try { r.pc.close(); } catch (e) {}
+    }
+    t.event.listen('ov-rtc-offer', async (ev) => {
+        closeRtc();
+        const demo = pickDemo();
+        if (!demo || !enabled || !blockVisible('video') || !ev || !ev.payload) { t.event.emit('ov-rtc-none', null).catch(() => {}); return; }
+        const pc = new RTCPeerConnection({ iceServers: [] });
+        const me = rtc = { pc, demoId: demo.id, trackId: demo.track.id, pending: [], haveRemote: false };
+        pc.onicecandidate = (e) => { if (e.candidate && rtc === me) t.event.emit('ov-rtc-ice', { c: e.candidate.toJSON() }).catch(() => {}); };
+        try {
+            await pc.setRemoteDescription({ type: 'offer', sdp: ev.payload.sdp });
+            const tr = pc.getTransceivers()[0];
+            tr.direction = 'sendonly';
+            await tr.sender.replaceTrack(demo.track);
+            await pc.setLocalDescription(await pc.createAnswer());
+            try {
+                const p = tr.sender.getParameters();
+                if (!p.encodings || !p.encodings.length) p.encodings = [{}];
+                p.encodings[0].maxBitrate = 1200000;
+                p.encodings[0].maxFramerate = 20;
+                p.encodings[0].scaleResolutionDownBy = 2;
+                await tr.sender.setParameters(p);
+            } catch (e) { /* параметры — необязательная оптимизация */ }
+            if (rtc !== me) return;
+            me.haveRemote = true;
+            me.pending.splice(0).forEach((c) => pc.addIceCandidate(c).catch(() => {}));
+            t.event.emit('ov-rtc-answer', { sdp: pc.localDescription.sdp }).catch(() => {});
+        } catch (e) {
+            console.warn('[overlay video]', e);
+            if (rtc === me) closeRtc();
+            t.event.emit('ov-rtc-none', null).catch(() => {});
+        }
+    });
+    t.event.listen('ov-rtc-ice', (ev) => {
+        const c = ev && ev.payload && ev.payload.c;
+        if (!rtc || !c) return;
+        if (rtc.haveRemote) rtc.pc.addIceCandidate(c).catch(() => {}); else rtc.pending.push(c);
+    });
+    t.event.listen('ov-rtc-stop', closeRtc);
+    // Демонстрацию сменили или она закончилась — пусть оверлей запросит видео заново
+    function checkRtcSource() {
+        if (!rtc) return;
+        const demo = pickDemo();
+        if (!demo || demo.id !== rtc.demoId || demo.track.id !== rtc.trackId) {
+            closeRtc();
+            t.event.emit('ov-rtc-restart', null).catch(() => {});
+        }
+    }
 
     // Бинд «Оверлей: режим настройки»
     window.muteOverlayToggleEdit = () => {
