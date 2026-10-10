@@ -5524,7 +5524,7 @@ function isIceConnected(pc) {
 // читает их из SDP принимающего. Моно Chrome и так использует по
 // умолчанию. Битрейт ограничен через maxaveragebitrate (OPUS_MAX_BITRATE). При любой ошибке разбора возвращаем SDP без изменений.
 const OPUS_PTIME_MS = 40; // 20 — вернуть стандартные пакеты
-const OPUS_MAX_BITRATE = 24000; // бит/с для голоса; 0 — не ограничивать (по умолчанию Chrome ~32 кбит/с)
+const OPUS_MAX_BITRATE = 32000; // бит/с для голоса; 0 — не ограничивать (по умолчанию Chrome ~32 кбит/с)
 function enableOpusDtx(sdp) {
     try {
         const eol = sdp.includes('\r\n') ? '\r\n' : '\n';
