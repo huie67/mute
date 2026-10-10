@@ -91,6 +91,22 @@
     text-shadow: 0 0 3px #000, 0 1px 4px rgba(0, 0, 0, 0.9), 0 0 8px rgba(0, 0, 0, 0.6);
   }
 
+  /* Сообщения */
+  #w-msgs { width: 340px; }
+  .msg-card { display: flex; align-items: flex-start; gap: 10px; padding: 4px; animation: none; }
+  .msg-card + .msg-card { margin-top: 6px; }
+  .msg-avatar { flex: none; width: 30px; height: 30px; border-radius: 50%; object-fit: cover; background: #2a2d38; }
+  .msg-body { min-width: 0; }
+  .msg-head { display: flex; align-items: center; gap: 6px; }
+  .msg-name { font-weight: 700; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    text-shadow: 0 0 3px #000, 0 1px 4px rgba(0, 0, 0, 0.9), 0 0 8px rgba(0, 0, 0, 0.6); }
+  .msg-tag { flex: none; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+    padding: 1px 6px; border-radius: 6px; background: var(--accent); color: #fff; }
+  .msg-tag.mention { background: #e0a526; }
+  .msg-text { font-size: 14px; line-height: 1.3; color: #fff; word-break: break-word;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+    text-shadow: 0 0 3px #000, 0 1px 4px rgba(0, 0, 0, 0.9), 0 0 8px rgba(0, 0, 0, 0.6); }
+
   /* ---------- Панель настройки ---------- */
   #panel {
     display: none;
@@ -144,6 +160,11 @@
   </div>
 </div>
 
+<div class="widget" id="w-msgs" data-key="messages">
+  <div class="widget-label">Сообщения</div>
+  <div id="msg-list"></div>
+</div>
+
 <div id="panel">
   <h1>Настройка оверлея</h1>
   <p class="hint">Перетаскивайте блоки мышью. Здесь же — показать/скрыть, прозрачность и размер.</p>
@@ -154,6 +175,11 @@
   </div>
   <div class="prow" data-key="music">
     <label class="check"><input type="checkbox" class="c-visible"> Музыка</label>
+    <div class="slider"><span>Прозрачность: <b class="v-opacity"></b></span><input type="range" class="r-opacity" min="20" max="100" step="5"></div>
+    <div class="slider"><span>Размер: <b class="v-scale"></b></span><input type="range" class="r-scale" min="60" max="200" step="5"></div>
+  </div>
+  <div class="prow" data-key="messages">
+    <label class="check"><input type="checkbox" class="c-visible"> Сообщения</label>
     <div class="slider"><span>Прозрачность: <b class="v-opacity"></b></span><input type="range" class="r-opacity" min="20" max="100" step="5"></div>
     <div class="slider"><span>Размер: <b class="v-scale"></b></span><input type="range" class="r-scale" min="60" max="200" step="5"></div>
   </div>
@@ -176,16 +202,20 @@
   var DEFAULTS = {
     voice: { x: 0.015, y: 0.30, opacity: 100, scale: 100, visible: true },
     music: { x: 0.015, y: 0.88, opacity: 100, scale: 100, visible: true },
+    messages: { x: 0.70, y: 0.04, opacity: 100, scale: 100, visible: true },
     onlySpeaking: false
   };
 
+  var KEYS = ['voice', 'music', 'messages'];
+  var MSG_MS = 5000;
+  var MSG_MAX = 4;
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
   function load() {
     var s = clone(DEFAULTS);
     try {
       var raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
       if (raw && typeof raw === 'object') {
-        ['voice', 'music'].forEach(function (k) {
+        KEYS.forEach(function (k) {
           if (raw[k] && typeof raw[k] === 'object') {
             for (var p in s[k]) if (raw[k][p] !== undefined && typeof raw[k][p] === typeof s[k][p]) s[k][p] = raw[k][p];
           }
@@ -203,8 +233,15 @@
 
   var els = {
     voice: document.getElementById('w-voice'),
-    music: document.getElementById('w-music')
+    music: document.getElementById('w-music'),
+    messages: document.getElementById('w-msgs')
   };
+  var msgList = document.getElementById('msg-list');
+  var msgs = [];
+  var DEMO_MSGS = [
+    { id: 'm1', name: 'Участник 1', text: 'Так будут выглядеть личные сообщения', kind: 'dm', color: '', avatar: '' },
+    { id: 'm2', name: 'Участник 2', text: 'А так обычные сообщения из чата', kind: 'msg', color: '', avatar: '' }
+  ];
   var voiceList = document.getElementById('voice-list');
   var musicTitle = document.getElementById('music-title');
 
@@ -218,42 +255,73 @@
   ];
 
   function render() {
+    // Выключенный блок вообще не рисуем (ни DOM, ни обновлений). В режиме настройки показываем
+    // приглушённым, чтобы его можно было включить обратно.
+    var on = function (k) { return settings[k].visible || editing; };
+
     // Участники
-    var users = state.users;
-    var demo = false;
+    var users = state.users, demo = false;
     if (editing && (!state.inCall || !users.length)) { users = DEMO; demo = true; }
     if (settings.onlySpeaking && !demo) users = users.filter(function (u) { return u.speaking; });
-
     voiceList.textContent = '';
-    users.forEach(function (u) {
-      var row = document.createElement('div');
-      row.className = 'voice-row' + (u.speaking ? ' speaking' : '');
-      var wrap = document.createElement('div'); wrap.className = 'voice-avatar-wrap';
-      var img = document.createElement('img'); img.className = 'voice-avatar'; img.alt = '';
-      img.src = u.avatar || ('https://api.dicebear.com/7.x/identicon/svg?seed=' + encodeURIComponent(u.name || 'u'));
-      wrap.appendChild(img);
-      var name = document.createElement('div'); name.className = 'voice-name';
-      name.textContent = u.name || 'Участник';
-      if (u.color) name.style.color = u.color;
-      row.appendChild(wrap); row.appendChild(name);
-      if (u.muted || u.deafened) {
-        var flags = document.createElement('div'); flags.className = 'voice-flags';
-        if (u.muted) { var f1 = document.createElement('span'); f1.className = 'flag'; f1.innerHTML = MIC_OFF; flags.appendChild(f1); }
-        if (u.deafened) { var f2 = document.createElement('span'); f2.className = 'flag'; f2.innerHTML = DEAF_OFF; flags.appendChild(f2); }
-        row.appendChild(flags);
-      }
-      voiceList.appendChild(row);
-    });
-    var voiceHasContent = users.length > 0;
+    if (on('voice')) {
+      users.forEach(function (u) {
+        var row = document.createElement('div');
+        row.className = 'voice-row' + (u.speaking ? ' speaking' : '');
+        var wrap = document.createElement('div'); wrap.className = 'voice-avatar-wrap';
+        var img = document.createElement('img'); img.className = 'voice-avatar'; img.alt = '';
+        img.src = u.avatar || ('https://api.dicebear.com/7.x/identicon/svg?seed=' + encodeURIComponent(u.name || 'u'));
+        wrap.appendChild(img);
+        var name = document.createElement('div'); name.className = 'voice-name';
+        name.textContent = u.name || 'Участник';
+        if (u.color) name.style.color = u.color;
+        row.appendChild(wrap); row.appendChild(name);
+        if (u.muted || u.deafened) {
+          var flags = document.createElement('div'); flags.className = 'voice-flags';
+          if (u.muted) { var f1 = document.createElement('span'); f1.className = 'flag'; f1.innerHTML = MIC_OFF; flags.appendChild(f1); }
+          if (u.deafened) { var f2 = document.createElement('span'); f2.className = 'flag'; f2.innerHTML = DEAF_OFF; flags.appendChild(f2); }
+          row.appendChild(flags);
+        }
+        voiceList.appendChild(row);
+      });
+    }
 
     // Музыка
     var m = state.music || {};
     var showMusic = !!(m.title && m.playing);
-    if (editing && !showMusic) { musicTitle.textContent = 'Название трека'; els.music.classList.add('playing'); showMusic = true; }
-    else { musicTitle.textContent = m.title || '—'; els.music.classList.toggle('playing', !!m.playing); }
+    if (editing && !showMusic) { musicTitle.textContent = 'Название трека'; showMusic = true; }
+    else { musicTitle.textContent = on('music') ? (m.title || '—') : ''; }
 
-    applyVisibility('voice', voiceHasContent);
+    // Сообщения
+    msgList.textContent = '';
+    var list = msgs;
+    if (editing && !list.length) list = DEMO_MSGS;
+    if (on('messages')) {
+      list.forEach(function (x) {
+        var card = document.createElement('div'); card.className = 'msg-card';
+        var av = document.createElement('img'); av.className = 'msg-avatar'; av.alt = '';
+        av.src = x.avatar || ('https://api.dicebear.com/7.x/identicon/svg?seed=' + encodeURIComponent(x.name || 'u'));
+        var body = document.createElement('div'); body.className = 'msg-body';
+        var head = document.createElement('div'); head.className = 'msg-head';
+        var nm = document.createElement('span'); nm.className = 'msg-name'; nm.textContent = x.name || 'Участник';
+        nm.style.color = x.color || '#fff';
+        head.appendChild(nm);
+        if (x.kind === 'dm' || x.kind === 'mention') {
+          var tag = document.createElement('span'); tag.className = 'msg-tag' + (x.kind === 'mention' ? ' mention' : '');
+          tag.textContent = x.kind === 'dm' ? 'лично' : '@';
+          head.appendChild(tag);
+        }
+        var tx = document.createElement('div'); tx.className = 'msg-text'; tx.textContent = x.text || '';
+        body.appendChild(head); body.appendChild(tx);
+        card.appendChild(av); card.appendChild(body);
+        msgList.appendChild(card);
+      });
+    }
+
+    applyVisibility('voice', users.length > 0);
     applyVisibility('music', showMusic);
+    applyVisibility('messages', list.length > 0);
+    els.music.classList.toggle('playing', !!m.playing || editing);
   }
 
   // Блок виден, если он включён в настройках И есть что показывать. В режиме настройки показываем всегда.
@@ -267,7 +335,7 @@
   }
 
   function applyLayout() {
-    ['voice', 'music'].forEach(function (key) {
+    KEYS.forEach(function (key) {
       var s = settings[key], el = els[key];
       el.style.opacity = String(s.opacity / 100);
       el.style.transform = 'scale(' + (s.scale / 100) + ')';
@@ -312,6 +380,8 @@
   });
 
   // ---------- Панель ----------
+  function visMap() { var o = {}; KEYS.forEach(function (k) { o[k] = settings[k].visible; }); return o; }
+
   function syncPanel() {
     document.querySelectorAll('.prow').forEach(function (row) {
       var s = settings[row.getAttribute('data-key')];
@@ -327,7 +397,8 @@
   document.querySelectorAll('.prow').forEach(function (row) {
     var key = row.getAttribute('data-key');
     row.querySelector('.c-visible').addEventListener('change', function (e) {
-      settings[key].visible = e.target.checked; save(); render();
+      settings[key].visible = e.target.checked; save(); render(); applyLayout();
+      if (tEvent) tEvent.emit('overlay-config-changed', visMap()).catch(function () {});
     });
     row.querySelector('.r-opacity').addEventListener('input', function (e) {
       settings[key].opacity = parseInt(e.target.value, 10);
@@ -378,6 +449,28 @@
       applyLayout();
     });
     tEvent.listen('overlay-visible', function (ev) { document.body.classList.toggle('away', !(ev && ev.payload)); });
+    tEvent.listen('overlay-message', function (ev) {
+      var p = ev && ev.payload;
+      if (!p || typeof p !== 'object' || !settings.messages.visible) return;
+      var item = {
+        id: String(p.id || Date.now() + Math.random()),
+        name: String(p.name || 'Участник').slice(0, 40),
+        text: String(p.text || '').slice(0, 240),
+        kind: p.kind === 'dm' || p.kind === 'mention' ? p.kind : 'msg',
+        color: typeof p.color === 'string' ? p.color : '',
+        avatar: typeof p.avatar === 'string' ? p.avatar : ''
+      };
+      msgs.push(item);
+      if (msgs.length > MSG_MAX) msgs.splice(0, msgs.length - MSG_MAX);
+      render(); applyLayout();
+      setTimeout(function () {
+        var i = msgs.findIndex(function (x) { return x.id === item.id; });
+        if (i >= 0) { msgs.splice(i, 1); render(); applyLayout(); }
+      }, MSG_MS);
+    });
+    tEvent.listen('overlay-config', function () {
+      settings = load(); syncPanel(); render(); applyLayout();
+    });
     tEvent.listen('overlay-edit', function (ev) { setEditing(!!(ev && ev.payload)); });
     tEvent.emit('overlay-request-state', null).catch(function () {});
   }

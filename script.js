@@ -6767,9 +6767,10 @@ const KEYBIND_ACTIONS = [
     { id: 'prevtrack', label: 'Плеер: предыдущий трек' },
     { id: 'nexttrack', label: 'Плеер: следующий трек' },
     { id: 'voicechanger', label: 'Изменение голоса' },
+    { id: 'overlayedit', label: 'Оверлей: режим настройки' },
     { id: 'ptt', label: 'Рация: удерживайте, чтобы говорить' }
 ];
-let keybinds = { mute: '', deafen: '', leave: '', playpause: '', prevtrack: '', nexttrack: '', voicechanger: '', ptt: '', global: true };
+let keybinds = { mute: '', deafen: '', leave: '', playpause: '', prevtrack: '', nexttrack: '', voicechanger: '', overlayedit: '', ptt: '', global: true };
 try {
     const raw = localStorage.getItem(KEYBINDS_KEY);
     if (raw) keybinds = { ...keybinds, ...JSON.parse(raw) };
@@ -6796,6 +6797,7 @@ function runKeybindAction(id) {
     else if (id === 'prevtrack') playlistPrevTrack();
     else if (id === 'nexttrack') playlistNextTrack();
     else if (id === 'ptt') pttSet(true);
+    else if (id === 'overlayedit') { if (typeof window.muteOverlayToggleEdit === 'function') window.muteOverlayToggleEdit(); }
     else if (id === 'voicechanger') {
         const check = document.getElementById('voice-changer-check');
         if (check && !check.disabled) {
@@ -8390,6 +8392,14 @@ function notifyIncomingMessage(payload, room, senderName) {
     } else {
         playMessageSound(room);
     }
+
+    // Оверлей поверх игр: показываем сообщение на несколько секунд (если включено в настройках).
+    try {
+        if (typeof window.muteOverlayMessage === 'function') {
+            const kind = isWhisper ? 'dm' : ((iAmMentioned || everyoneMentioned) ? 'mention' : 'msg');
+            window.muteOverlayMessage(payload, kind, senderName);
+        }
+    } catch (e) { /* оверлей не должен ломать уведомления */ }
 }
 
 socket.on('chat message', (payload) => {
@@ -8941,6 +8951,64 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         setEditUi();
     }
+
+    // ----- Блоки оверлея (синхронно с настройками самого оверлея через localStorage) -----
+    const CFG_KEY = 'mute_overlay_v1';
+    const BLOCKS = ['voice', 'music', 'messages'];
+    function readCfg() { try { return JSON.parse(localStorage.getItem(CFG_KEY) || '{}') || {}; } catch (e) { return {}; } }
+    function blockVisible(k) { const c = readCfg(); return !(c[k] && c[k].visible === false); }
+    function setBlockVisible(k, v) {
+        const c = readCfg();
+        c[k] = Object.assign({}, c[k], { visible: !!v });
+        try { localStorage.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {}
+        t.event.emit('overlay-config', null).catch(() => {});
+    }
+    function syncBlockChecks() { BLOCKS.forEach((k) => { const el = document.getElementById('overlay-block-' + k); if (el) el.checked = blockVisible(k); }); }
+    BLOCKS.forEach((k) => {
+        const el = document.getElementById('overlay-block-' + k);
+        if (el) el.addEventListener('change', () => setBlockVisible(k, el.checked));
+    });
+    syncBlockChecks();
+    // Блок выключили/включили в самом оверлее (режим настройки)
+    t.event.listen('overlay-config-changed', (ev) => {
+        const m = ev && ev.payload;
+        if (!m) return;
+        const c = readCfg();
+        BLOCKS.forEach((k) => { if (typeof m[k] === 'boolean') c[k] = Object.assign({}, c[k], { visible: m[k] }); });
+        try { localStorage.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {}
+        syncBlockChecks();
+    });
+
+    // ----- Сообщения в оверлее -----
+    const DM_KEY = 'mute_overlay_msg_dm', ALL_KEY = 'mute_overlay_msg_all';
+    const dmCheck = document.getElementById('overlay-msg-dm-check');
+    const allCheck = document.getElementById('overlay-msg-all-check');
+    let showDm = true, showAll = false;
+    try { showDm = localStorage.getItem(DM_KEY) !== '0'; showAll = localStorage.getItem(ALL_KEY) === '1'; } catch (e) {}
+    if (dmCheck) { dmCheck.checked = showDm; dmCheck.addEventListener('change', () => { showDm = dmCheck.checked; try { localStorage.setItem(DM_KEY, showDm ? '1' : '0'); } catch (e) {} }); }
+    if (allCheck) { allCheck.checked = showAll; allCheck.addEventListener('change', () => { showAll = allCheck.checked; try { localStorage.setItem(ALL_KEY, showAll ? '1' : '0'); } catch (e) {} }); }
+
+    window.muteOverlayMessage = (payload, kind, senderName) => {
+        if (!enabled || !payload || !blockVisible('messages')) return;
+        if (kind === 'msg' ? !showAll : !showDm) return;
+        let text = String(payload.text || '').trim();
+        if (!text) text = (payload.image_url || payload.file_url || (payload.attachments && payload.attachments.length)) ? '📎 вложение' : '';
+        if (!text) return;
+        t.event.emit('overlay-message', {
+            id: String(payload.id || '') + ':' + Date.now(),
+            name: senderName || payload.username || payload.user || 'Участник',
+            text,
+            kind,
+            color: typeof getUserColor === 'function' ? getUserColor(senderName || '') : '',
+            avatar: payload.avatar || ''
+        }).catch(() => {});
+    };
+
+    // Бинд «Оверлей: режим настройки»
+    window.muteOverlayToggleEdit = () => {
+        if (!enabled) { showToast('Оверлей выключен: включите его в настройках.', 3500); return; }
+        setEditing(!editing);
+    };
 
     // Окно оверлея после загрузки просит текущее состояние.
     t.event.listen('overlay-request-state', () => {
