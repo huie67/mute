@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mute — оверлей</title>
+<style>
+  :root {
+    --accent: #5b8cff;
+    --ok: #3ddc84;
+    --danger: #ff5d6c;
+    --card: rgba(14, 15, 20, 0.78);
+    --text: #f2f4f8;
+    --muted: #a7adbb;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; width: 100%; height: 100%; overflow: hidden;
+    background: transparent;
+    font: 14px/1.3 "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+    color: var(--text);
+    user-select: none; -webkit-user-select: none;
+  }
+
+  /* ---------- Виджеты ---------- */
+  .widget {
+    position: absolute; left: 0; top: 0;
+    transform-origin: top left;
+    background: var(--card);
+    border-radius: 14px;
+    padding: 8px;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+  }
+  .widget.hidden { display: none; }
+  body.edit .widget {
+    outline: 2px dashed rgba(255, 255, 255, 0.55);
+    outline-offset: 2px;
+    cursor: move;
+    touch-action: none;
+  }
+  body.edit .widget.hidden { display: block; opacity: 0.35 !important; }
+  .widget-label {
+    display: none;
+    position: absolute; left: 6px; top: -22px;
+    padding: 1px 8px; border-radius: 6px;
+    background: rgba(0, 0, 0, 0.7); color: #fff; font-size: 11px; white-space: nowrap;
+  }
+  body.edit .widget-label { display: block; }
+
+  /* Участники */
+  #w-voice { min-width: 190px; max-width: 320px; }
+  .voice-row { display: flex; align-items: center; gap: 10px; padding: 4px 6px; border-radius: 10px; }
+  .voice-row + .voice-row { margin-top: 2px; }
+  .voice-avatar-wrap { position: relative; flex: none; width: 36px; height: 36px; }
+  .voice-avatar {
+    width: 36px; height: 36px; border-radius: 50%; object-fit: cover; display: block;
+    background: #2a2d38;
+    border: 3px solid transparent;
+    transition: border-color 0.12s, box-shadow 0.12s;
+  }
+  .voice-row.speaking .voice-avatar {
+    border-color: var(--ok);
+    box-shadow: 0 0 10px rgba(61, 220, 132, 0.75);
+  }
+  .voice-name {
+    font-weight: 600; font-size: 15px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+    min-width: 0;
+  }
+  .voice-row:not(.speaking) .voice-name { opacity: 0.85; }
+  .voice-flags { margin-left: auto; display: flex; gap: 4px; flex: none; }
+  .flag {
+    width: 18px; height: 18px; border-radius: 50%;
+    background: var(--danger); display: grid; place-items: center;
+  }
+  .flag svg { width: 11px; height: 11px; stroke: #fff; fill: none; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+  .voice-empty { padding: 6px 10px; color: var(--muted); font-size: 13px; }
+
+  /* Музыка */
+  #w-music { display: flex; align-items: center; gap: 12px; width: 280px; padding: 10px 14px 10px 12px; }
+  .eq { flex: none; display: flex; align-items: flex-end; gap: 3px; width: 22px; height: 22px; }
+  .eq i { flex: 1; background: var(--accent); border-radius: 2px; height: 30%; }
+  #w-music.playing .eq i { animation: eq 0.9s ease-in-out infinite; }
+  #w-music.playing .eq i:nth-child(2) { animation-delay: -0.35s; }
+  #w-music.playing .eq i:nth-child(3) { animation-delay: -0.7s; }
+  @keyframes eq { 0%, 100% { height: 25%; } 50% { height: 100%; } }
+  .music-text { min-width: 0; }
+  .music-kicker { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+  .music-title {
+    font-weight: 600; font-size: 15px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  /* ---------- Панель настройки ---------- */
+  #panel {
+    display: none;
+    position: fixed; left: 50%; top: 18px; transform: translateX(-50%);
+    width: min(560px, calc(100vw - 24px));
+    background: rgba(18, 19, 26, 0.96);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 16px;
+    padding: 14px 16px 12px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.55);
+    cursor: default;
+  }
+  body.edit #panel { display: block; }
+  #panel h1 { margin: 0 0 4px; font-size: 16px; }
+  #panel .hint { margin: 0 0 10px; color: var(--muted); font-size: 12.5px; }
+  .prow {
+    display: grid; grid-template-columns: 112px 1fr 1fr; gap: 14px; align-items: center;
+    padding: 8px 0; border-top: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .prow label.check { display: flex; align-items: center; gap: 8px; font-weight: 600; cursor: pointer; }
+  .slider { display: grid; gap: 2px; font-size: 12px; color: var(--muted); }
+  .slider span b { color: var(--text); font-weight: 600; }
+  input[type=range] { width: 100%; accent-color: var(--accent); margin: 0; }
+  input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; }
+  .popts { display: flex; align-items: center; gap: 8px; padding: 8px 0 2px; border-top: 1px solid rgba(255, 255, 255, 0.08); }
+  .popts label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  .pbtns { display: flex; gap: 8px; margin-left: auto; }
+  button {
+    font: inherit; font-weight: 600; color: var(--text);
+    background: rgba(255, 255, 255, 0.1); border: 0; border-radius: 9px;
+    padding: 7px 14px; cursor: pointer;
+  }
+  button:hover { background: rgba(255, 255, 255, 0.18); }
+  button.primary { background: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.1); }
+</style>
+</head>
+<body>
+
+<div class="widget" id="w-voice" data-key="voice">
+  <div class="widget-label">Участники</div>
+  <div id="voice-list"></div>
+</div>
+
+<div class="widget" id="w-music" data-key="music">
+  <div class="widget-label">Музыка</div>
+  <div class="eq"><i></i><i></i><i></i></div>
+  <div class="music-text">
+    <div class="music-kicker">Сейчас играет</div>
+    <div class="music-title" id="music-title">—</div>
+  </div>
+</div>
+
+<div id="panel">
+  <h1>Настройка оверлея</h1>
+  <p class="hint">Перетаскивайте блоки мышью. Здесь же — показать/скрыть, прозрачность и размер.</p>
+  <div class="prow" data-key="voice">
+    <label class="check"><input type="checkbox" class="c-visible"> Участники</label>
+    <div class="slider"><span>Прозрачность: <b class="v-opacity"></b></span><input type="range" class="r-opacity" min="20" max="100" step="5"></div>
+    <div class="slider"><span>Размер: <b class="v-scale"></b></span><input type="range" class="r-scale" min="60" max="200" step="5"></div>
+  </div>
+  <div class="prow" data-key="music">
+    <label class="check"><input type="checkbox" class="c-visible"> Музыка</label>
+    <div class="slider"><span>Прозрачность: <b class="v-opacity"></b></span><input type="range" class="r-opacity" min="20" max="100" step="5"></div>
+    <div class="slider"><span>Размер: <b class="v-scale"></b></span><input type="range" class="r-scale" min="60" max="200" step="5"></div>
+  </div>
+  <div class="popts">
+    <label><input type="checkbox" id="c-only-speaking"> Показывать только говорящих</label>
+    <div class="pbtns">
+      <button type="button" id="b-reset">Сбросить</button>
+      <button type="button" class="primary" id="b-done">Готово</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var T = window.__TAURI__ || {};
+  var tEvent = T.event, tCore = T.core;
+
+  var STORAGE_KEY = 'mute_overlay_v1';
+  var DEFAULTS = {
+    voice: { x: 0.015, y: 0.30, opacity: 100, scale: 100, visible: true },
+    music: { x: 0.015, y: 0.88, opacity: 100, scale: 100, visible: true },
+    onlySpeaking: false
+  };
+
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  function load() {
+    var s = clone(DEFAULTS);
+    try {
+      var raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+      if (raw && typeof raw === 'object') {
+        ['voice', 'music'].forEach(function (k) {
+          if (raw[k] && typeof raw[k] === 'object') {
+            for (var p in s[k]) if (raw[k][p] !== undefined && typeof raw[k][p] === typeof s[k][p]) s[k][p] = raw[k][p];
+          }
+        });
+        if (typeof raw.onlySpeaking === 'boolean') s.onlySpeaking = raw.onlySpeaking;
+      }
+    } catch (e) { /* ignore */ }
+    return s;
+  }
+  var settings = load();
+  function save() { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(settings)); } catch (e) { /* ignore */ } }
+
+  var state = { inCall: false, users: [], music: { title: '', playing: false } };
+  var editing = false;
+
+  var els = {
+    voice: document.getElementById('w-voice'),
+    music: document.getElementById('w-music')
+  };
+  var voiceList = document.getElementById('voice-list');
+  var musicTitle = document.getElementById('music-title');
+
+  var MIC_OFF = '<svg viewBox="0 0 24 24"><line x1="2" y1="2" x2="22" y2="22"/><path d="M9 9v3a3 3 0 0 0 5.1 2.1M15 9.3V5a3 3 0 0 0-5.9-.8"/><path d="M19 10v2a7 7 0 0 1-1.1 3.8M5 10v2a7 7 0 0 0 11.1 5.7"/></svg>';
+  var DEAF_OFF = '<svg viewBox="0 0 24 24"><line x1="2" y1="2" x2="22" y2="22"/><path d="M3 14v-2a9 9 0 0 1 14.6-7M21 12v2"/><path d="M3 14h3v5H4a1 1 0 0 1-1-1z"/></svg>';
+
+  var DEMO = [
+    { id: 'd1', name: 'Участник 1', avatar: '', speaking: true, muted: false, deafened: false, color: '' },
+    { id: 'd2', name: 'Участник 2', avatar: '', speaking: false, muted: true, deafened: false, color: '' },
+    { id: 'd3', name: 'Участник 3', avatar: '', speaking: false, muted: false, deafened: false, color: '' }
+  ];
+
+  function render() {
+    // Участники
+    var users = state.users;
+    var demo = false;
+    if (editing && (!state.inCall || !users.length)) { users = DEMO; demo = true; }
+    if (settings.onlySpeaking && !demo) users = users.filter(function (u) { return u.speaking; });
+
+    voiceList.textContent = '';
+    users.forEach(function (u) {
+      var row = document.createElement('div');
+      row.className = 'voice-row' + (u.speaking ? ' speaking' : '');
+      var wrap = document.createElement('div'); wrap.className = 'voice-avatar-wrap';
+      var img = document.createElement('img'); img.className = 'voice-avatar'; img.alt = '';
+      img.src = u.avatar || ('https://api.dicebear.com/7.x/identicon/svg?seed=' + encodeURIComponent(u.name || 'u'));
+      wrap.appendChild(img);
+      var name = document.createElement('div'); name.className = 'voice-name';
+      name.textContent = u.name || 'Участник';
+      if (u.color) name.style.color = u.color;
+      row.appendChild(wrap); row.appendChild(name);
+      if (u.muted || u.deafened) {
+        var flags = document.createElement('div'); flags.className = 'voice-flags';
+        if (u.muted) { var f1 = document.createElement('span'); f1.className = 'flag'; f1.innerHTML = MIC_OFF; flags.appendChild(f1); }
+        if (u.deafened) { var f2 = document.createElement('span'); f2.className = 'flag'; f2.innerHTML = DEAF_OFF; flags.appendChild(f2); }
+        row.appendChild(flags);
+      }
+      voiceList.appendChild(row);
+    });
+    var voiceHasContent = users.length > 0;
+
+    // Музыка
+    var m = state.music || {};
+    var showMusic = !!(m.title && m.playing);
+    if (editing && !showMusic) { musicTitle.textContent = 'Название трека'; els.music.classList.add('playing'); showMusic = true; }
+    else { musicTitle.textContent = m.title || '—'; els.music.classList.toggle('playing', !!m.playing); }
+
+    applyVisibility('voice', voiceHasContent);
+    applyVisibility('music', showMusic);
+  }
+
+  // Блок виден, если он включён в настройках И есть что показывать. В режиме настройки показываем всегда.
+  function applyVisibility(key, hasContent) {
+    var s = settings[key];
+    var el = els[key];
+    var hidden = !s.visible || !hasContent;
+    if (editing) hidden = !s.visible;
+    el.classList.toggle('hidden', hidden);
+    if (editing && hidden) el.classList.add('hidden'); // в edit CSS показывает приглушённым
+  }
+
+  function applyLayout() {
+    ['voice', 'music'].forEach(function (key) {
+      var s = settings[key], el = els[key];
+      el.style.opacity = String(s.opacity / 100);
+      el.style.transform = 'scale(' + (s.scale / 100) + ')';
+      positionWidget(key);
+    });
+  }
+
+  function positionWidget(key) {
+    var s = settings[key], el = els[key];
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var w = el.offsetWidth * (s.scale / 100), h = el.offsetHeight * (s.scale / 100);
+    var x = Math.min(Math.max(0, s.x * vw), Math.max(0, vw - w));
+    var y = Math.min(Math.max(0, s.y * vh), Math.max(0, vh - h));
+    el.style.left = x + 'px';
+    el.style.top = y + 'px';
+  }
+
+  // ---------- Перетаскивание ----------
+  Object.keys(els).forEach(function (key) {
+    var el = els[key];
+    var drag = null;
+    el.addEventListener('pointerdown', function (e) {
+      if (!editing || e.button !== 0) return;
+      var r = el.getBoundingClientRect();
+      drag = { dx: e.clientX - r.left, dy: e.clientY - r.top, w: r.width, h: r.height };
+      el.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+    el.addEventListener('pointermove', function (e) {
+      if (!drag) return;
+      var vw = window.innerWidth, vh = window.innerHeight;
+      var x = Math.min(Math.max(0, e.clientX - drag.dx), Math.max(0, vw - drag.w));
+      var y = Math.min(Math.max(0, e.clientY - drag.dy), Math.max(0, vh - drag.h));
+      el.style.left = x + 'px';
+      el.style.top = y + 'px';
+      settings[key].x = x / vw;
+      settings[key].y = y / vh;
+    });
+    function end() { if (drag) { drag = null; save(); } }
+    el.addEventListener('pointerup', end);
+    el.addEventListener('pointercancel', end);
+  });
+
+  // ---------- Панель ----------
+  function syncPanel() {
+    document.querySelectorAll('.prow').forEach(function (row) {
+      var s = settings[row.getAttribute('data-key')];
+      row.querySelector('.c-visible').checked = s.visible;
+      row.querySelector('.r-opacity').value = s.opacity;
+      row.querySelector('.r-scale').value = s.scale;
+      row.querySelector('.v-opacity').textContent = s.opacity + '%';
+      row.querySelector('.v-scale').textContent = s.scale + '%';
+    });
+    document.getElementById('c-only-speaking').checked = settings.onlySpeaking;
+  }
+
+  document.querySelectorAll('.prow').forEach(function (row) {
+    var key = row.getAttribute('data-key');
+    row.querySelector('.c-visible').addEventListener('change', function (e) {
+      settings[key].visible = e.target.checked; save(); render();
+    });
+    row.querySelector('.r-opacity').addEventListener('input', function (e) {
+      settings[key].opacity = parseInt(e.target.value, 10);
+      row.querySelector('.v-opacity').textContent = settings[key].opacity + '%';
+      applyLayout(); save();
+    });
+    row.querySelector('.r-scale').addEventListener('input', function (e) {
+      settings[key].scale = parseInt(e.target.value, 10);
+      row.querySelector('.v-scale').textContent = settings[key].scale + '%';
+      applyLayout(); save();
+    });
+  });
+  document.getElementById('c-only-speaking').addEventListener('change', function (e) {
+    settings.onlySpeaking = e.target.checked; save(); render();
+  });
+  document.getElementById('b-reset').addEventListener('click', function () {
+    settings = clone(DEFAULTS); save(); syncPanel(); applyLayout(); render();
+  });
+  document.getElementById('b-done').addEventListener('click', function () {
+    setEditing(false);
+    if (tCore) tCore.invoke('overlay_set_edit', { enabled: false }).catch(function () {});
+    if (tEvent) tEvent.emit('overlay-edit-changed', false).catch(function () {});
+  });
+  // Панель — не часть блоков, перетаскивание ей не нужно
+  document.getElementById('panel').addEventListener('pointerdown', function (e) { e.stopPropagation(); });
+
+  function setEditing(on) {
+    editing = !!on;
+    document.body.classList.toggle('edit', editing);
+    if (editing) syncPanel();
+    render();
+    applyLayout();
+  }
+
+  window.addEventListener('resize', applyLayout);
+
+  // ---------- Связь с основным окном ----------
+  if (tEvent) {
+    tEvent.listen('overlay-state', function (ev) {
+      var p = ev && ev.payload;
+      if (!p || typeof p !== 'object') return;
+      state = {
+        inCall: !!p.inCall,
+        users: Array.isArray(p.users) ? p.users : [],
+        music: p.music && typeof p.music === 'object' ? p.music : { title: '', playing: false }
+      };
+      render();
+      applyLayout();
+    });
+    tEvent.listen('overlay-edit', function (ev) { setEditing(!!(ev && ev.payload)); });
+    tEvent.emit('overlay-request-state', null).catch(function () {});
+  }
+
+  applyLayout();
+  render();
+  applyLayout();
+})();
+</script>
+</body>
+</html>

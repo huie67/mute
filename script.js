@@ -8822,6 +8822,129 @@ makeColumnResizable(
     { min: 260, max: 640, storageKey: 'mute:chatWidth', invert: true }
 );
 
+
+// ---------- Оверлей поверх игр (только десктоп) ----------
+// Отдельное прозрачное окно (см. overlay.html и lib.rs). Здесь мы только собираем состояние —
+// кто в звонке, кто говорит, что играет — и шлём его окну оверлея событием.
+document.addEventListener('DOMContentLoaded', () => {
+    const t = window.__TAURI__;
+    if (!t || !t.core || !t.event) return;
+    const check = document.getElementById('overlay-enable-check');
+    const editBtn = document.getElementById('overlay-edit-btn');
+    const KEY = 'mute_overlay_enabled';
+    let enabled = false;
+    let editing = false;
+    try { enabled = localStorage.getItem(KEY) === '1'; } catch (e) {}
+
+    function collectState() {
+        const users = [];
+        const inCall = !!(currentUser && currentUser.room);
+        if (inCall) {
+            voiceUsersContainer.querySelectorAll('.voice-user-row:not(.offcall)').forEach((row) => {
+                const img = row.querySelector('.user-avatar');
+                const nameEl = row.querySelector('.voice-user-name');
+                users.push({
+                    id: img && img.id ? img.id : '',
+                    name: nameEl ? nameEl.textContent.trim() : 'Участник',
+                    color: nameEl && nameEl.style ? nameEl.style.color : '',
+                    avatar: img ? img.src : '',
+                    speaking: !!(img && img.classList.contains('speaking')),
+                    muted: !!row.querySelector('.mic-mute-badge.visible'),
+                    deafened: !!row.querySelector('.deafen-badge.visible')
+                });
+            });
+        }
+        let title = '', playing = false;
+        const guest = typeof listenSession !== 'undefined' && listenSession && listenSession.role === 'guest';
+        if (guest) {
+            title = listenSessionTrackName.textContent.trim();
+            playing = !!(typeof listenGuestAudio !== 'undefined' && listenGuestAudio && !listenGuestAudio.paused);
+        } else {
+            const name = playlistTrackNameEl.textContent.trim();
+            title = name && name !== 'Нет трека' ? name : '';
+            playing = !playlistAudio.paused;
+        }
+        return { inCall, users, music: { title, playing } };
+    }
+
+    let lastJson = '';
+    function pushState(force) {
+        if (!enabled) return;
+        const state = collectState();
+        const json = JSON.stringify(state);
+        if (!force && json === lastJson) return;
+        lastJson = json;
+        t.event.emit('overlay-state', state).catch(() => {});
+    }
+    let timer = null;
+    function schedulePush() {
+        if (!enabled || timer) return;
+        timer = setTimeout(() => { timer = null; pushState(false); }, 60);
+    }
+
+    // Следим за списком участников (класс .speaking, бейджи мьюта, вход/выход) и за плеером.
+    new MutationObserver(schedulePush).observe(voiceUsersContainer, {
+        subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'src']
+    });
+    [playlistTrackNameEl, listenSessionTrackName].forEach((el) => {
+        if (el) new MutationObserver(schedulePush).observe(el, { subtree: true, childList: true, characterData: true });
+    });
+    ['play', 'pause', 'ended', 'emptied'].forEach((ev) => {
+        playlistAudio.addEventListener(ev, schedulePush);
+        if (typeof listenGuestAudio !== 'undefined' && listenGuestAudio) listenGuestAudio.addEventListener(ev, schedulePush);
+    });
+
+    function setEditUi() {
+        if (!editBtn) return;
+        editBtn.textContent = editing ? 'Закончить настройку' : 'Настроить оверлей';
+        editBtn.disabled = !enabled;
+    }
+
+    async function setEditing(on) {
+        if (!enabled) return;
+        try {
+            await t.core.invoke('overlay_set_edit', { enabled: on });
+            editing = on;
+            t.event.emit('overlay-edit', on).catch(() => {});
+        } catch (e) {
+            editing = false;
+            showToast('Оверлей: ' + e, 5000);
+        }
+        setEditUi();
+    }
+
+    async function setEnabled(on) {
+        enabled = on;
+        try { localStorage.setItem(KEY, on ? '1' : '0'); } catch (e) {}
+        if (on) {
+            try { await t.core.invoke('overlay_open'); }
+            catch (e) { showToast('Не удалось открыть оверлей: ' + e, 6000); enabled = false; if (check) check.checked = false; }
+            lastJson = '';
+            pushState(true);
+        } else {
+            editing = false;
+            try { await t.core.invoke('overlay_close'); } catch (e) {}
+        }
+        setEditUi();
+    }
+
+    // Окно оверлея после загрузки просит текущее состояние.
+    t.event.listen('overlay-request-state', () => {
+        pushState(true);
+        if (editing) t.event.emit('overlay-edit', true).catch(() => {});
+    });
+    // «Готово» в панели самого оверлея
+    t.event.listen('overlay-edit-changed', (ev) => { editing = !!(ev && ev.payload); setEditUi(); });
+
+    if (check) {
+        check.checked = enabled;
+        check.addEventListener('change', () => setEnabled(check.checked));
+    }
+    if (editBtn) editBtn.addEventListener('click', () => setEditing(!editing));
+    setEditUi();
+    if (enabled) setEnabled(true);
+});
+
 // ---------- Запрет копирования всего, кроме текста сообщений и полей ввода ----------
 document.addEventListener('copy', (e) => {
     const target = e.target;
