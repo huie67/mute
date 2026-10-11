@@ -1998,7 +1998,7 @@ io.on('connection', (socket) => {
 
         // Это начало нового созвона? Проверяем ДО добавления себя в комнату.
         const callWasEmpty = !rooms[room] ||
-            !Object.values(rooms[room]).some(u => u && u.peerId);
+            !Object.entries(rooms[room]).some(([sid, u]) => u && u.peerId && io.sockets.sockets.has(sid));
 
         if (!rooms[room]) {
             rooms[room] = {};
@@ -2042,6 +2042,17 @@ io.on('connection', (socket) => {
 
     socket.on('leave voice', () => {
         leaveCurrentRoom(socket);
+        for (const room of Object.keys(rooms)) {
+            const entry = rooms[room] && rooms[room][socket.id];
+            if (!entry) continue;
+            delete rooms[room][socket.id];
+            socket.leave(room);
+            if (entry.peerId) io.to(room).emit('user disconnected', entry.peerId);
+            if (Object.keys(rooms[room]).length === 0) delete rooms[room];
+            broadcastRoomUsers(room);
+        }
+        currentUserRoom = null;
+        currentUserData = null;
     });
 
     // ---------- Совместное прослушивание плейлиста (только ретрансляция адресату) ----------
@@ -2128,6 +2139,7 @@ io.on('connection', (socket) => {
             const room = currentUserRoom;
             const sockId = socket.id;
             const peerId = (rooms[room][sockId] && rooms[room][sockId].peerId) || (socket.data && socket.data.peerId);
+            broadcastRoomUsers(room); // человек пропадает из списка сразу, а не через 8 секунд
             setTimeout(() => {
                 if (!rooms[room] || !rooms[room][sockId]) return; // уже убрано или комнаты нет
                 // Успел переподключиться и зайти заново (новый сокет, тот же peerId) —
@@ -2462,6 +2474,9 @@ function getRoomUsers(room) {
     const usersMap = {};
     for (let sId in rooms[room]) {
         let u = rooms[room][sId];
+        // Сокет оборвался и ждёт переподключения (пауза 8 с) — человека в звонке уже нет,
+        // не показываем его остальным и не считаем участником.
+        if (!io.sockets.sockets.has(sId)) continue;
         if (u.peerId) {
             usersMap[u.peerId] = {
                 username: u.username,
