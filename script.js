@@ -1922,6 +1922,17 @@ let isMuted = false;
 let isDeafened = false;
 let activeCalls = {};
 let connectedUsers = {};
+// Только что вышедшие участники: пока метка жива, запоздавшие события ('mute state', входящий
+// звонок) НЕ имеют права снова добавить человека в список — раньше они «воскрешали» ушедшего.
+const recentlyLeftPeers = new Map(); // peerId -> время метки
+function markPeerLeft(peerId) { if (peerId) recentlyLeftPeers.set(peerId, Date.now()); }
+function clearPeerLeft(peerId) { recentlyLeftPeers.delete(peerId); }
+function isPeerRecentlyLeft(peerId) {
+    const t = recentlyLeftPeers.get(peerId);
+    if (t === undefined) return false;
+    if (Date.now() - t > 20000) { recentlyLeftPeers.delete(peerId); return false; }
+    return true;
+}
 const roomUserCounts = {}; 
 let remoteAnalysers = {}; 
 let remoteGainNodes = {}; 
@@ -3117,16 +3128,23 @@ function getRandomPlaylistIndex() {
 // Личная громкость музыки (плейлиста и совместного прослушивания) — у каждого своя,
 // хранится только на этом устройстве и никогда не передаётся собеседнику.
 const PLAYLIST_VOLUME_KEY = 'mute_playlist_volume';
+// HTMLMediaElement.volume ограничен 1.0, поэтому ползунок 100–150% ничего не менял, а линейная
+// шкала на слух почти не отличается между соседними значениями. Теперь 0–100% и кривая громкости
+// (квадрат), как в системных микшерах: каждый шаг ползунка заметно слышен.
+function playlistVolumeToGain(percent) {
+    const p = Math.min(100, Math.max(0, Number(percent) || 0)) / 100;
+    return p * p;
+}
 function loadPlaylistVolumePercent() {
     try {
         const raw = localStorage.getItem(PLAYLIST_VOLUME_KEY);
         const n = raw === null ? 70 : parseInt(raw, 10);
-        return Number.isFinite(n) ? Math.min(200, Math.max(0, n)) : 70;
+        return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : 70;
     } catch (e) { return 70; }
 }
 function setPlaylistVolumePercent(percent) {
-    const clamped = Math.min(200, Math.max(0, percent));
-    playlistAudio.volume = Math.min(1, clamped / 100);
+    const clamped = Math.min(100, Math.max(0, percent));
+    playlistAudio.volume = playlistVolumeToGain(clamped);
     listenGuestAudioVolumeSafeSet(clamped);
     try { localStorage.setItem(PLAYLIST_VOLUME_KEY, String(clamped)); } catch (e) { /* ignore */ }
     if (playlistVolumeRangeEl) playlistVolumeRangeEl.value = clamped;
@@ -3135,11 +3153,11 @@ function setPlaylistVolumePercent(percent) {
 // listenGuestAudio объявлен чуть ниже по файлу — обёртка на случай вызова раньше инициализации
 function listenGuestAudioVolumeSafeSet(percent) {
     if (typeof listenGuestAudio !== 'undefined' && listenGuestAudio) {
-        listenGuestAudio.volume = Math.min(1, Math.max(0, percent) / 100);
+        listenGuestAudio.volume = playlistVolumeToGain(percent);
     }
 }
 let playlistVolumePercent = loadPlaylistVolumePercent();
-playlistAudio.volume = Math.min(1, playlistVolumePercent / 100);
+playlistAudio.volume = playlistVolumeToGain(playlistVolumePercent);
 let playlistVolumeRangeEl = null; // ссылка на ползунок внутри попапа громкости плейлиста, пока он открыт
 
 function stripExt(name) {
@@ -3394,7 +3412,7 @@ playlistVolumeBtn.addEventListener('click', (e) => {
     pop.className = 'user-volume-popover fade-in';
     pop.innerHTML = `
         <div class="user-volume-popover-title">Громкость музыки</div>
-        <input type="range" id="playlist-volume-range" min="0" max="150" step="5" value="${playlistVolumePercent}">
+        <input type="range" id="playlist-volume-range" min="0" max="100" step="5" value="${playlistVolumePercent}">
         <div class="user-volume-popover-value">${playlistVolumePercent}%</div>
         <span class="profile-hint">Только у вас — на плейлист и совместное прослушивание</span>
     `;
@@ -3485,7 +3503,7 @@ let pendingOutgoingListenInviteTo = null; // peerId, кому только чт�
 let listenInviteTimeoutId = null;
 let listenSyncIntervalId = null;
 const listenGuestAudio = new Audio(); // отдельный аудио-элемент гостя, не трогает свой плейлист
-listenGuestAudio.volume = Math.min(1, playlistVolumePercent / 100);
+listenGuestAudio.volume = playlistVolumeToGain(playlistVolumePercent);
 let listenGuestObjectUrl = null;
 let listenGuestTrackMeta = null; // ждём бинарные данные трека после метаданных
 let listenTrackGeneration = 0; // защищает гостя от запоздавших данных старого трека
@@ -3601,7 +3619,7 @@ function refreshListenSessionUi() {
     listenSessionSeekRow.classList.toggle('visible', isGuest);
     listenSessionVolumeRow.classList.toggle('visible', isGuest);
     listenSessionTrackName.style.display = isGuest ? '' : 'none';
-    if (isGuest) listenSessionVolume.value = String(Math.min(150, playlistVolumePercent));
+    if (isGuest) listenSessionVolume.value = String(Math.min(100, playlistVolumePercent));
 
     // Пока вам транслируют чужой плейлист (вы гость), свой модуль управления
     // треками не нужен — прячем, чтобы не путал и не мешал.
@@ -4200,7 +4218,7 @@ async function initPeer() {
         // участников, кто оказывался звонящим (кто именно — зависит от сравнения их
         // PeerJS ID, который выдаётся заново при каждом полном перезаходе), собеседник
         // отображался под ЕГО СОБСТВЕННЫМ ником и аватаркой.
-        if (call.metadata && call.metadata.username) {
+        if (call.metadata && call.metadata.username && !isPeerRecentlyLeft(call.peer)) {
             const prev = connectedUsers[call.peer] || {};
             connectedUsers[call.peer] = { ...prev, username: call.metadata.username, avatar: call.metadata.avatar };
             updateVoiceUsersList();
@@ -5347,6 +5365,7 @@ socket.on('room users', (usersInRoom, room) => {
     const prevPeerIds = Object.keys(connectedUsers || {});
     const wasAlreadyInCall = prevPeerIds.includes(myPeerId);
     connectedUsers = usersInRoom;
+    Object.keys(usersInRoom || {}).forEach(clearPeerLeft);
     if (currentUser.room && wasAlreadyInCall) {
         const nextPeerIds = Object.keys(usersInRoom || {});
         nextPeerIds.forEach(id => {
@@ -5406,11 +5425,21 @@ socket.on('room users', (usersInRoom, room) => {
     }
 });
 
+// Страховка от «призраков»: раз в 15 с, пока мы в звонке, запрашиваем у сервера актуальный
+// список. Любая запись, которой там нет, исчезнет, даже если какое-то событие потерялось.
+setInterval(() => {
+    if (currentUser && currentUser.room && socket && socket.connected) {
+        socket.emit('get room users', currentUser.room);
+    }
+}, 15000);
+
 // Кто-то другой включил/выключил мьют или дефен — обновляем его значки и
 // проигрываем соответствующий сигнал (тот же, что слышит сам переключивший),
 // чтобы это было слышно всем участникам комнаты, а не только ему одному.
 socket.on('mute state', ({ peerId, micMuted, deafened }) => {
-    if (!connectedUsers[peerId]) connectedUsers[peerId] = {};
+    // Неизвестного/ушедшего участника не создаём заново пустой записью: актуальный статус мьюта
+    // всё равно приходит в 'room users'. Раньше опоздавшее событие оставляло «призрак» в списке.
+    if (!connectedUsers[peerId] || isPeerRecentlyLeft(peerId)) return;
     const prevMicMuted = !!connectedUsers[peerId].micMuted;
     const prevDeafened = !!connectedUsers[peerId].deafened;
 
@@ -5777,6 +5806,7 @@ socket.on('user connected', ({ username, avatar, peerId }) => {
     // Из-за этого человек, зашедший в канал уже в муте, первое время (а то и
     // насовсем, если никто больше не переключал мьют) отображался как НЕ в муте.
     // Теперь просто дополняем существующую запись, а не заменяем её целиком.
+    clearPeerLeft(peerId);
     const prev = connectedUsers[peerId] || {};
     connectedUsers[peerId] = { ...prev, username, avatar };
     if (currentUser.room) updateVoiceUsersList();
@@ -5787,6 +5817,7 @@ socket.on('user connected', ({ username, avatar, peerId }) => {
 });
 
 socket.on('user disconnected', (peerId) => {
+    markPeerLeft(peerId);
     const wasPresent = !!connectedUsers[peerId];
     delete connectedUsers[peerId];
     cleanupRemoteAudio(peerId);
