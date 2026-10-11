@@ -77,12 +77,7 @@
   .voice-empty { padding: 6px 10px; color: var(--muted); font-size: 13px; }
 
   /* Музыка */
-  #w-music { display: flex; align-items: center; gap: 12px; width: 280px; padding: 6px 8px; }
-  .eq { flex: none; display: flex; align-items: flex-end; gap: 3px; width: 22px; height: 22px; }
-  .eq i { flex: 1; background: var(--accent); border-radius: 2px; }
-  .eq i:nth-child(1) { height: 55%; }
-  .eq i:nth-child(2) { height: 100%; }
-  .eq i:nth-child(3) { height: 40%; }
+  #w-music { width: 280px; padding: 6px 8px; }
   .music-text { min-width: 0; }
   .music-kicker { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: #cfd4df; text-shadow: 0 0 3px #000, 0 1px 4px rgba(0, 0, 0, 0.9); }
   .music-title {
@@ -90,6 +85,14 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     text-shadow: 0 0 3px #000, 0 1px 4px rgba(0, 0, 0, 0.9), 0 0 8px rgba(0, 0, 0, 0.6);
   }
+  .music-timeline { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+  .music-time {
+    flex: none; min-width: 34px; font-size: 11px; font-variant-numeric: tabular-nums; color: #e3e6ee;
+    text-shadow: 0 0 3px #000, 0 1px 4px rgba(0, 0, 0, 0.9);
+  }
+  .music-time.right { text-align: right; }
+  .music-bar { position: relative; flex: 1; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.28); box-shadow: 0 0 3px rgba(0, 0, 0, 0.8); overflow: hidden; }
+  .music-bar-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0%; background: #fff; border-radius: 2px; }
 
   /* Сообщения */
   #w-msgs { width: 340px; }
@@ -165,10 +168,14 @@
 
 <div class="widget" id="w-music" data-key="music">
   <div class="widget-label">Музыка</div>
-  <div class="eq"><i></i><i></i><i></i></div>
   <div class="music-text">
     <div class="music-kicker">Сейчас играет</div>
     <div class="music-title" id="music-title">—</div>
+    <div class="music-timeline">
+      <span class="music-time" id="music-cur">0:00</span>
+      <div class="music-bar"><div class="music-bar-fill" id="music-fill"></div></div>
+      <span class="music-time right" id="music-dur">0:00</span>
+    </div>
   </div>
 </div>
 
@@ -243,28 +250,40 @@
   var MSG_MS = 5000;
   var MSG_MAX = 4;
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  // Накладывает на s только те поля из raw, которые есть и имеют верный тип. Отсутствующие поля
+  // не трогаются — поэтому частичный конфиг (например, из основного окна) больше не сбрасывает
+  // положение/размер/прозрачность блоков на значения по умолчанию.
+  function mergeRaw(s, raw) {
+    if (!raw || typeof raw !== 'object') return s;
+    KEYS.forEach(function (k) {
+      if (raw[k] && typeof raw[k] === 'object') {
+        for (var p in s[k]) if (raw[k][p] !== undefined && typeof raw[k][p] === typeof s[k][p]) s[k][p] = raw[k][p];
+      }
+    });
+    if (typeof raw.onlySpeaking === 'boolean') s.onlySpeaking = raw.onlySpeaking;
+    if (typeof raw.chatDm === 'boolean') s.chatDm = raw.chatDm;
+    if (typeof raw.chatAll === 'boolean') s.chatAll = raw.chatAll;
+    return s;
+  }
   function load() {
     var s = clone(DEFAULTS);
-    try {
-      var raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
-      if (raw && typeof raw === 'object') {
-        KEYS.forEach(function (k) {
-          if (raw[k] && typeof raw[k] === 'object') {
-            for (var p in s[k]) if (raw[k][p] !== undefined && typeof raw[k][p] === typeof s[k][p]) s[k][p] = raw[k][p];
-          }
-        });
-        if (typeof raw.onlySpeaking === 'boolean') s.onlySpeaking = raw.onlySpeaking;
-        if (typeof raw.chatDm === 'boolean') s.chatDm = raw.chatDm;
-        if (typeof raw.chatAll === 'boolean') s.chatAll = raw.chatAll;
-      }
-    } catch (e) { /* ignore */ }
+    try { mergeRaw(s, JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null')); } catch (e) { /* ignore */ }
     return s;
   }
   var settings = load();
-  function save() { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(settings)); } catch (e) { /* ignore */ } }
+  // Сохраняем локально и (с небольшой задержкой) отправляем в основное окно: оно держит копию
+  // настроек и вернёт её оверлею, даже если хранилище оверлея очистилось или недоступно.
+  var notifyTimer = null;
+  function save(silent) {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(settings)); } catch (e) { /* ignore */ }
+    if (silent) return;
+    if (notifyTimer) clearTimeout(notifyTimer);
+    notifyTimer = setTimeout(function () { notifyTimer = null; notifyConfig(); }, 250);
+  }
 
-  var state = { inCall: false, users: [], music: { title: '', playing: false }, demo: { available: false, name: '' } };
+  var state = { inCall: false, users: [], music: { title: '', playing: false, pos: 0, dur: 0 }, demo: { available: false, name: '' } };
   var editing = false;
+  var musicSync = { pos: 0, dur: 0, at: Date.now(), playing: false };
 
   var els = {
     voice: document.getElementById('w-voice'),
@@ -283,6 +302,26 @@
   ];
   var voiceList = document.getElementById('voice-list');
   var musicTitle = document.getElementById('music-title');
+  var musicCur = document.getElementById('music-cur');
+  var musicDur = document.getElementById('music-dur');
+  var musicFill = document.getElementById('music-fill');
+  function fmtTime(sec) {
+    sec = Math.max(0, Math.floor(sec || 0));
+    var m = Math.floor(sec / 60), s2 = sec % 60;
+    return m + ':' + (s2 < 10 ? '0' : '') + s2;
+  }
+  // Время трека приходит из основного окна только при событиях (play/pause/перемотка/смена трека),
+  // а между ними оверлей сам плавно считает позицию — без постоянной отправки событий.
+  function updateTimeline() {
+    var pos = musicSync.pos, dur = musicSync.dur;
+    if (editing && !(state.music && state.music.title)) { pos = 72; dur = 215; }
+    else if (musicSync.playing) pos += (Date.now() - musicSync.at) / 1000;
+    if (dur > 0 && pos > dur) pos = dur;
+    musicCur.textContent = fmtTime(pos);
+    musicDur.textContent = dur > 0 ? fmtTime(dur) : '--:--';
+    musicFill.style.width = (dur > 0 ? Math.min(100, (pos / dur) * 100) : 0) + '%';
+  }
+  setInterval(function () { if (!document.body.classList.contains('away')) updateTimeline(); }, 250);
 
   var MIC_OFF = '<svg viewBox="0 0 24 24"><line x1="2" y1="2" x2="22" y2="22"/><path d="M9 9v3a3 3 0 0 0 5.1 2.1M15 9.3V5a3 3 0 0 0-5.9-.8"/><path d="M19 10v2a7 7 0 0 1-1.1 3.8M5 10v2a7 7 0 0 0 11.1 5.7"/></svg>';
   var DEAF_OFF = '<svg viewBox="0 0 24 24"><line x1="2" y1="2" x2="22" y2="22"/><path d="M3 14v-2a9 9 0 0 1 14.6-7M21 12v2"/><path d="M3 14h3v5H4a1 1 0 0 1-1-1z"/></svg>';
@@ -363,7 +402,7 @@
     applyVisibility('video', videoLive || (state.demo && state.demo.available && settings.video.visible && wantVideo()));
     demoName.textContent = (videoLive && state.demo && state.demo.name) ? state.demo.name : '';
     demoVideo.classList.toggle('off', !videoLive);
-    els.music.classList.toggle('playing', !!m.playing || editing);
+    updateTimeline();
   }
 
   // Блок виден, если он включён в настройках И есть что показывать. В режиме настройки показываем всегда.
@@ -527,9 +566,11 @@
       state = {
         inCall: !!p.inCall,
         users: Array.isArray(p.users) ? p.users : [],
-        music: p.music && typeof p.music === 'object' ? p.music : { title: '', playing: false },
+        music: p.music && typeof p.music === 'object' ? p.music : { title: '', playing: false, pos: 0, dur: 0 },
         demo: p.demo && typeof p.demo === 'object' ? p.demo : { available: false, name: '' }
       };
+      musicSync = { pos: Number(state.music.pos) || 0, dur: Number(state.music.dur) || 0, at: Date.now(), playing: !!state.music.playing };
+      updateTimeline();
       syncVideo();
       render();
       applyLayout();
@@ -573,12 +614,28 @@
     });
     tEvent.listen('overlay-config', function (ev) {
       var c = ev && ev.payload && ev.payload.cfg;
-      if (c && typeof c === 'object') { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(c)); } catch (e) { /* ignore */ } }
-      settings = load(); syncPanel(); syncVideo(); render(); applyLayout();
+      if (c && typeof c === 'object') { mergeRaw(settings, c); save(true); }
+      syncPanel(); syncVideo(); render(); applyLayout();
     });
     tEvent.listen('overlay-edit', function (ev) { setEditing(!!(ev && ev.payload)); });
     tEvent.emit('overlay-request-state', null).catch(function () {});
+    setTimeout(notifyConfig, 800); // основное окно запоминает положение/размеры/прозрачность
   }
+
+  // ---------- Автообновление ----------
+  // Оверлей — отдельное окно с этой страницей; после деплоя сам по себе он остался бы старым.
+  // Раз в минуту сверяем версию overlay.html на сервере и перезагружаемся, когда она изменилась
+  // (не во время режима настройки, чтобы не сбить перетаскивание).
+  var overlayBuild = null;
+  function checkOverlayVersion() {
+    fetch('/api/app-version', { cache: 'no-store' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
+      if (!j || !j.overlay) return;
+      if (overlayBuild === null) { overlayBuild = j.overlay; return; }
+      if (j.overlay !== overlayBuild && !editing) location.reload();
+    }).catch(function () { /* сервер недоступен (деплой) — проверим позже */ });
+  }
+  checkOverlayVersion();
+  setInterval(checkOverlayVersion, 60 * 1000);
 
   applyLayout();
   render();
