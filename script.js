@@ -5121,6 +5121,17 @@ document.getElementById('server-info-leave')?.addEventListener('click', () => {
     const btn = customServersList.querySelector(`[data-room="custom:${currentServerInfo.code}"]`);
     if (btn) btn.remove();
     removeMyServerCode(currentServerInfo.code);
+    // Если мы сейчас в голосовом канале этого сервера — сначала выходим из звонка,
+    // иначе локально звонок продолжит «висеть», а у остальных мы останемся в списке.
+    const leftRoomName = `custom:${currentServerInfo.code}`;
+    if (currentUser.room === leftRoomName) leaveVoiceChannel();
+    if (selectedRoom === leftRoomName) {
+        selectedRoom = null;
+        saveLastRoom(null);
+        setChatEnabled(false);
+        roomTitle.innerText = 'Выберите канал';
+        connectRoomBtn.style.display = 'none';
+    }
     socket.emit('leave custom room', { code: currentServerInfo.code });
     closeModal(serverInfoModal);
 });

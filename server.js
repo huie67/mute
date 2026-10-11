@@ -1478,6 +1478,33 @@ io.on('connection', (socket) => {
         const username = socket.data && socket.data.username;
         if (!custom || !username || isRoomOwner(custom, username)) return;
         await removeRoomMember(cleanCode, username);
+
+        // Раньше человек только вычёркивался из списка участников в БД, а его голосовая
+        // запись и подписка на чат оставались — остальные продолжали видеть его в звонке.
+        // Выкидываем из голоса и чата этого сервера все его подключения (все устройства).
+        const voiceRoom = voiceRoomForCode(cleanCode);
+        const chatRoomName = chatRoomForCode(cleanCode);
+        const lowerName = String(username).toLowerCase();
+        for (const [, sock] of io.sockets.sockets) {
+            const uname = sock.data && sock.data.username;
+            if (!uname || String(uname).toLowerCase() !== lowerName) continue;
+            if (sock.rooms && sock.rooms.has(chatRoomName)) sock.leave(chatRoomName);
+        }
+        if (rooms[voiceRoom]) {
+            for (const sId of Object.keys(rooms[voiceRoom])) {
+                const u = rooms[voiceRoom][sId];
+                if (!u || String(u.username || '').toLowerCase() !== lowerName) continue;
+                delete rooms[voiceRoom][sId];
+                const reset = voiceSessionReset.get(sId);
+                if (reset) reset();
+                const s2 = io.sockets.sockets.get(sId);
+                if (s2) s2.leave(voiceRoom);
+                if (u.peerId) io.to(voiceRoom).emit('user disconnected', u.peerId);
+            }
+            if (Object.keys(rooms[voiceRoom]).length === 0) delete rooms[voiceRoom];
+            broadcastRoomUsers(voiceRoom);
+        }
+
         scheduleBroadcastServerMembers(cleanCode);
         syncRoomsToAccount().catch(() => {});
     });
