@@ -2015,6 +2015,9 @@ io.on('connection', (socket) => {
         };
 
         currentUserData = rooms[room][socket.id];
+        // Реальный peerId голосового подключения: он может отличаться от того, с которым
+        // клиент вошёл в аккаунт. Выход/обрыв/relay-события должны использовать именно его.
+        if (peerId && socket.data) socket.data.peerId = peerId;
         // Если модератор забрал у человека микрофон, то при повторном заходе он остаётся без доступа.
         const joinedCode = customCodeFromRoom(room);
         if (isMicRevoked(joinedCode, currentUserData.username)) {
@@ -2124,7 +2127,7 @@ io.on('connection', (socket) => {
         if (currentUserRoom && rooms[currentUserRoom] && rooms[currentUserRoom][socket.id]) {
             const room = currentUserRoom;
             const sockId = socket.id;
-            const peerId = socket.data && socket.data.peerId;
+            const peerId = (rooms[room][sockId] && rooms[room][sockId].peerId) || (socket.data && socket.data.peerId);
             setTimeout(() => {
                 if (!rooms[room] || !rooms[room][sockId]) return; // уже убрано или комнаты нет
                 // Успел переподключиться и зайти заново (новый сокет, тот же peerId) —
@@ -2419,11 +2422,13 @@ io.on('connection', (socket) => {
 
     function leaveCurrentRoom(sock) {
         if (currentUserRoom && rooms[currentUserRoom]) {
+            const leavingEntry = rooms[currentUserRoom][sock.id];
+            const leavingPeerId = (leavingEntry && leavingEntry.peerId) || (sock.data && sock.data.peerId);
             delete rooms[currentUserRoom][sock.id];
             sock.leave(currentUserRoom);
 
-            if (sock.data && sock.data.peerId) {
-                io.to(currentUserRoom).emit('user disconnected', sock.data.peerId);
+            if (leavingPeerId) {
+                io.to(currentUserRoom).emit('user disconnected', leavingPeerId);
             }
 
             if (Object.keys(rooms[currentUserRoom]).length === 0) {
