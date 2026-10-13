@@ -11,6 +11,8 @@
     --danger: #ff5d6c;
     --text: #f2f4f8;
     --muted: #a7adbb;
+    --ov-bg-rgb: 18, 19, 26;     /* цвет окна приложения (задаётся из темы) */
+    --ov-fg-rgb: 242, 244, 248;  /* цвет текста темы */
   }
   * { box-sizing: border-box; }
   body.away .widget { display: none !important; }
@@ -46,6 +48,21 @@
     background: rgba(0, 0, 0, 0.7); color: #fff; font-size: 11px; white-space: nowrap;
   }
   body.edit .widget-label { display: block; }
+
+  /* Подложка цветом окна приложения (включается в настройках оверлея) */
+  body.plate .widget {
+    background: rgba(var(--ov-bg-rgb), 0.82);
+    border: 1px solid rgba(var(--ov-fg-rgb), 0.12);
+    border-radius: 14px;
+    padding: 8px;
+    --text: rgb(var(--ov-fg-rgb));
+    --muted: rgba(var(--ov-fg-rgb), 0.65);
+    color: var(--text);
+  }
+  body.plate #w-video { padding: 0; overflow: hidden; }
+  body.plate .widget * { text-shadow: none !important; }
+  body.plate .msg-text, body.plate .music-kicker, body.plate .music-time { color: var(--text); }
+  body.plate .music-bar { background: rgba(var(--ov-fg-rgb), 0.25); box-shadow: none; }
 
   /* Участники */
   #w-voice { min-width: 190px; max-width: 320px; }
@@ -92,7 +109,7 @@
   }
   .music-time.right { text-align: right; }
   .music-bar { position: relative; flex: 1; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.28); box-shadow: 0 0 3px rgba(0, 0, 0, 0.8); overflow: hidden; }
-  .music-bar-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0%; background: #fff; border-radius: 2px; }
+  .music-bar-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0%; background: var(--accent); border-radius: 2px; }
 
   /* Сообщения */
   #w-msgs { width: 340px; }
@@ -127,8 +144,11 @@
     display: none;
     position: fixed; left: 50%; top: 18px; transform: translateX(-50%);
     width: min(560px, calc(100vw - 24px));
-    background: rgba(18, 19, 26, 0.96);
-    border: 1px solid rgba(255, 255, 255, 0.14);
+    --text: rgb(var(--ov-fg-rgb));
+    --muted: rgba(var(--ov-fg-rgb), 0.65);
+    color: var(--text);
+    background: rgba(var(--ov-bg-rgb), 0.96);
+    border: 1px solid rgba(var(--ov-fg-rgb), 0.14);
     border-radius: 16px;
     padding: 14px 16px 12px;
     box-shadow: 0 10px 40px rgba(0, 0, 0, 0.55);
@@ -139,22 +159,22 @@
   #panel .hint { margin: 0 0 10px; color: var(--muted); font-size: 12.5px; }
   .prow {
     display: grid; grid-template-columns: 112px 1fr 1fr; gap: 14px; align-items: center;
-    padding: 8px 0; border-top: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 8px 0; border-top: 1px solid rgba(var(--ov-fg-rgb), 0.1);
   }
   .prow label.check { display: flex; align-items: center; gap: 8px; font-weight: 600; cursor: pointer; }
   .slider { display: grid; gap: 2px; font-size: 12px; color: var(--muted); }
   .slider span b { color: var(--text); font-weight: 600; }
   input[type=range] { width: 100%; accent-color: var(--accent); margin: 0; }
   input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; }
-  .popts { display: flex; align-items: center; gap: 8px; padding: 8px 0 2px; border-top: 1px solid rgba(255, 255, 255, 0.08); }
+  .popts { display: flex; align-items: center; gap: 8px; padding: 8px 0 2px; border-top: 1px solid rgba(var(--ov-fg-rgb), 0.1); }
   .popts label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
   .pbtns { display: flex; gap: 8px; margin-left: auto; }
   button {
     font: inherit; font-weight: 600; color: var(--text);
-    background: rgba(255, 255, 255, 0.1); border: 0; border-radius: 9px;
+    background: rgba(var(--ov-fg-rgb), 0.12); border: 0; border-radius: 9px;
     padding: 7px 14px; cursor: pointer;
   }
-  button:hover { background: rgba(255, 255, 255, 0.18); }
+  button:hover { background: rgba(var(--ov-fg-rgb), 0.2); }
   button.primary { background: var(--accent); color: #fff; }
   button.primary:hover { filter: brightness(1.1); }
 </style>
@@ -217,6 +237,9 @@
     <div class="slider"><span>Размер: <b class="v-scale"></b></span><input type="range" class="r-scale" min="60" max="200" step="5"></div>
   </div>
   <div class="popts">
+    <label><input type="checkbox" id="c-plate"> Фон блоков цветом окна</label>
+  </div>
+  <div class="popts">
     <label><input type="checkbox" id="c-chat-dm"> Чат: личные (шёпот) и упоминания</label>
     <label><input type="checkbox" id="c-chat-all"> Чат: все сообщения</label>
   </div>
@@ -243,7 +266,8 @@
     video: { x: 0.70, y: 0.30, opacity: 100, scale: 100, visible: false },
     chatDm: true,
     chatAll: false,
-    onlySpeaking: false
+    onlySpeaking: false,
+    plate: false
   };
 
   var KEYS = ['voice', 'music', 'messages', 'video'];
@@ -263,6 +287,7 @@
     if (typeof raw.onlySpeaking === 'boolean') s.onlySpeaking = raw.onlySpeaking;
     if (typeof raw.chatDm === 'boolean') s.chatDm = raw.chatDm;
     if (typeof raw.chatAll === 'boolean') s.chatAll = raw.chatAll;
+    if (typeof raw.plate === 'boolean') s.plate = raw.plate;
     return s;
   }
   function load() {
@@ -283,6 +308,22 @@
 
   var state = { inCall: false, users: [], music: { title: '', playing: false, pos: 0, dur: 0 }, demo: { available: false, name: '' } };
   var editing = false;
+  function hexParts(h) {
+    var m = /^#?([0-9a-f]{6})$/i.exec(String(h || ''));
+    if (!m) return null;
+    var n = parseInt(m[1], 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+  // Перекрас по теме приложения: акцентный цвет, цвет окна (подложка и панель настройки) и цвет текста
+  function applyTheme(t) {
+    t = t && typeof t === 'object' ? t : {};
+    var root = document.documentElement.style;
+    var bg = hexParts(t.bg) || [18, 19, 26];
+    var fg = t.textMode === 'dark' ? [15, 17, 23] : [243, 244, 246];
+    root.setProperty('--accent', hexParts(t.accent) ? t.accent : '#5b8cff');
+    root.setProperty('--ov-bg-rgb', bg.join(', '));
+    root.setProperty('--ov-fg-rgb', fg.join(', '));
+  }
   var musicSync = { pos: 0, dur: 0, at: Date.now(), playing: false };
 
   var els = {
@@ -334,6 +375,7 @@
   ];
 
   function render() {
+    document.body.classList.toggle('plate', !!settings.plate);
     // Выключенный блок вообще не рисуем (ни DOM, ни обновлений). В режиме настройки показываем
     // приглушённым, чтобы его можно было включить обратно.
     var on = function (k) { return settings[k].visible || editing; };
@@ -477,6 +519,7 @@
     document.getElementById('c-only-speaking').checked = settings.onlySpeaking;
     document.getElementById('c-chat-dm').checked = settings.chatDm;
     document.getElementById('c-chat-all').checked = settings.chatAll;
+    document.getElementById('c-plate').checked = settings.plate;
   }
 
   document.querySelectorAll('.prow').forEach(function (row) {
@@ -498,6 +541,7 @@
   });
   document.getElementById('c-chat-dm').addEventListener('change', function (e) { settings.chatDm = e.target.checked; save(); notifyConfig(); });
   document.getElementById('c-chat-all').addEventListener('change', function (e) { settings.chatAll = e.target.checked; save(); notifyConfig(); });
+  document.getElementById('c-plate').addEventListener('change', function (e) { settings.plate = e.target.checked; save(); render(); applyLayout(); });
   document.getElementById('c-only-speaking').addEventListener('change', function (e) {
     settings.onlySpeaking = e.target.checked; save(); render();
   });
@@ -570,6 +614,7 @@
         music: p.music && typeof p.music === 'object' ? p.music : { title: '', playing: false, pos: 0, dur: 0 },
         demo: p.demo && typeof p.demo === 'object' ? p.demo : { available: false, name: '' }
       };
+      applyTheme(p.theme);
       musicSync = { pos: Number(state.music.pos) || 0, dur: Number(state.music.dur) || 0, at: Date.now(), playing: !!state.music.playing };
       updateTimeline();
       syncVideo();

@@ -1709,6 +1709,8 @@ function applyTheme(theme) {
     const bgHexInput = document.getElementById('theme-bg-color-hex');
     if (bgPicker) bgPicker.value = bg;
     if (bgHexInput) bgHexInput.value = bg;
+    // Оверлей перекрашивается вместе с приложением
+    if (typeof window.muteOverlayThemeChanged === 'function') window.muteOverlayThemeChanged();
 }
 
 // Сохраняет локально всегда, и на сервере — если пользователь вошёл в аккаунт
@@ -8937,7 +8939,8 @@ document.addEventListener('DOMContentLoaded', () => {
             dur = isFinite(playlistAudio.duration) ? playlistAudio.duration : 0;
         }
         const demo = blockVisible('video') ? pickDemo() : null;
-        return { inCall, users, music: { title, playing, pos: Math.round(pos * 10) / 10, dur: Math.round(dur) }, demo: { available: !!demo, name: demo ? demo.name : '' } };
+        const theme = (typeof currentTheme !== 'undefined' && currentTheme) ? { accent: currentTheme.accent, bg: currentTheme.bgColor, textMode: currentTheme.textMode } : null;
+        return { inCall, users, theme, music: { title, playing, pos: Math.round(pos * 10) / 10, dur: Math.round(dur) }, demo: { available: !!demo, name: demo ? demo.name : '' } };
     }
 
     let lastJson = '';
@@ -8950,6 +8953,7 @@ document.addEventListener('DOMContentLoaded', () => {
         t.event.emit('overlay-state', state).catch(() => {});
     }
     let timer = null;
+    window.muteOverlayThemeChanged = () => schedulePush();
     function schedulePush() {
         if (!enabled || timer) return;
         timer = setTimeout(() => { timer = null; checkRtcSource(); pushState(false); }, 60);

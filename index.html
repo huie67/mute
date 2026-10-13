@@ -2734,6 +2734,52 @@
 
         /* Собственная точка качества связи (пинг до сервера) */
         .net-quality.self { box-shadow: 0 0 0 2px var(--accent-soft); }
+
+        /* ===== Стиль «как в оверлее» =====
+           Плоские поверхности, крупные круглые аватарки с кольцом и свечением у говорящего,
+           красные круглые значки мьюта/дефена, жирные ники, тонкий таймлайн. Все цвета берутся
+           из переменных темы (--accent, --bg-*, --text), поэтому стиль перекрашивается вместе
+           с приложением. Блок можно целиком удалить, чтобы вернуть прежний вид. */
+        .user-avatar { width: 34px; height: 34px; border-width: 3px; }
+        .user-avatar.speaking { box-shadow: 0 0 10px rgba(61, 220, 132, 0.75); }
+        .voice-user-row { gap: 10px; padding: 3px 4px; }
+        .voice-user-row .voice-user-name { font-size: 14px; font-weight: 600; }
+        .status-badge { width: 18px; height: 18px; border: none; bottom: -3px; }
+        .mic-mute-badge { right: -6px; }
+        .deafen-badge { right: 12px; }
+
+        .btn-primary, .btn-secondary, .btn-inline { border-radius: 10px; }
+        .sidebar-item { border-radius: 10px; }
+        .modal-card { border-color: transparent; border-radius: 18px; }
+
+        .playlist-widget {
+            background: color-mix(in srgb, var(--bg-elevated) 65%, transparent);
+            border-radius: 14px;
+            padding: 9px 10px;
+            gap: 7px;
+        }
+        .playlist-track-name { font-size: 13px; font-weight: 700; }
+        .playlist-time {
+            width: 36px; font-size: 11px; color: var(--text-muted);
+            font-variant-numeric: tabular-nums;
+        }
+        input[type="range"].playlist-seek,
+        input[type="range"].listen-session-seek {
+            -webkit-appearance: none; appearance: none; height: 14px;
+        }
+        input[type="range"].playlist-seek::-webkit-slider-runnable-track,
+        input[type="range"].listen-session-seek::-webkit-slider-runnable-track {
+            height: 4px; border-radius: 2px;
+            background: linear-gradient(to right, var(--accent) var(--fill, 0%),
+                color-mix(in srgb, var(--text) 25%, transparent) var(--fill, 0%));
+        }
+        input[type="range"].playlist-seek::-webkit-slider-thumb,
+        input[type="range"].listen-session-seek::-webkit-slider-thumb {
+            -webkit-appearance: none; width: 10px; height: 10px; margin-top: -3px;
+            border-radius: 50%; background: var(--text); opacity: 0; transition: opacity .15s;
+        }
+        input[type="range"].playlist-seek:hover::-webkit-slider-thumb,
+        input[type="range"].listen-session-seek:hover::-webkit-slider-thumb { opacity: 1; }
     </style>
 </head>
 <body>
