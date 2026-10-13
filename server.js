@@ -42,9 +42,19 @@ function computeClientBuildId() {
     }
 }
 const CLIENT_BUILD_ID = computeClientBuildId();
+// Версия overlay.html считается отдельно: окно оверлея само перезагружается при её смене,
+// а основное окно из-за правок оверлея перезагружаться не должно.
+function computeOverlayBuildId() {
+    try {
+        return crypto.createHash('sha1').update(fs.readFileSync(path.join(__dirname, 'overlay.html'))).digest('hex').slice(0, 12);
+    } catch (e) {
+        return String(Date.now());
+    }
+}
+const OVERLAY_BUILD_ID = computeOverlayBuildId();
 app.get('/api/app-version', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ build: CLIENT_BUILD_ID });
+    res.json({ build: CLIENT_BUILD_ID, overlay: OVERLAY_BUILD_ID });
 });
 app.use(express.json());
 

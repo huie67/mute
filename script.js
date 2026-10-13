@@ -8920,18 +8920,24 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             });
         }
-        let title = '', playing = false;
+        let title = '', playing = false, pos = 0, dur = 0;
         const guest = typeof listenSession !== 'undefined' && listenSession && listenSession.role === 'guest';
         if (guest) {
             title = listenSessionTrackName.textContent.trim();
             playing = !!(typeof listenGuestAudio !== 'undefined' && listenGuestAudio && !listenGuestAudio.paused);
+            if (typeof listenGuestAudio !== 'undefined' && listenGuestAudio) {
+                pos = listenGuestAudio.currentTime || 0;
+                dur = isFinite(listenGuestAudio.duration) ? listenGuestAudio.duration : 0;
+            }
         } else {
             const name = playlistTrackNameEl.textContent.trim();
             title = name && name !== 'Нет трека' ? name : '';
             playing = !playlistAudio.paused;
+            pos = playlistAudio.currentTime || 0;
+            dur = isFinite(playlistAudio.duration) ? playlistAudio.duration : 0;
         }
         const demo = blockVisible('video') ? pickDemo() : null;
-        return { inCall, users, music: { title, playing }, demo: { available: !!demo, name: demo ? demo.name : '' } };
+        return { inCall, users, music: { title, playing, pos: Math.round(pos * 10) / 10, dur: Math.round(dur) }, demo: { available: !!demo, name: demo ? demo.name : '' } };
     }
 
     let lastJson = '';
@@ -8957,10 +8963,13 @@ document.addEventListener('DOMContentLoaded', () => {
     [playlistTrackNameEl, listenSessionTrackName].forEach((el) => {
         if (el) new MutationObserver(schedulePush).observe(el, { subtree: true, childList: true, characterData: true });
     });
-    ['play', 'pause', 'ended', 'emptied'].forEach((ev) => {
+    ['play', 'pause', 'ended', 'emptied', 'seeked', 'loadedmetadata', 'durationchange'].forEach((ev) => {
         playlistAudio.addEventListener(ev, schedulePush);
         if (typeof listenGuestAudio !== 'undefined' && listenGuestAudio) listenGuestAudio.addEventListener(ev, schedulePush);
     });
+
+    // Пока играет музыка — раз в 5 с уточняем позицию (между этим оверлей считает время сам)
+    setInterval(() => { if (enabled && (!playlistAudio.paused || (typeof listenGuestAudio !== 'undefined' && listenGuestAudio && !listenGuestAudio.paused))) pushState(true); }, 5000);
 
     function setEditUi() {
         if (!editBtn) return;
@@ -9124,6 +9133,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Окно оверлея после загрузки просит текущее состояние.
     t.event.listen('overlay-request-state', () => {
+        pushCfgToOverlay(); // возвращаем оверлею его сохранённые положение/размеры/прозрачность
         pushState(true);
         if (editing) t.event.emit('overlay-edit', true).catch(() => {});
     });
