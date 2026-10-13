@@ -87,7 +87,7 @@
   }
   .music-timeline { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
   .music-time {
-    flex: none; min-width: 34px; font-size: 11px; font-variant-numeric: tabular-nums; color: #e3e6ee;
+    flex: none; min-width: 38px; font-size: 11px; font-variant-numeric: tabular-nums; color: #e3e6ee;
     text-shadow: 0 0 3px #000, 0 1px 4px rgba(0, 0, 0, 0.9);
   }
   .music-time.right { text-align: right; }
@@ -318,7 +318,8 @@
     else if (musicSync.playing) pos += (Date.now() - musicSync.at) / 1000;
     if (dur > 0 && pos > dur) pos = dur;
     musicCur.textContent = fmtTime(pos);
-    musicDur.textContent = dur > 0 ? fmtTime(dur) : '--:--';
+    // справа — сколько осталось до конца трека (убывает по мере воспроизведения)
+    musicDur.textContent = dur > 0 ? '-' + fmtTime(dur - pos) : '--:--';
     musicFill.style.width = (dur > 0 ? Math.min(100, (pos / dur) * 100) : 0) + '%';
   }
   setInterval(function () { if (!document.body.classList.contains('away')) updateTimeline(); }, 250);
