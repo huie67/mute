@@ -143,32 +143,61 @@
   #panel {
     display: none;
     position: fixed; left: 50%; top: 18px; transform: translateX(-50%);
-    width: min(560px, calc(100vw - 24px));
+    width: min(660px, calc(100vw - 24px));
+    max-height: calc(100vh - 36px); overflow: auto;
     --text: rgb(var(--ov-fg-rgb));
     --muted: rgba(var(--ov-fg-rgb), 0.65);
     color: var(--text);
     background: rgba(var(--ov-bg-rgb), 0.96);
     border: 1px solid rgba(var(--ov-fg-rgb), 0.14);
     border-radius: 16px;
-    padding: 14px 16px 12px;
+    padding: 14px 16px 14px;
     box-shadow: 0 10px 40px rgba(0, 0, 0, 0.55);
     cursor: default;
   }
   body.edit #panel { display: block; }
   #panel h1 { margin: 0 0 4px; font-size: 16px; }
-  #panel .hint { margin: 0 0 10px; color: var(--muted); font-size: 12.5px; }
-  .prow {
-    display: grid; grid-template-columns: 112px 1fr 1fr; gap: 14px; align-items: center;
-    padding: 8px 0; border-top: 1px solid rgba(var(--ov-fg-rgb), 0.1);
+  #panel .hint { margin: 0 0 12px; color: var(--muted); font-size: 12.5px; }
+
+  /* Настройки каждого блока лежат вместе в одной карточке */
+  .pgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  @media (max-width: 560px) { .pgrid { grid-template-columns: 1fr; } }
+  .pblock {
+    display: flex; flex-direction: column; gap: 10px;
+    padding: 12px; border-radius: 12px;
+    background: rgba(var(--ov-fg-rgb), 0.06);
+    border: 1px solid rgba(var(--ov-fg-rgb), 0.08);
   }
-  .prow label.check { display: flex; align-items: center; gap: 8px; font-weight: 600; cursor: pointer; }
-  .slider { display: grid; gap: 2px; font-size: 12px; color: var(--muted); }
+  .phead, .popt { display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; }
+  .phead { font-weight: 700; font-size: 14px; }
+  .popt { font-size: 13px; }
+  .slider { display: grid; gap: 3px; font-size: 12px; color: var(--muted); }
   .slider span b { color: var(--text); font-weight: 600; }
   input[type=range] { width: 100%; accent-color: var(--accent); margin: 0; }
-  input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; }
-  .popts { display: flex; align-items: center; gap: 8px; padding: 8px 0 2px; border-top: 1px solid rgba(var(--ov-fg-rgb), 0.1); }
-  .popts label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  .pfoot {
+    display: flex; align-items: center; gap: 12px; margin-top: 12px; padding-top: 12px;
+    border-top: 1px solid rgba(var(--ov-fg-rgb), 0.1);
+  }
+  .pfoot .popt { flex: 1; }
   .pbtns { display: flex; gap: 8px; margin-left: auto; }
+
+  /* Переключатели вместо галочек */
+  #panel input[type=checkbox] {
+    -webkit-appearance: none; appearance: none;
+    position: relative; flex: none; width: 36px; height: 20px; margin: 0;
+    border-radius: 999px; cursor: pointer;
+    background: rgba(var(--ov-fg-rgb), 0.28);
+    transition: background 0.18s ease;
+  }
+  #panel input[type=checkbox]::after {
+    content: ''; position: absolute; top: 2px; left: 2px;
+    width: 16px; height: 16px; border-radius: 50%; background: #fff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+    transition: transform 0.18s ease;
+  }
+  #panel input[type=checkbox]:checked { background: var(--accent); }
+  #panel input[type=checkbox]:checked::after { transform: translateX(16px); }
+
   button {
     font: inherit; font-weight: 600; color: var(--text);
     background: rgba(var(--ov-fg-rgb), 0.12); border: 0; border-radius: 9px;
@@ -215,36 +244,34 @@
 
 <div id="panel">
   <h1>Настройка оверлея</h1>
-  <p class="hint">Перетаскивайте блоки мышью. Здесь же — показать/скрыть, прозрачность и размер.</p>
-  <div class="prow" data-key="voice">
-    <label class="check"><input type="checkbox" class="c-visible"> Участники</label>
+  <p class="hint">Перетаскивайте блоки мышью. Настройки каждого блока собраны в его карточке.</p>
+  <div class="pgrid">
+  <section class="pblock prow" data-key="voice">
+    <label class="phead"><span>Участники</span><input type="checkbox" class="c-visible"></label>
     <div class="slider"><span>Прозрачность: <b class="v-opacity"></b></span><input type="range" class="r-opacity" min="20" max="100" step="5"></div>
     <div class="slider"><span>Размер: <b class="v-scale"></b></span><input type="range" class="r-scale" min="60" max="200" step="5"></div>
-  </div>
-  <div class="prow" data-key="music">
-    <label class="check"><input type="checkbox" class="c-visible"> Музыка</label>
+    <label class="popt"><span>Только говорящие</span><input type="checkbox" id="c-only-speaking"></label>
+  </section>
+  <section class="pblock prow" data-key="music">
+    <label class="phead"><span>Музыка</span><input type="checkbox" class="c-visible"></label>
     <div class="slider"><span>Прозрачность: <b class="v-opacity"></b></span><input type="range" class="r-opacity" min="20" max="100" step="5"></div>
     <div class="slider"><span>Размер: <b class="v-scale"></b></span><input type="range" class="r-scale" min="60" max="200" step="5"></div>
-  </div>
-  <div class="prow" data-key="messages">
-    <label class="check"><input type="checkbox" class="c-visible"> Чат</label>
+  </section>
+  <section class="pblock prow" data-key="messages">
+    <label class="phead"><span>Чат</span><input type="checkbox" class="c-visible"></label>
     <div class="slider"><span>Прозрачность: <b class="v-opacity"></b></span><input type="range" class="r-opacity" min="20" max="100" step="5"></div>
     <div class="slider"><span>Размер: <b class="v-scale"></b></span><input type="range" class="r-scale" min="60" max="200" step="5"></div>
-  </div>
-  <div class="prow" data-key="video">
-    <label class="check"><input type="checkbox" class="c-visible"> Демонстрация</label>
+    <label class="popt"><span>Личные (шёпот) и упоминания</span><input type="checkbox" id="c-chat-dm"></label>
+    <label class="popt"><span>Все сообщения</span><input type="checkbox" id="c-chat-all"></label>
+  </section>
+  <section class="pblock prow" data-key="video">
+    <label class="phead"><span>Демонстрация экрана</span><input type="checkbox" class="c-visible"></label>
     <div class="slider"><span>Прозрачность: <b class="v-opacity"></b></span><input type="range" class="r-opacity" min="20" max="100" step="5"></div>
     <div class="slider"><span>Размер: <b class="v-scale"></b></span><input type="range" class="r-scale" min="60" max="200" step="5"></div>
+  </section>
   </div>
-  <div class="popts">
-    <label><input type="checkbox" id="c-plate"> Фон блоков цветом окна</label>
-  </div>
-  <div class="popts">
-    <label><input type="checkbox" id="c-chat-dm"> Чат: личные (шёпот) и упоминания</label>
-    <label><input type="checkbox" id="c-chat-all"> Чат: все сообщения</label>
-  </div>
-  <div class="popts">
-    <label><input type="checkbox" id="c-only-speaking"> Показывать только говорящих</label>
+  <div class="pfoot">
+    <label class="popt"><span>Фон блоков цветом окна</span><input type="checkbox" id="c-plate"></label>
     <div class="pbtns">
       <button type="button" id="b-reset">Сбросить</button>
       <button type="button" class="primary" id="b-done">Готово</button>
