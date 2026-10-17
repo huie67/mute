@@ -6903,7 +6903,7 @@ function renderKeybindList() {
             clear.type = 'button';
             clear.className = 'keybind-clear';
             clear.title = 'Убрать';
-            clear.textContent = '✕';
+            clear.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
             clear.addEventListener('click', () => {
                 keybinds[a.id] = '';
                 saveKeybinds();
