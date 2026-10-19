@@ -2227,6 +2227,7 @@ async function createLevelMeterNode(ctx) {
 let gateEnabled = true;
 let gateOpen = true;
 let gateCloseTimer = null;
+let micLastLevelAt = Date.now(); // когда метр уровня микрофона присылал данные в последний раз (для самовосстановления)
 const GATE_HYSTERESIS_DB = 4;
 // Раньше было жёстко зашито 300 мс — теперь регулируется ползунком в настройках
 // (задержка перед тем, как гейт снова закроется/перестанет передавать после того,
@@ -4279,7 +4280,7 @@ async function initPeer() {
     });
 }
 
-async function initMediaStream(deviceId = null) {
+async function initMediaStream(deviceId = null, silent = false) {
     // Пользователь сам забрал у приложения доступ к микрофону (Настройки → Микрофон → Доступ к микрофону).
     if (!appMicAllowed()) { await releaseMicForApp(); return; }
     try {
@@ -4304,6 +4305,9 @@ async function initMediaStream(deviceId = null) {
         };
 
         rawAudioStream = await navigator.mediaDevices.getUserMedia(constraints);
+        // Если система/драйвер оборвал трек (переподключили гарнитуру, сон ноутбука, устройство
+        // забрало другое приложение) — сразу пересобираем микрофон, а не молчим до перезапуска.
+        rawAudioStream.getAudioTracks().forEach((t) => t.addEventListener('ended', () => scheduleMicRecover('трек микрофона завершён')));
 
         // Строим граф обработки: сырой сигнал -> шумоподавление -> громкость микрофона ->
         // processedTrack. Сырой сигнал одновременно уходит в analyserNode (индикатор
@@ -4340,7 +4344,7 @@ async function initMediaStream(deviceId = null) {
         }
     } catch (e) {
         console.error('[Ошибка] Доступ к микрофону:', e);
-        alert('Не удалось получить доступ к микрофону. Проверьте разрешения.');
+        if (!silent) alert('Не удалось получить доступ к микрофону. Проверьте разрешения.');
     }
 }
 
@@ -4383,6 +4387,7 @@ async function setupAudioAnalyzer(stream) {
     }
 
     teardownAudioGraph();
+    micLastLevelAt = Date.now();
     try {
         sourceNode = audioContext.createMediaStreamSource(stream);
 
@@ -4478,6 +4483,7 @@ function processAudioLevel(node) {
             return;
         }
         const volumeDb = event.data;
+        micLastLevelAt = Date.now();
         messageCount++;
         // Полоску уровня и дебаг-текст обновляем через отчёт (то есть ~раз в 100мс) —
         // глазом разницы с каждым отчётом (~50мс) не видно, а лишних стилевых
@@ -4546,6 +4552,7 @@ function processAudioLevelFallback(node) {
             audioContext.resume().catch(() => { /* попробуем снова на следующем тике */ });
         }
         let volumeDb = getRmsDb(localAnalyser, dataArray);
+        micLastLevelAt = Date.now();
         tickCount++;
         const shouldRedraw = (tickCount % 2 === 0) && !lowPerfActive();
 
@@ -7057,6 +7064,56 @@ async function loadMicrophones() {
 }
 
 micSelect.addEventListener('change', (e) => initMediaStream(e.target.value));
+
+// ---------- Самовосстановление микрофона ----------
+// Раньше, если микрофонный трек обрывался или метр уровня «замирал» (сон/пробуждение, смена
+// устройства, приостановленный AudioContext), гейт оставался закрытым и человека не было слышно,
+// хотя он говорит и индикатор «в сети» горит. Теперь раз в 2 секунды проверяем:
+//  1) AudioContext запущен (иначе будим);
+//  2) микрофонный трек жив (иначе пересобираем микрофон);
+//  3) метр уровня присылает данные (иначе открываем гейт, чтобы голос шёл, и пересобираем).
+let micRecovering = false;
+let micLastRecoverAt = 0;
+function scheduleMicRecover(reason) {
+    if (micRecovering || !appMicAllowed() || micAccessRevoked) return;
+    if (Date.now() - micLastRecoverAt < 5000) return;
+    micRecovering = true;
+    micLastRecoverAt = Date.now();
+    console.warn('[Микрофон] Восстановление:', reason);
+    setTimeout(async () => {
+        try {
+            const sel = micSelect && micSelect.value ? micSelect.value : null;
+            await initMediaStream(sel, true);
+            const t = rawAudioStream && rawAudioStream.getAudioTracks()[0];
+            if (!t || t.readyState === 'ended') await initMediaStream(null, true); // выбранного устройства уже нет — берём по умолчанию
+        } catch (e) {
+            console.warn('[Микрофон] Не удалось восстановить:', e);
+        } finally {
+            micLastLevelAt = Date.now();
+            micRecovering = false;
+            applyGateToMicTrack();
+        }
+    }, 300);
+}
+function micWatchdogTick() {
+    if (!rawAudioStream || !appMicAllowed() || micAccessRevoked) return;
+    if (audioContext && audioContext.state !== 'running' && audioContext.state !== 'closed') {
+        audioContext.resume().catch(() => {});
+    }
+    const t = rawAudioStream.getAudioTracks()[0];
+    if (!t || t.readyState === 'ended') { scheduleMicRecover('микрофонный трек не активен'); return; }
+    // В свёрнутом окне отчёты метра могут приходить реже — по ним не судим (проверим при возврате в окно)
+    if (!document.hidden && audioContext && audioContext.state === 'running' && Date.now() - micLastLevelAt > 2500) {
+        // метр молчит — не оставляем гейт закрытым наглухо
+        if (!gateOpen) { gateOpen = true; applyGateToMicTrack(); }
+        scheduleMicRecover('метр уровня не присылает данные');
+    }
+}
+setInterval(micWatchdogTick, 2000);
+window.addEventListener('focus', micWatchdogTick);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) micWatchdogTick(); });
+window.addEventListener('online', micWatchdogTick);
+
 
 // Список устройств может измениться уже после старта (подключили гарнитуру,
 // отключили USB-микрофон и т.п.) — обновляем список, не трогая текущий поток.
