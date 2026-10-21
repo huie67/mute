@@ -3056,6 +3056,15 @@
             max-width: 62px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
             background: var(--bg-card); color: var(--text-muted); border: 1px solid var(--border-soft);
         }
+
+        /* Плитки быстрой панели: почти чёрный --bg-input на фоне панели выглядел чужеродно —
+           берём тот же светлый ступень, что у плеера (--bg-elevated). Одна плитка в разделе занимает всю строку. */
+        .sp-pop-grid { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+        .sp-pad { background: var(--bg-elevated); border-color: transparent; }
+        .sp-pad:hover { background: var(--bg-elevated-hover); border-color: var(--accent); }
+        .sp-pad.playing { background: var(--bg-elevated); border-color: var(--accent); }
+        .sp-pad .sp-pad-ico, .sp-pad kbd, .sp-pad.playing kbd { background: var(--bg-card); }
+        .sp-pad kbd { border-color: transparent; }
     </style>
 </head>
 <body>
