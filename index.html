@@ -3065,6 +3065,82 @@
         .sp-pad.playing { background: var(--bg-elevated); border-color: var(--accent); }
         .sp-pad .sp-pad-ico, .sp-pad kbd, .sp-pad.playing kbd { background: var(--bg-card); }
         .sp-pad kbd { border-color: transparent; }
+
+        /* =====================================================================
+           Единый язык интерфейса (как в саундпаде)
+           Одни и те же: время и кривая анимации, появление окон/панелей/вкладок/уведомлений,
+           вид кнопок (рамка --border, при наведении — рамка акцента, нажатие — лёгкое
+           уменьшение), поля ввода (акцентная рамка + мягкое кольцо фокуса) и фокус с клавиатуры.
+           Всё это отключается «Лёгким интерфейсом» (html.light-ui) и prefers-reduced-motion.
+           ===================================================================== */
+        :root {
+            --ease: cubic-bezier(0.2, 0, 0, 1);
+            --t-fast: 0.14s;
+            --t-med: 0.2s;
+        }
+
+        @keyframes ui-overlay-in { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes ui-pop-in { from { opacity: 0; transform: translateY(8px) scale(0.98); } to { opacity: 1; transform: none; } }
+        @keyframes ui-fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+        @keyframes ui-toast-in { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; transform: none; } }
+
+        /* Появление: окна, всплывающие панели, вкладки настроек, уведомления */
+        .modal-overlay { animation: ui-overlay-in var(--t-med) var(--ease); }
+        .modal-card { animation: ui-pop-in 0.22s var(--ease); }
+        .user-volume-popover, .demo-volume-popup, .soundpad-pop:not([hidden]) { animation: ui-pop-in 0.16s var(--ease); }
+        .settings-tab-panel.active { animation: ui-fade-in 0.18s var(--ease); }
+        .toast { animation: ui-toast-in 0.22s var(--ease); }
+
+        /* Кнопки: одинаковые переходы и поведение при наведении/нажатии */
+        .btn-primary, .btn-secondary, .btn-inline, .btn-file-label, .icon-btn, .settings-tab,
+        .sidebar-item, .btn-danger-ghost, .btn-secondary-ghost,
+        .playlist-folder-delete-btn, .keybind-btn {
+            transition:
+                background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease),
+                color var(--t-fast) var(--ease), transform var(--t-fast) var(--ease), opacity var(--t-fast) var(--ease);
+        }
+        .btn-primary:active, .btn-secondary:active, .btn-inline:active, .btn-file-label:active,
+        .icon-btn:active, .btn-danger-ghost:active, .btn-secondary-ghost:active { transform: scale(0.97); }
+
+        /* Вторичные кнопки получают рамку, как у кнопок саундпада. Рамка рисуется через outline
+           с отрицательным отступом, поэтому размер и отступы кнопок (в т.ч. .btn-sm) не меняются. */
+        .btn-secondary { outline: 1px solid var(--border); outline-offset: -1px; }
+        .btn-secondary:hover { outline-color: var(--accent); }
+        .icon-btn { border: 1px solid var(--border); }
+        .icon-btn:hover { border-color: var(--accent); }
+        .icon-btn.active { border-color: transparent; }
+        .btn-file-label:hover { background: var(--bg-input); border-color: var(--accent); }
+        .playlist-folder-delete-btn:hover, .keybind-btn:hover { border-color: var(--accent); }
+        .playlist-folder-delete-btn:hover { color: var(--danger); border-color: var(--danger); }
+        .sidebar-item { border-radius: var(--radius-sm); }
+
+        /* Поля ввода и списки: фокус всегда выглядит одинаково */
+        input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
+        select, textarea {
+            transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+        }
+        input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):focus,
+        select:focus, textarea:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+            outline: none;
+        }
+        input[type="range"], input[type="radio"] { accent-color: var(--accent); }
+
+        /* Фокус с клавиатуры */
+        button:focus-visible, .sidebar-item:focus-visible, .settings-tab:focus-visible, .btn-file-label:focus-visible {
+            outline: 2px solid color-mix(in srgb, var(--accent) 65%, transparent);
+            outline-offset: 2px;
+        }
+
+        /* Аватарки: плавная подсветка говорящего */
+        .user-avatar { transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease); }
+
+        @media (prefers-reduced-motion: reduce) {
+            .modal-overlay, .modal-card, .user-volume-popover, .demo-volume-popup, .soundpad-pop,
+            .settings-tab-panel.active, .toast { animation: none !important; }
+            .btn-primary, .btn-secondary, .btn-inline, .btn-file-label, .icon-btn { transition: none !important; }
+        }
     </style>
 </head>
 <body>
