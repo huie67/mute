@@ -2808,7 +2808,7 @@
         .sp-opt input[type="checkbox"] { accent-color: var(--accent); width: 18px; height: 18px; }
         .sp-list { display: flex; flex-direction: column; gap: 8px; }
         .sp-row {
-            display: grid; grid-template-columns: auto minmax(0, 1fr) 120px auto auto; gap: 10px; align-items: center;
+            display: grid; grid-template-columns: auto auto minmax(0, 1fr) 120px auto auto; gap: 10px; align-items: center;
             padding: 8px 10px; border-radius: var(--radius-md); background: var(--bg-elevated);
         }
         .sp-row.playing { box-shadow: inset 0 0 0 2px var(--accent); }
@@ -2856,6 +2856,40 @@
         .sp-pop-foot { display: flex; gap: 8px; margin-top: 10px; }
         .sp-pop-foot button { flex: 1; }
         #soundpad-btn.active { background: var(--accent); color: #fff; }
+
+        /* Саундпад: раздел-аккордеон */
+        .sp-section { border: 1px solid var(--border-soft); border-radius: var(--radius-md); margin-bottom: 10px; background: color-mix(in srgb, var(--bg-elevated) 45%, transparent); }
+        .sp-section.drop-target { box-shadow: inset 0 0 0 2px var(--accent); }
+        .sp-sec-head { display: flex; align-items: center; gap: 4px; padding: 4px 8px; }
+        .sp-sec-toggle {
+            flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 6px 4px;
+            background: transparent; border: 0; color: var(--text); font: inherit; font-weight: 700; cursor: pointer; text-align: left;
+        }
+        .sp-sec-toggle svg { flex: none; transition: transform 0.15s ease; }
+        .sp-section.collapsed .sp-sec-toggle svg { transform: rotate(-90deg); }
+        .sp-sec-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .sp-sec-count { flex: none; color: var(--text-muted); font-weight: 500; font-size: 12px; }
+        .sp-sec-btn {
+            flex: none; height: 28px; min-width: 28px; padding: 0 8px; border-radius: 8px; border: 0; cursor: pointer;
+            display: inline-flex; align-items: center; justify-content: center; gap: 4px; font-size: 12px;
+            background: transparent; color: var(--text-muted);
+        }
+        .sp-sec-btn:hover { background: var(--bg-elevated); color: var(--text); }
+        .sp-sec-btn.danger:hover { color: var(--danger); }
+        .sp-sec-btn:disabled { opacity: 0.35; cursor: default; }
+        .sp-sec-body { padding: 0 8px 8px; display: flex; flex-direction: column; gap: 8px; }
+        .sp-section.collapsed .sp-sec-body { display: none; }
+        .sp-sec-empty { padding: 10px; text-align: center; color: var(--text-muted); font-size: 12.5px; }
+        .sp-grip { cursor: grab; color: var(--text-muted); display: inline-flex; padding: 2px; }
+        .sp-row.dragging { opacity: 0.45; }
+        .sp-pop-sec {
+            width: 100%; display: flex; align-items: center; gap: 6px; padding: 6px 2px; background: transparent; border: 0;
+            color: var(--text); font: inherit; font-weight: 700; font-size: 13px; cursor: pointer; text-align: left;
+        }
+        .sp-pop-sec svg { flex: none; transition: transform 0.15s ease; }
+        .sp-pop-sec.collapsed svg { transform: rotate(-90deg); }
+        .sp-pop-sec span { color: var(--text-muted); font-weight: 500; font-size: 11.5px; }
+        .sp-pop-grid { margin-bottom: 6px; }
     </style>
 </head>
 <body>
@@ -3603,13 +3637,8 @@
                 </div>
                 <div class="settings-section">
                     <div class="settings-section-title">Мои звуки</div>
-                    <div class="playlist-folder-toolbar">
-                        <select id="sp-group-select" class="playlist-folder-select" aria-label="Группа звуков"></select>
-                        <button type="button" class="btn-file-label playlist-folder-new-btn" id="sp-group-new-btn">Новая группа</button>
-                        <button type="button" class="playlist-folder-delete-btn" id="sp-group-delete-btn" title="Удалить текущую группу">Удалить</button>
-                    </div>
                     <div class="sp-toolbar">
-                        <label class="btn-primary sp-add" for="sp-file-input">+ Добавить звуки</label>
+                        <button type="button" class="btn-primary" id="sp-section-new-btn">+ Новый раздел</button>
                         <input type="file" id="sp-file-input" accept="audio/*" multiple style="display:none;">
                         <button type="button" class="btn-secondary" id="sp-stopall-btn">Остановить все</button>
                     </div>
@@ -3946,8 +3975,7 @@
 
     <div class="soundpad-pop" id="soundpad-pop" hidden>
         <div class="sp-pop-head"><span>Саундпад</span></div>
-        <select id="sp-pop-group" class="playlist-folder-select" style="width:100%;margin-bottom:8px;" aria-label="Группа звуков"></select>
-        <div class="sp-pop-grid" id="sp-pop-grid"></div>
+        <div id="sp-pop-grid"></div>
         <div class="sp-pop-foot">
             <button type="button" class="btn-secondary" id="sp-pop-stop">Остановить</button>
             <button type="button" class="btn-secondary" id="sp-pop-settings">Настроить</button>
