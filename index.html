@@ -3598,13 +3598,16 @@
             <div class="settings-tab-panel" data-tab-panel="soundpad">
                 <div class="settings-section">
                     <div class="settings-section-title">Воспроизведение</div>
-                    <p class="sp-hint">Нажмите на звук или его горячую клавишу — участники канала услышат его в голосе. Если вы заглушили микрофон или наушники, другим звук не передаётся.</p>
-                    <label class="sp-opt"><span>Передавать звук в голосовой канал</span><input type="checkbox" id="sp-transmit-check"></label>
-                    <label class="sp-opt"><span>Слышать звук самому</span><input type="checkbox" id="sp-monitor-check"></label>
+                    <p class="sp-hint">Нажмите на звук или его горячую клавишу — его услышат участники канала и вы сами. Если вы заглушили микрофон или наушники, другим звук не передаётся.</p>
                     <div class="sp-opt"><span>Общая громкость саундпада</span><span style="display:inline-flex;align-items:center;gap:8px;"><input type="range" id="sp-master-slider" min="0" max="100" step="5" value="100"><span id="sp-master-value" style="min-width:38px;text-align:right;">100%</span></span></div>
                 </div>
                 <div class="settings-section">
                     <div class="settings-section-title">Мои звуки</div>
+                    <div class="playlist-folder-toolbar">
+                        <select id="sp-group-select" class="playlist-folder-select" aria-label="Группа звуков"></select>
+                        <button type="button" class="btn-file-label playlist-folder-new-btn" id="sp-group-new-btn">Новая группа</button>
+                        <button type="button" class="playlist-folder-delete-btn" id="sp-group-delete-btn" title="Удалить текущую группу">Удалить</button>
+                    </div>
                     <div class="sp-toolbar">
                         <label class="btn-primary sp-add" for="sp-file-input">+ Добавить звуки</label>
                         <input type="file" id="sp-file-input" accept="audio/*" multiple style="display:none;">
@@ -3943,6 +3946,7 @@
 
     <div class="soundpad-pop" id="soundpad-pop" hidden>
         <div class="sp-pop-head"><span>Саундпад</span></div>
+        <select id="sp-pop-group" class="playlist-folder-select" style="width:100%;margin-bottom:8px;" aria-label="Группа звуков"></select>
         <div class="sp-pop-grid" id="sp-pop-grid"></div>
         <div class="sp-pop-foot">
             <button type="button" class="btn-secondary" id="sp-pop-stop">Остановить</button>

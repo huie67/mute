@@ -9256,8 +9256,8 @@ document.addEventListener('error', (e) => {
 // ===================================================================================
 const SP_META_KEY = 'mute_soundpad_meta_v1';
 const SP_MAX_BYTES = 10 * 1024 * 1024;
-const SP_MAX_SOUNDS = 40;
-let sp = { sounds: [], master: 100, monitor: true, transmit: true };
+const SP_MAX_SOUNDS = 100;
+let sp = { sounds: [], groups: [], activeGroup: '', master: 100 };
 try {
     const raw = JSON.parse(localStorage.getItem(SP_META_KEY) || 'null');
     if (raw && typeof raw === 'object') {
@@ -9265,6 +9265,11 @@ try {
         if (!Array.isArray(sp.sounds)) sp.sounds = [];
     }
 } catch (e) { /* ignore */ }
+// Группы звуков (как плейлисты в «Плейлисте»): у каждого звука есть groupId.
+if (!sp.groups.length) sp.groups = [{ id: 'grp_default', name: 'Основная' }];
+sp.sounds.forEach((s) => { if (!sp.groups.some((g) => g.id === s.groupId)) s.groupId = sp.groups[0].id; });
+if (!sp.groups.some((g) => g.id === sp.activeGroup)) sp.activeGroup = sp.groups[0].id;
+const spActiveSounds = () => sp.sounds.filter((s) => s.groupId === sp.activeGroup);
 function spSave() { try { localStorage.setItem(SP_META_KEY, JSON.stringify(sp)); } catch (e) { /* ignore */ } }
 
 // ---- хранилище файлов ----
@@ -9333,9 +9338,10 @@ async function spPlay(id) {
         gain.gain.value = (Math.max(0, Math.min(100, snd.vol)) / 100) * (sp.master / 100);
         src.connect(gain);
 
-        const sending = !!(sp.transmit && ctx === audioContext && destinationNode && currentUser.room && !isMuted && !isDeafened);
-        const hearing = !!(sp.monitor && !isDeafened);
-        if (!sending && !hearing) { showToast('Звук никому не слышен: включите «Слышать звук самому» или снимите мьют.'); return; }
+        // Передаём в канал, если вы в звонке и не заглушены; сами слышим, если наушники не выключены.
+        const sending = !!(ctx === audioContext && destinationNode && currentUser.room && !isMuted && !isDeafened);
+        const hearing = !isDeafened;
+        if (!sending && !hearing) { showToast('Звук выключен (наушники отключены) — включите звук, чтобы слышать саундпад.'); return; }
         if (sending) gain.connect(destinationNode);
         if (hearing) gain.connect(ctx.destination);
 
@@ -9391,7 +9397,7 @@ async function spAddFiles(files) {
             const id = spNewId();
             await spPutBlob(id, file);
             spBuffers.set(id, buf);
-            sp.sounds.push({ id, name: file.name.replace(/\.[^.]+$/, '').slice(0, 40) || 'Звук', vol: 100, dur: Math.round(buf.duration * 10) / 10 });
+            sp.sounds.push({ id, groupId: sp.activeGroup, name: file.name.replace(/\.[^.]+$/, '').slice(0, 40) || 'Звук', vol: 100, dur: Math.round(buf.duration * 10) / 10 });
             added++;
         } catch (e) {
             console.warn('[Саундпад] не удалось добавить', file.name, e);
@@ -9419,8 +9425,10 @@ const spEl = {
     list: document.getElementById('sp-list'),
     file: document.getElementById('sp-file-input'),
     stopAll: document.getElementById('sp-stopall-btn'),
-    transmit: document.getElementById('sp-transmit-check'),
-    monitor: document.getElementById('sp-monitor-check'),
+    groupSel: document.getElementById('sp-group-select'),
+    groupNew: document.getElementById('sp-group-new-btn'),
+    groupDel: document.getElementById('sp-group-delete-btn'),
+    popGroup: document.getElementById('sp-pop-group'),
     master: document.getElementById('sp-master-slider'),
     masterVal: document.getElementById('sp-master-value'),
     btn: document.getElementById('soundpad-btn'),
@@ -9442,13 +9450,14 @@ function spComboLabel(id) {
 function renderSoundpad() {
     if (spEl.list) {
         spEl.list.innerHTML = '';
-        if (!sp.sounds.length) {
+        const shown = spActiveSounds();
+        if (!shown.length) {
             const empty = document.createElement('div');
             empty.className = 'sp-empty';
-            empty.textContent = 'Звуков пока нет. Нажмите «Добавить звуки» и выберите аудиофайлы (mp3, wav, ogg, до 10 МБ).';
+            empty.textContent = 'В этой группе пока нет звуков. Нажмите «Добавить звуки» и выберите аудиофайлы (mp3, wav, ogg, до 10 МБ).';
             spEl.list.appendChild(empty);
         }
-        sp.sounds.forEach((s) => {
+        shown.forEach((s) => {
             const row = document.createElement('div');
             row.className = 'sp-row' + (spPlaying.has(s.id) ? ' playing' : '');
             row.dataset.id = s.id;
@@ -9509,24 +9518,75 @@ function renderSoundpad() {
             spEl.list.appendChild(row);
         });
     }
-    if (spEl.transmit) spEl.transmit.checked = !!sp.transmit;
-    if (spEl.monitor) spEl.monitor.checked = !!sp.monitor;
+    spRenderGroups();
     if (spEl.master) { spEl.master.value = String(sp.master); if (spEl.masterVal) spEl.masterVal.textContent = sp.master + '%'; }
     spRenderPop();
+}
+
+function spRenderGroups() {
+    [spEl.groupSel, spEl.popGroup].forEach((sel) => {
+        if (!sel) return;
+        sel.innerHTML = '';
+        sp.groups.forEach((g) => {
+            const o = document.createElement('option');
+            o.value = g.id;
+            o.textContent = g.name;
+            o.selected = g.id === sp.activeGroup;
+            sel.appendChild(o);
+        });
+    });
+    if (spEl.groupDel) spEl.groupDel.disabled = sp.groups.length <= 1;
+}
+function spSetActiveGroup(id) {
+    if (!sp.groups.some((g) => g.id === id)) return;
+    sp.activeGroup = id;
+    spSave();
+    renderSoundpad();
+}
+function spCreateGroup() {
+    const clean = String(prompt('Название новой группы звуков:') || '').trim().slice(0, 30);
+    if (!clean) return;
+    if (sp.groups.some((g) => g.name.toLowerCase() === clean.toLowerCase())) { alert('Группа с таким названием уже существует.'); return; }
+    const g = { id: 'grp_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), name: clean };
+    sp.groups.push(g);
+    sp.activeGroup = g.id;
+    spSave();
+    renderSoundpad();
+}
+async function spDeleteGroup() {
+    if (sp.groups.length <= 1) { alert('Нельзя удалить последнюю группу.'); return; }
+    const g = sp.groups.find((x) => x.id === sp.activeGroup);
+    if (!g || !confirm(`Удалить группу «${g.name}» вместе со всеми её звуками?`)) return;
+    const doomed = sp.sounds.filter((s) => s.groupId === g.id);
+    for (const s of doomed) {
+        if (spPlaying.has(s.id)) spPlaying.get(s.id).stop();
+        spBuffers.delete(s.id);
+        try { await spDelBlob(s.id); } catch (e) { /* ignore */ }
+        if (keybinds['sp:' + s.id]) delete keybinds['sp:' + s.id];
+    }
+    sp.sounds = sp.sounds.filter((s) => s.groupId !== g.id);
+    sp.groups = sp.groups.filter((x) => x.id !== g.id);
+    sp.activeGroup = sp.groups[0].id;
+    saveKeybinds();
+    spSave();
+    spSyncKeybindActions();
+    syncGlobalShortcuts();
+    renderSoundpad();
 }
 
 function spRenderPop() {
     if (!spEl.grid) return;
     spEl.grid.innerHTML = '';
-    if (!sp.sounds.length) {
+    const shownPads = spActiveSounds();
+    if (!shownPads.length) {
         const empty = document.createElement('div');
         empty.className = 'sp-empty';
         empty.style.gridColumn = '1 / -1';
-        empty.textContent = 'Звуков пока нет. Добавьте их в настройках.';
+        empty.textContent = 'В этой группе пока нет звуков. Добавьте их в настройках.';
         spEl.grid.appendChild(empty);
         return;
     }
-    sp.sounds.forEach((s) => {
+    shownPads.forEach((s) => {
         const pad = document.createElement('button');
         pad.type = 'button';
         pad.className = 'sp-pad' + (spPlaying.has(s.id) ? ' playing' : '');
@@ -9582,8 +9642,10 @@ function spTogglePop(force) {
     });
     if (spEl.stopAll) spEl.stopAll.addEventListener('click', spStopAll);
     if (spEl.file) spEl.file.addEventListener('change', async () => { await spAddFiles(spEl.file.files); spEl.file.value = ''; });
-    if (spEl.transmit) spEl.transmit.addEventListener('change', () => { sp.transmit = spEl.transmit.checked; spSave(); });
-    if (spEl.monitor) spEl.monitor.addEventListener('change', () => { sp.monitor = spEl.monitor.checked; spSave(); });
+    if (spEl.groupSel) spEl.groupSel.addEventListener('change', () => spSetActiveGroup(spEl.groupSel.value));
+    if (spEl.popGroup) spEl.popGroup.addEventListener('change', () => { spSetActiveGroup(spEl.popGroup.value); spPositionPop(); });
+    if (spEl.groupNew) spEl.groupNew.addEventListener('click', spCreateGroup);
+    if (spEl.groupDel) spEl.groupDel.addEventListener('click', spDeleteGroup);
     if (spEl.master) spEl.master.addEventListener('input', () => {
         sp.master = Number(spEl.master.value);
         if (spEl.masterVal) spEl.masterVal.textContent = sp.master + '%';
