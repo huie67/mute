@@ -4439,14 +4439,16 @@ async function setupAudioAnalyzer(stream) {
 // проверке порога срабатывания.
 function applyGateToMicTrack() {
     if (!localMediaStream) return;
-    const shouldTransmit = micShouldTransmit();
+    const micTransmit = micShouldTransmit();
+    // Пока играет звук саундпада, исходящий трек должен быть открыт, даже если гейт/рация закрыты
+    const shouldTransmit = micTransmit || (typeof soundpadTransmitActive === 'function' && soundpadTransmitActive());
     localMediaStream.getAudioTracks().forEach(track => {
         if (track !== currentDemoAudioTrack) {
             track.enabled = shouldTransmit;
         }
     });
     if (micMonitorGain) {
-        micMonitorGain.gain.value = (micMonitorEnabled && shouldTransmit) ? 1 : 0;
+        micMonitorGain.gain.value = (micMonitorEnabled && micTransmit) ? 1 : 0;
     }
 }
 
@@ -6819,9 +6821,10 @@ const KEYBIND_ACTIONS = [
     { id: 'nexttrack', label: 'Плеер: следующий трек' },
     { id: 'voicechanger', label: 'Изменение голоса' },
     { id: 'overlayedit', label: 'Оверлей: режим настройки' },
-    { id: 'ptt', label: 'Рация: удерживайте, чтобы говорить' }
+    { id: 'ptt', label: 'Рация: удерживайте, чтобы говорить' },
+    { id: 'spstop', label: 'Саундпад: остановить все звуки' }
 ];
-let keybinds = { mute: '', deafen: '', leave: '', playpause: '', prevtrack: '', nexttrack: '', voicechanger: '', overlayedit: '', ptt: '', global: true };
+let keybinds = { mute: '', deafen: '', leave: '', playpause: '', prevtrack: '', nexttrack: '', voicechanger: '', overlayedit: '', ptt: '', spstop: '', global: true };
 try {
     const raw = localStorage.getItem(KEYBINDS_KEY);
     if (raw) keybinds = { ...keybinds, ...JSON.parse(raw) };
@@ -6841,6 +6844,8 @@ function updatePttKeyHint() {
 }
 
 function runKeybindAction(id) {
+    if (typeof id === 'string' && id.startsWith('sp:')) { spPlayToggle(id.slice(3)); return; }
+    if (id === 'spstop') { spStopAll(); return; }
     if (id === 'mute') { if (!muteBtn.disabled) muteBtn.click(); }
     else if (id === 'deafen') deafenBtn.click();
     else if (id === 'leave') { if (currentUser.room) leaveVoiceChannel(); }
@@ -6887,7 +6892,7 @@ function renderKeybindList() {
     const list = document.getElementById('keybind-list');
     if (!list) return;
     list.innerHTML = '';
-    KEYBIND_ACTIONS.forEach(a => {
+    KEYBIND_ACTIONS.filter(a => !a.hidden).forEach(a => {
         const row = document.createElement('div');
         row.className = 'keybind-row';
         const label = document.createElement('span');
@@ -6929,6 +6934,7 @@ function renderKeybindList() {
 function stopKeybindRecording() {
     keybindRecording = null;
     renderKeybindList();
+    if (typeof renderSoundpad === 'function') renderSoundpad();
     syncGlobalShortcuts();
 }
 
@@ -6936,6 +6942,7 @@ async function startKeybindRecording(id) {
     showKeybindError('');
     keybindRecording = id;
     renderKeybindList();
+    if (typeof renderSoundpad === 'function') renderSoundpad();
     // Пока ждём комбинацию, снимаем глобальные привязки — чтобы нажатие не сработало как действие.
     const gs = window.__TAURI__ && window.__TAURI__.globalShortcut;
     if (gs) { try { await gs.unregisterAll(); } catch (e) { /* ignore */ } }
@@ -9238,3 +9245,351 @@ document.addEventListener('error', (e) => {
     const seed = (nameEl && nameEl.textContent.trim()) || (row && row.dataset.username) || (img.src.split('/').pop() || 'user');
     img.src = `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(seed)}`;
 }, true);
+
+
+// ===================================================================================
+// Саундпад: свои короткие звуки, которые слышат участники канала (и вы сами).
+// Файлы лежат в IndexedDB браузера/приложения (только на этом устройстве), названия, громкости
+// и настройки — в localStorage, горячие клавиши — в общей системе горячих клавиш (keybinds),
+// поэтому работают и глобально (в игре), как остальные.
+// Звук подмешивается в исходящий поток (destinationNode) мимо шумоподавления и «изменения голоса».
+// ===================================================================================
+const SP_META_KEY = 'mute_soundpad_meta_v1';
+const SP_MAX_BYTES = 10 * 1024 * 1024;
+const SP_MAX_SOUNDS = 40;
+let sp = { sounds: [], master: 100, monitor: true, transmit: true };
+try {
+    const raw = JSON.parse(localStorage.getItem(SP_META_KEY) || 'null');
+    if (raw && typeof raw === 'object') {
+        sp = { ...sp, ...raw };
+        if (!Array.isArray(sp.sounds)) sp.sounds = [];
+    }
+} catch (e) { /* ignore */ }
+function spSave() { try { localStorage.setItem(SP_META_KEY, JSON.stringify(sp)); } catch (e) { /* ignore */ } }
+
+// ---- хранилище файлов ----
+let spDbPromise = null;
+function spDb() {
+    if (!spDbPromise) {
+        spDbPromise = new Promise((resolve, reject) => {
+            if (!window.indexedDB) { reject(new Error('IndexedDB недоступна')); return; }
+            const req = indexedDB.open('mute_soundpad_v1', 1);
+            req.onupgradeneeded = () => req.result.createObjectStore('sounds');
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        });
+    }
+    return spDbPromise;
+}
+async function spDbOp(mode, fn) {
+    const db = await spDb();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction('sounds', mode);
+        const req = fn(tx.objectStore('sounds'));
+        tx.oncomplete = () => resolve(req && req.result);
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
+    });
+}
+const spPutBlob = (id, blob) => spDbOp('readwrite', (s) => s.put(blob, id));
+const spGetBlob = (id) => spDbOp('readonly', (s) => s.get(id));
+const spDelBlob = (id) => spDbOp('readwrite', (s) => s.delete(id));
+
+// ---- воспроизведение ----
+let spLocalCtx = null;            // запасной контекст, если микрофон ещё не запущен (звук только себе)
+const spBuffers = new Map();      // id -> AudioBuffer
+const spPlaying = new Map();      // id -> экземпляр воспроизведения
+let spTx = 0;                     // сколько звуков сейчас уходит в канал
+
+function soundpadTransmitActive() { return spTx > 0 && !isMuted && !isDeafened; }
+
+function spContext() {
+    if (audioContext && audioContext.state !== 'closed') return audioContext;
+    if (!spLocalCtx) spLocalCtx = new (window.AudioContext || window.webkitAudioContext)();
+    return spLocalCtx;
+}
+async function spGetBuffer(id, ctx) {
+    if (spBuffers.has(id)) return spBuffers.get(id);
+    const blob = await spGetBlob(id);
+    if (!blob) throw new Error('Файл звука не найден');
+    const buf = await ctx.decodeAudioData(await blob.arrayBuffer());
+    spBuffers.set(id, buf);
+    return buf;
+}
+function spFindSound(id) { return sp.sounds.find((s) => s.id === id); }
+
+async function spPlay(id) {
+    const snd = spFindSound(id);
+    if (!snd) return;
+    try {
+        const ctx = spContext();
+        if (ctx.state !== 'running') await ctx.resume().catch(() => {});
+        const buf = await spGetBuffer(id, ctx);
+        if (spPlaying.has(id)) spPlaying.get(id).stop();
+
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        const gain = ctx.createGain();
+        gain.gain.value = (Math.max(0, Math.min(100, snd.vol)) / 100) * (sp.master / 100);
+        src.connect(gain);
+
+        const sending = !!(sp.transmit && ctx === audioContext && destinationNode && currentUser.room && !isMuted && !isDeafened);
+        const hearing = !!(sp.monitor && !isDeafened);
+        if (!sending && !hearing) { showToast('Звук никому не слышен: включите «Слышать звук самому» или снимите мьют.'); return; }
+        if (sending) gain.connect(destinationNode);
+        if (hearing) gain.connect(ctx.destination);
+
+        const inst = {
+            sending,
+            stopped: false,
+            stop() { try { src.stop(); } catch (e) { /* уже остановлен */ } },
+            finish() {
+                if (this.stopped) return;
+                this.stopped = true;
+                try { src.disconnect(); gain.disconnect(); } catch (e) { /* ignore */ }
+                if (spPlaying.get(id) === this) spPlaying.delete(id);
+                if (this.sending) spTx = Math.max(0, spTx - 1);
+                applyGateToMicTrack();
+                spUpdatePlayingUi();
+            }
+        };
+        src.onended = () => inst.finish();
+        spPlaying.set(id, inst);
+        if (sending) { spTx++; applyGateToMicTrack(); }
+        src.start();
+        spUpdatePlayingUi();
+    } catch (e) {
+        console.warn('[Саундпад]', e);
+        showToast('Не удалось воспроизвести звук: ' + (e && e.message ? e.message : e));
+    }
+}
+function spPlayToggle(id) {
+    if (spPlaying.has(id)) spPlaying.get(id).stop();
+    else spPlay(id);
+}
+function spStopAll() { Array.from(spPlaying.values()).forEach((i) => i.stop()); }
+
+// ---- горячие клавиши звуков (динамические действия общей системы) ----
+function spSyncKeybindActions() {
+    for (let i = KEYBIND_ACTIONS.length - 1; i >= 0; i--) {
+        if (String(KEYBIND_ACTIONS[i].id).startsWith('sp:')) KEYBIND_ACTIONS.splice(i, 1);
+    }
+    sp.sounds.forEach((s) => KEYBIND_ACTIONS.push({ id: 'sp:' + s.id, label: 'Саундпад: ' + s.name, hidden: true }));
+}
+
+// ---- добавление / удаление ----
+const spNewId = () => 'snd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+async function spAddFiles(files) {
+    let added = 0;
+    for (const file of Array.from(files || [])) {
+        if (sp.sounds.length >= SP_MAX_SOUNDS) { showToast(`Максимум ${SP_MAX_SOUNDS} звуков.`); break; }
+        if (!/^audio\//.test(file.type) && !/\.(mp3|wav|ogg|oga|m4a|aac|flac|opus|webm)$/i.test(file.name)) { showToast(`«${file.name}» — не аудиофайл.`); continue; }
+        if (file.size > SP_MAX_BYTES) { showToast(`«${file.name}» больше 10 МБ — выберите файл покороче.`); continue; }
+        try {
+            const ctx = spContext();
+            const buf = await ctx.decodeAudioData(await file.arrayBuffer());
+            const id = spNewId();
+            await spPutBlob(id, file);
+            spBuffers.set(id, buf);
+            sp.sounds.push({ id, name: file.name.replace(/\.[^.]+$/, '').slice(0, 40) || 'Звук', vol: 100, dur: Math.round(buf.duration * 10) / 10 });
+            added++;
+        } catch (e) {
+            console.warn('[Саундпад] не удалось добавить', file.name, e);
+            showToast(`Не удалось прочитать «${file.name}».`);
+        }
+    }
+    if (added) { spSave(); spSyncKeybindActions(); renderSoundpad(); }
+}
+async function spRemove(id) {
+    const snd = spFindSound(id);
+    if (!snd || !confirm(`Удалить звук «${snd.name}»?`)) return;
+    if (spPlaying.has(id)) spPlaying.get(id).stop();
+    sp.sounds = sp.sounds.filter((s) => s.id !== id);
+    spBuffers.delete(id);
+    try { await spDelBlob(id); } catch (e) { /* ignore */ }
+    if (keybinds['sp:' + id]) { delete keybinds['sp:' + id]; saveKeybinds(); }
+    spSave();
+    spSyncKeybindActions();
+    syncGlobalShortcuts();
+    renderSoundpad();
+}
+
+// ---- интерфейс ----
+const spEl = {
+    list: document.getElementById('sp-list'),
+    file: document.getElementById('sp-file-input'),
+    stopAll: document.getElementById('sp-stopall-btn'),
+    transmit: document.getElementById('sp-transmit-check'),
+    monitor: document.getElementById('sp-monitor-check'),
+    master: document.getElementById('sp-master-slider'),
+    masterVal: document.getElementById('sp-master-value'),
+    btn: document.getElementById('soundpad-btn'),
+    pop: document.getElementById('soundpad-pop'),
+    grid: document.getElementById('sp-pop-grid'),
+    popStop: document.getElementById('sp-pop-stop'),
+    popSettings: document.getElementById('sp-pop-settings')
+};
+const SP_ICON_PLAY = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><polygon points="7 4 20 12 7 20 7 4"></polygon></svg>';
+const SP_ICON_STOP = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1.5"></rect></svg>';
+const SP_ICON_X = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg>';
+const SP_ICON_TRASH = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg>';
+
+function spComboLabel(id) {
+    const combo = keybinds['sp:' + id];
+    return combo ? prettyCombo(combo) : '';
+}
+
+function renderSoundpad() {
+    if (spEl.list) {
+        spEl.list.innerHTML = '';
+        if (!sp.sounds.length) {
+            const empty = document.createElement('div');
+            empty.className = 'sp-empty';
+            empty.textContent = 'Звуков пока нет. Нажмите «Добавить звуки» и выберите аудиофайлы (mp3, wav, ogg, до 10 МБ).';
+            spEl.list.appendChild(empty);
+        }
+        sp.sounds.forEach((s) => {
+            const row = document.createElement('div');
+            row.className = 'sp-row' + (spPlaying.has(s.id) ? ' playing' : '');
+            row.dataset.id = s.id;
+
+            const play = document.createElement('button');
+            play.type = 'button'; play.className = 'sp-play'; play.title = 'Проиграть / остановить';
+            play.innerHTML = spPlaying.has(s.id) ? SP_ICON_STOP : SP_ICON_PLAY;
+            play.addEventListener('click', () => spPlayToggle(s.id));
+
+            const nameWrap = document.createElement('div');
+            nameWrap.className = 'sp-name-wrap';
+            const name = document.createElement('input');
+            name.type = 'text'; name.className = 'sp-name'; name.value = s.name; name.maxLength = 40;
+            name.addEventListener('change', () => {
+                s.name = name.value.trim() || 'Звук';
+                name.value = s.name;
+                spSave(); spSyncKeybindActions(); spRenderPop();
+            });
+            const dur = document.createElement('span');
+            dur.className = 'sp-dur';
+            dur.textContent = s.dur ? `${s.dur.toFixed(1)} с` : '';
+            nameWrap.append(name, dur);
+
+            const vol = document.createElement('input');
+            vol.type = 'range'; vol.min = '0'; vol.max = '100'; vol.step = '5'; vol.value = String(s.vol);
+            vol.title = 'Громкость этого звука';
+            vol.addEventListener('input', () => { s.vol = Number(vol.value); spSave(); });
+
+            const keys = document.createElement('span');
+            keys.className = 'sp-keys';
+            const recording = keybindRecording === 'sp:' + s.id;
+            const key = document.createElement('button');
+            const combo = spComboLabel(s.id);
+            key.type = 'button';
+            key.className = 'sp-key' + (combo ? '' : ' empty') + (recording ? ' recording' : '');
+            key.textContent = recording ? 'Нажмите клавишу…' : (combo || 'Клавиша');
+            key.addEventListener('click', () => {
+                if (recording) stopKeybindRecording(); else startKeybindRecording('sp:' + s.id);
+            });
+            keys.appendChild(key);
+            if (combo && !recording) {
+                const clear = document.createElement('button');
+                clear.type = 'button'; clear.className = 'sp-key-clear'; clear.title = 'Убрать клавишу';
+                clear.innerHTML = SP_ICON_X;
+                clear.addEventListener('click', () => {
+                    keybinds['sp:' + s.id] = '';
+                    saveKeybinds(); syncGlobalShortcuts(); renderSoundpad();
+                });
+                keys.appendChild(clear);
+            }
+
+            const del = document.createElement('button');
+            del.type = 'button'; del.className = 'sp-del'; del.title = 'Удалить звук';
+            del.innerHTML = SP_ICON_TRASH;
+            del.addEventListener('click', () => spRemove(s.id));
+
+            row.append(play, nameWrap, vol, keys, del);
+            spEl.list.appendChild(row);
+        });
+    }
+    if (spEl.transmit) spEl.transmit.checked = !!sp.transmit;
+    if (spEl.monitor) spEl.monitor.checked = !!sp.monitor;
+    if (spEl.master) { spEl.master.value = String(sp.master); if (spEl.masterVal) spEl.masterVal.textContent = sp.master + '%'; }
+    spRenderPop();
+}
+
+function spRenderPop() {
+    if (!spEl.grid) return;
+    spEl.grid.innerHTML = '';
+    if (!sp.sounds.length) {
+        const empty = document.createElement('div');
+        empty.className = 'sp-empty';
+        empty.style.gridColumn = '1 / -1';
+        empty.textContent = 'Звуков пока нет. Добавьте их в настройках.';
+        spEl.grid.appendChild(empty);
+        return;
+    }
+    sp.sounds.forEach((s) => {
+        const pad = document.createElement('button');
+        pad.type = 'button';
+        pad.className = 'sp-pad' + (spPlaying.has(s.id) ? ' playing' : '');
+        pad.dataset.id = s.id;
+        const b = document.createElement('b'); b.textContent = s.name;
+        const small = document.createElement('small'); small.textContent = spComboLabel(s.id) || ' ';
+        pad.append(b, small);
+        pad.addEventListener('click', () => spPlayToggle(s.id));
+        spEl.grid.appendChild(pad);
+    });
+}
+
+function spUpdatePlayingUi() {
+    document.querySelectorAll('.sp-row[data-id]').forEach((row) => {
+        const on = spPlaying.has(row.dataset.id);
+        row.classList.toggle('playing', on);
+        const btn = row.querySelector('.sp-play');
+        if (btn) btn.innerHTML = on ? SP_ICON_STOP : SP_ICON_PLAY;
+    });
+    document.querySelectorAll('.sp-pad[data-id]').forEach((pad) => pad.classList.toggle('playing', spPlaying.has(pad.dataset.id)));
+}
+
+function spPositionPop() {
+    if (!spEl.btn || !spEl.pop) return;
+    const r = spEl.btn.getBoundingClientRect();
+    const w = spEl.pop.offsetWidth || 300;
+    spEl.pop.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, r.left)) + 'px';
+    spEl.pop.style.bottom = Math.max(8, window.innerHeight - r.top + 8) + 'px';
+    spEl.pop.style.top = 'auto';
+}
+function spTogglePop(force) {
+    if (!spEl.pop) return;
+    const open = typeof force === 'boolean' ? force : spEl.pop.hidden;
+    spEl.pop.hidden = !open;
+    if (spEl.btn) spEl.btn.classList.toggle('active', open);
+    if (open) { spRenderPop(); spPositionPop(); }
+}
+
+(function initSoundpad() {
+    if (spEl.btn) spEl.btn.addEventListener('click', (e) => { e.stopPropagation(); spTogglePop(); });
+    document.addEventListener('mousedown', (e) => {
+        if (!spEl.pop || spEl.pop.hidden) return;
+        if (spEl.pop.contains(e.target) || (spEl.btn && spEl.btn.contains(e.target))) return;
+        spTogglePop(false);
+    });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && spEl.pop && !spEl.pop.hidden && !keybindRecording) spTogglePop(false); });
+    window.addEventListener('resize', () => { if (spEl.pop && !spEl.pop.hidden) spPositionPop(); });
+    if (spEl.popStop) spEl.popStop.addEventListener('click', spStopAll);
+    if (spEl.popSettings) spEl.popSettings.addEventListener('click', () => {
+        spTogglePop(false);
+        if (typeof settingsBtn !== 'undefined' && settingsBtn) settingsBtn.click();
+        switchSettingsTab('soundpad');
+    });
+    if (spEl.stopAll) spEl.stopAll.addEventListener('click', spStopAll);
+    if (spEl.file) spEl.file.addEventListener('change', async () => { await spAddFiles(spEl.file.files); spEl.file.value = ''; });
+    if (spEl.transmit) spEl.transmit.addEventListener('change', () => { sp.transmit = spEl.transmit.checked; spSave(); });
+    if (spEl.monitor) spEl.monitor.addEventListener('change', () => { sp.monitor = spEl.monitor.checked; spSave(); });
+    if (spEl.master) spEl.master.addEventListener('input', () => {
+        sp.master = Number(spEl.master.value);
+        if (spEl.masterVal) spEl.masterVal.textContent = sp.master + '%';
+        spSave();
+    });
+    spSyncKeybindActions();
+    renderSoundpad();
+    syncGlobalShortcuts();
+})();
