@@ -9492,7 +9492,8 @@ function spBuildRow(s) {
     const vol = document.createElement('input');
     vol.type = 'range'; vol.min = '0'; vol.max = '100'; vol.step = '5'; vol.value = String(s.vol);
     vol.title = 'Громкость этого звука';
-    vol.addEventListener('input', () => { s.vol = Number(vol.value); spSave(); });
+    vol.style.setProperty('--fill', s.vol + '%');
+    vol.addEventListener('input', () => { s.vol = Number(vol.value); vol.style.setProperty('--fill', vol.value + '%'); spSave(); });
 
     const keys = document.createElement('span');
     keys.className = 'sp-keys';
@@ -9594,7 +9595,7 @@ function renderSoundpad() {
             spEl.list.appendChild(sec);
         });
     }
-    if (spEl.master) { spEl.master.value = String(sp.master); if (spEl.masterVal) spEl.masterVal.textContent = sp.master + '%'; }
+    if (spEl.master) { spEl.master.value = String(sp.master); spEl.master.style.setProperty('--fill', sp.master + '%'); if (spEl.masterVal) spEl.masterVal.textContent = sp.master + '%'; }
     spRenderPop();
 }
 
@@ -9669,9 +9670,16 @@ function spRenderPop() {
             pad.type = 'button';
             pad.className = 'sp-pad' + (spPlaying.has(s.id) ? ' playing' : '');
             pad.dataset.id = s.id;
+            const ico = document.createElement('span');
+            ico.className = 'sp-pad-ico';
+            ico.innerHTML = spPlaying.has(s.id) ? SP_ICON_STOP : SP_ICON_PLAY;
+            const text = document.createElement('span');
+            text.className = 'sp-pad-text';
             const b = document.createElement('b'); b.textContent = s.name;
-            const small = document.createElement('small'); small.textContent = spComboLabel(s.id) || ' ';
-            pad.append(b, small);
+            text.appendChild(b);
+            pad.append(ico, text);
+            const combo = spComboLabel(s.id);
+            if (combo) { const k = document.createElement('kbd'); k.textContent = combo; pad.appendChild(k); }
             pad.addEventListener('click', () => spPlayToggle(s.id));
             grid.appendChild(pad);
         });
@@ -9692,7 +9700,12 @@ function spUpdatePlayingUi() {
         const btn = row.querySelector('.sp-play');
         if (btn) btn.innerHTML = on ? SP_ICON_STOP : SP_ICON_PLAY;
     });
-    document.querySelectorAll('.sp-pad[data-id]').forEach((pad) => pad.classList.toggle('playing', spPlaying.has(pad.dataset.id)));
+    document.querySelectorAll('.sp-pad[data-id]').forEach((pad) => {
+        const on = spPlaying.has(pad.dataset.id);
+        pad.classList.toggle('playing', on);
+        const ico = pad.querySelector('.sp-pad-ico');
+        if (ico) ico.innerHTML = on ? SP_ICON_STOP : SP_ICON_PLAY;
+    });
 }
 
 function spPositionPop() {
@@ -9731,6 +9744,7 @@ function spTogglePop(force) {
     if (spEl.sectionNew) spEl.sectionNew.addEventListener('click', spCreateSection);
     if (spEl.master) spEl.master.addEventListener('input', () => {
         sp.master = Number(spEl.master.value);
+        spEl.master.style.setProperty('--fill', sp.master + '%');
         if (spEl.masterVal) spEl.masterVal.textContent = sp.master + '%';
         spSave();
     });
