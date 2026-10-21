@@ -3002,6 +3002,60 @@
             background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text-muted);
         }
         .sp-pad.playing kbd { background: rgba(255, 255, 255, 0.22); color: #fff; }
+
+        /* ===== Саундпад: единый стиль с остальным приложением =====
+           Те же формы, что у треков плейлиста и панелей громкости: --bg-input + тонкая рамка,
+           --radius-sm, квадратные кнопки 24 px, активный элемент — рамка акцентного цвета. */
+        .sp-section { border-radius: var(--radius-sm); background: transparent; }
+        .sp-row {
+            background: var(--bg-input); border: 1px solid var(--border-soft);
+            border-radius: var(--radius-sm); padding: 8px 9px; gap: 8px;
+        }
+        .sp-row.playing { box-shadow: none; border-color: var(--accent); }
+        .sp-play, .sp-del, .sp-key-clear, .sp-pop-icon, .sp-pad-ico, .sp-sec-btn {
+            border: 1px solid var(--border); background: var(--bg-card); color: var(--text-muted);
+            border-radius: 6px; cursor: pointer;
+        }
+        .sp-play, .sp-del, .sp-key-clear, .sp-pop-icon, .sp-pad-ico { width: 24px; height: 24px; padding: 0; }
+        .sp-play svg, .sp-del svg, .sp-key-clear svg, .sp-pad-ico svg { width: 11px; height: 11px; display: block; }
+        .sp-pop-icon { width: 26px; height: 26px; }
+        .sp-play:hover, .sp-key-clear:hover, .sp-pop-icon:hover, .sp-sec-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--bg-card); }
+        .sp-del:hover, .sp-sec-btn.danger:hover { border-color: var(--danger); color: var(--danger); background: var(--bg-card); }
+        .sp-row.playing .sp-play { border-color: var(--accent); color: var(--accent); }
+        .sp-sec-btn { height: 24px; min-width: 24px; padding: 0 7px; font-size: 12px; }
+        .sp-sec-head { gap: 6px; }
+        .sp-name { font-size: 12.5px; font-weight: 600; }
+        .sp-key {
+            min-width: 92px; max-width: 130px; padding: 5px 10px; border-radius: var(--radius-sm);
+            border: 1px solid var(--border); background: var(--bg-card); font-size: 12px; font-weight: 600;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .sp-key:hover { border-color: var(--text-faint); }
+        .sp-key.recording { border-color: var(--accent); color: var(--accent); }
+        .sp-empty, .sp-sec-empty { border-radius: var(--radius-sm); }
+
+        /* Быстрая панель на главном экране */
+        .soundpad-pop {
+            z-index: 3000; width: 320px; padding: 12px 14px; overflow-x: hidden;
+            border-radius: var(--radius-sm); box-shadow: var(--shadow-card);
+        }
+        .sp-pop-title { font-size: 13px; }
+        .sp-pop-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .sp-pad {
+            min-width: 0; overflow: hidden; min-height: 40px; padding: 7px 9px;
+            background: var(--bg-input); border: 1px solid var(--border-soft); border-radius: var(--radius-sm); color: var(--text);
+        }
+        .sp-pad:hover { background: var(--bg-input); border-color: var(--accent); }
+        .sp-pad.playing { background: var(--bg-input); border-color: var(--accent); color: var(--text); }
+        .sp-pad:hover .sp-pad-ico, .sp-pad.playing .sp-pad-ico { border-color: var(--accent); color: var(--accent); background: var(--bg-card); }
+        .sp-pad-text { flex: 1; min-width: 0; }
+        /* название не вылезает за рамку: многоточие (раньше <b> был inline и не обрезался) */
+        .sp-pad b, .sp-pop-sec b { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+        .sp-pop-sec b { flex: 0 1 auto; font-size: inherit; }
+        .sp-pad kbd, .sp-pad.playing kbd {
+            max-width: 62px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            background: var(--bg-card); color: var(--text-muted); border: 1px solid var(--border-soft);
+        }
     </style>
 </head>
 <body>
