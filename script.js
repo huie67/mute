@@ -9492,7 +9492,8 @@ function spBuildRow(s) {
     const vol = document.createElement('input');
     vol.type = 'range'; vol.min = '0'; vol.max = '100'; vol.step = '5'; vol.value = String(s.vol);
     vol.title = 'Громкость этого звука';
-    vol.addEventListener('input', () => { s.vol = Number(vol.value); spSave(); });
+    vol.style.setProperty('--fill', s.vol + '%');
+    vol.addEventListener('input', () => { s.vol = Number(vol.value); vol.style.setProperty('--fill', vol.value + '%'); spSave(); });
 
     const keys = document.createElement('span');
     keys.className = 'sp-keys';
@@ -9594,7 +9595,7 @@ function renderSoundpad() {
             spEl.list.appendChild(sec);
         });
     }
-    if (spEl.master) { spEl.master.value = String(sp.master); if (spEl.masterVal) spEl.masterVal.textContent = sp.master + '%'; }
+    if (spEl.master) { spEl.master.value = String(sp.master); spEl.master.style.setProperty('--fill', sp.master + '%'); if (spEl.masterVal) spEl.masterVal.textContent = sp.master + '%'; }
     spRenderPop();
 }
 
@@ -9670,8 +9671,9 @@ function spRenderPop() {
             pad.className = 'sp-pad' + (spPlaying.has(s.id) ? ' playing' : '');
             pad.dataset.id = s.id;
             const b = document.createElement('b'); b.textContent = s.name;
-            const small = document.createElement('small'); small.textContent = spComboLabel(s.id) || ' ';
-            pad.append(b, small);
+            const small = document.createElement('small'); small.textContent = spComboLabel(s.id);
+            pad.append(b);
+            if (small.textContent) pad.append(small);
             pad.addEventListener('click', () => spPlayToggle(s.id));
             grid.appendChild(pad);
         });
@@ -9731,6 +9733,7 @@ function spTogglePop(force) {
     if (spEl.sectionNew) spEl.sectionNew.addEventListener('click', spCreateSection);
     if (spEl.master) spEl.master.addEventListener('input', () => {
         sp.master = Number(spEl.master.value);
+        spEl.master.style.setProperty('--fill', sp.master + '%');
         if (spEl.masterVal) spEl.masterVal.textContent = sp.master + '%';
         spSave();
     });
