@@ -8049,6 +8049,30 @@ function buildMessageActionsHtml({ id, canInteract, isMine }) {
     return html + '</div>';
 }
 
+// Аватарка автора сообщения (как .msg-avatar в оверлее): круг 30 px слева от блока сообщений.
+// Запасной вариант — тот же идентикон, что и в автодополнении упоминаний; если картинка не
+// загрузилась (нет сети) — буква ника на цветном фоне. Элемент вставляется только в начало
+// блока (.chat-message), вне .msg-part, поэтому удаление/объединение сообщений не затрагивает.
+function buildChatAvatarEl(name, avatarUrl) {
+    const wrap = document.createElement('span');
+    wrap.className = 'msg-avatar';
+    wrap.setAttribute('aria-hidden', 'true');
+    const initial = (String(name || '?').trim().charAt(0) || '?').toUpperCase();
+    const showInitial = () => {
+        wrap.textContent = initial;
+        wrap.style.background = getUserColor(name);
+    };
+    const img = document.createElement('img');
+    img.alt = '';
+    img.decoding = 'async';
+    img.loading = 'lazy';
+    img.draggable = false;
+    img.src = avatarUrl || `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(name || '')}`;
+    img.addEventListener('error', () => { img.remove(); showInitial(); }, { once: true });
+    wrap.appendChild(img);
+    return wrap;
+}
+
 function renderChatMessage({ id, username, user, avatar, text, image_url, file_url, file_name, file_size, attachments, reply, reply_to, reactions, created_at, whisper_to, cid, pending }) {
     const name = username || user || 'Участник';
     // Прилипать к низу нужно, только если человек и так смотрит на конец чата (или это
@@ -8137,6 +8161,7 @@ function renderChatMessage({ id, username, user, avatar, text, image_url, file_u
         msg.dataset.groupKey = groupKey;
         if (isMine) msg.classList.add('own-message');
         if (isWhisper) msg.classList.add('chat-whisper');
+        msg.appendChild(buildChatAvatarEl(name, avatar));
         msg.appendChild(part);
         messagesDiv.appendChild(msg);
     }
