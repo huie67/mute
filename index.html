@@ -3141,6 +3141,119 @@
             .settings-tab-panel.active, .toast { animation: none !important; }
             .btn-primary, .btn-secondary, .btn-inline, .btn-file-label, .icon-btn { transition: none !important; }
         }
+
+        /* =====================================================================
+           ЕДИНЫЙ СТИЛЬ «КАК В ОВЕРЛЕЕ» — часть 1: основа
+           Язык оформления оверлея: полупрозрачные поверхности вместо глухих плашек,
+           тонкие линии 10% цвета текста, мягкие скругления 10–20 px, акцент как
+           единственный яркий цвет, плавные короткие переходы. Все цвета выводятся
+           из переменных темы, поэтому перекрашиваются вместе с окном/акцентом.
+           Эффекты (тени, свечение, переходы) гасятся режимом «Лёгкий интерфейс».
+           ===================================================================== */
+        :root {
+            --radius-sm: 10px;
+            --radius-md: 14px;
+            --radius-lg: 20px;
+            --line: color-mix(in srgb, var(--text) 10%, transparent);
+            --line-strong: color-mix(in srgb, var(--text) 20%, transparent);
+            --surface: color-mix(in srgb, var(--text) 5%, transparent);
+            --surface-hover: color-mix(in srgb, var(--text) 9%, transparent);
+            --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+            --shadow-card: 0 14px 44px rgba(0, 0, 0, 0.42);
+            --glow-ok: 0 0 10px rgba(61, 220, 132, 0.75);
+        }
+
+        /* Скроллбар: тонкий и ненавязчивый, акцентом подсвечивается только при наведении */
+        * { scrollbar-color: var(--line-strong) transparent; }
+        *::-webkit-scrollbar-track { background: transparent; }
+        *::-webkit-scrollbar-thumb {
+            background: var(--line-strong); background-clip: padding-box;
+            border: 3px solid transparent; border-radius: 8px;
+        }
+        *::-webkit-scrollbar-thumb:hover { background: var(--accent); background-clip: padding-box; }
+
+        /* Единый фокус с клавиатуры */
+        button:focus-visible, [role="button"]:focus-visible, .settings-tab:focus-visible {
+            outline: 2px solid var(--accent); outline-offset: 2px;
+        }
+
+        /* Кнопки */
+        .btn-primary, .btn-secondary, .btn-file-label, .btn-inline, .action-btn, .icon-btn,
+        .call-leave-mini, .settings-tab, .sidebar-item, .server-icon, .playlist-ctrl-btn {
+            transition: background-color 0.15s var(--ease), border-color 0.15s var(--ease), color 0.15s var(--ease),
+                        transform 0.12s var(--ease), filter 0.15s var(--ease), border-radius 0.2s var(--ease);
+        }
+        .btn-primary { border-radius: var(--radius-sm); }
+        .btn-primary:hover { background: var(--accent); filter: brightness(1.12); }
+        .btn-primary:disabled { filter: none; }
+        .btn-secondary { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); }
+        .btn-secondary:hover { background: var(--surface-hover); border-color: var(--line-strong); }
+        .btn-file-label { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); }
+        .btn-file-label:hover { background: var(--surface-hover); border-color: var(--line-strong); }
+        .action-btn, .icon-btn { background: var(--surface); border-radius: var(--radius-sm); }
+        .action-btn:not(.active):hover, .icon-btn:not(.active):hover { background: var(--surface-hover); }
+        .action-btn:active, .icon-btn:active { transform: scale(0.96); }
+        .icon-btn:disabled:active { transform: none; }
+
+        /* Поля ввода */
+        .login-card input, .chat-input-area input, .chat-input-area textarea,
+        .input-group input, .input-group select, .input-group textarea,
+        .control-group select, .settings-search, .playlist-folder-select,
+        .theme-color-hex-input, .input-with-btn input {
+            background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm);
+            transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease), background-color 0.15s var(--ease);
+        }
+        .login-card input:focus, .chat-input-area input:focus, .chat-input-area textarea:focus,
+        .input-group input:focus, .input-group select:focus, .input-group textarea:focus,
+        .control-group select:focus, .settings-search:focus, .playlist-folder-select:focus,
+        .theme-color-hex-input:focus, .input-with-btn input:focus {
+            border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); background: var(--surface);
+        }
+
+        /* Ползунки: тонкая дорожка с заливкой акцентом и белым «бегунком» (заливку --fill ведёт script.js) */
+        input[type="range"] {
+            -webkit-appearance: none; appearance: none; background: transparent; border: 0; padding: 0;
+            height: 18px; cursor: pointer; outline: none;
+        }
+        input[type="range"]::-webkit-slider-runnable-track {
+            height: 4px; border-radius: 2px;
+            background: linear-gradient(to right, var(--accent) var(--fill, 0%), var(--line-strong) var(--fill, 0%));
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none; width: 14px; height: 14px; margin-top: -5px; border: 0; border-radius: 50%;
+            background: #fff; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent), 0 1px 3px rgba(0, 0, 0, 0.4);
+            transition: transform 0.12s var(--ease);
+        }
+        input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.15); }
+
+        /* Окна и карточки */
+        .modal-card, .login-card { border-color: var(--line); border-radius: var(--radius-lg); }
+        .modal-overlay { background: rgba(0, 0, 0, 0.62); }
+        .toast {
+            background: var(--bg-card); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+            border-radius: var(--radius-md); padding: 11px 16px;
+        }
+
+        /* Боковая панель и серверы */
+        .sidebar-item { border-radius: var(--radius-sm); }
+        .sidebar-item:hover { background: var(--surface); color: var(--text); }
+        .sidebar-section h3 { color: var(--text-muted); font-weight: 700; letter-spacing: 0.08em; }
+        .server-icon:hover { transform: translateY(-1px); }
+        .server-icon.active { box-shadow: 0 0 14px color-mix(in srgb, var(--accent) 50%, transparent); }
+        .servers-rail { gap: 10px; }
+
+        /* Настройки: вкладки */
+        .settings-tabs { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); }
+        .settings-tab { border-radius: 8px; }
+        .settings-tab:hover:not(.active) { background: var(--surface-hover); }
+
+        /* Чат */
+        .chat-message { border-radius: var(--radius-sm); }
+        .chat-message.chat-whisper { border-radius: var(--radius-sm); }
+        .top-bar, .chat-panel, .chat-input-area, .bottom-actions { border-color: var(--line); }
+
+        /* Шапка окна */
+        .titlebar-btn { border-radius: 8px; transition: background-color 0.15s var(--ease), color 0.15s var(--ease); }
     </style>
 </head>
 <body>

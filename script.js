@@ -9752,3 +9752,29 @@ function spTogglePop(force) {
     renderSoundpad();
     syncGlobalShortcuts();
 })();
+
+
+// ---- Единый стиль: заливка всех ползунков акцентным цветом ----
+// CSS рисует дорожку градиентом по переменной --fill. Её ведёт этот блок: при вводе, при программной
+// установке .value (громкость, пороги и т.д.) и для ползунков, созданных позже.
+(function initRangeFill() {
+    try {
+        const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+        if (desc && desc.set && desc.get) {
+            Object.defineProperty(HTMLInputElement.prototype, 'value', {
+                configurable: true,
+                enumerable: desc.enumerable,
+                get: desc.get,
+                set(v) {
+                    desc.set.call(this, v);
+                    if (this.type === 'range') updateSeekFill(this);
+                }
+            });
+        }
+    } catch (e) { /* без патча заливка обновляется только при вводе */ }
+    document.addEventListener('input', (e) => { if (e.target && e.target.type === 'range') updateSeekFill(e.target); }, true);
+    const initAll = () => document.querySelectorAll('input[type="range"]').forEach(updateSeekFill);
+    initAll();
+    // ползунки в скрытых вкладках/окнах получают значения позже — обновляем при открытии настроек
+    document.addEventListener('click', (e) => { if (e.target && e.target.closest && e.target.closest('.settings-tab, #settings-btn')) setTimeout(initAll, 0); }, true);
+})();
