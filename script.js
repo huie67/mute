@@ -3174,7 +3174,8 @@ function updatePlaylistWidget() {
     const current = getActivePlaylistTracks()[playlistCurrentIndex];
     if (current) {
         playlistTrackNameEl.textContent = stripExt(current.name);
-        playlistTrackSubEl.textContent = `Трек ${playlistCurrentIndex + 1} из ${getActivePlaylistTracks().length}`;
+        const folderNow = playlistFolders.find(f => f.id === playlistActiveFolderId);
+        playlistTrackSubEl.textContent = `${folderNow ? folderNow.name : 'Плейлист'} · ${playlistCurrentIndex + 1} из ${getActivePlaylistTracks().length}`;
     } else {
         playlistTrackNameEl.textContent = 'Нет трека';
         playlistTrackSubEl.textContent = hasTracks ? 'Выберите трек' : 'Плейлист пуст';
@@ -3187,21 +3188,192 @@ function updatePlaylistWidget() {
     playlistPlayPauseBtn.disabled = noTracks;
 }
 
-function renderPlaylistSettingsList() {
-    playlistSettingsList.querySelectorAll('.playlist-track-row').forEach(el => el.remove());
-    playlistEmptyHint.style.display = getActivePlaylistTracks().length ? 'none' : '';
-    getActivePlaylistTracks().forEach((track, index) => {
-        const row = document.createElement('div');
-        row.className = 'playlist-track-row' + (index === playlistCurrentIndex ? ' is-current' : '');
-        row.innerHTML = `
-            <button class="playlist-track-row-play" type="button" title="Играть"><svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg></button>
-            <span class="playlist-track-row-name">${escapeHtml(stripExt(track.name))}</span>
-            <button class="playlist-track-row-remove" type="button" title="Удалить"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg></button>
-        `;
-        row.querySelector('.playlist-track-row-play').addEventListener('click', () => playPlaylistTrack(index));
-        row.querySelector('.playlist-track-row-remove').addEventListener('click', () => removePlaylistTrack(track.id));
-        playlistSettingsList.appendChild(row);
+const PL_ICON = {
+    chevron: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>',
+    plus: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>',
+    edit: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>',
+    trash: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg>',
+    play: '<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor"><polygon points="7 4 20 12 7 20 7 4"></polygon></svg>',
+    x: '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg>',
+    grip: '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><circle cx="9" cy="6" r="1.6"></circle><circle cx="15" cy="6" r="1.6"></circle><circle cx="9" cy="12" r="1.6"></circle><circle cx="15" cy="12" r="1.6"></circle><circle cx="9" cy="18" r="1.6"></circle><circle cx="15" cy="18" r="1.6"></circle></svg>'
+};
+let playlistDragTrackId = null;
+let playlistAddTargetFolderId = null; // в какой плейлист добавляем выбранные файлы
+
+function playlistTrackIndexInFolder(folderId, trackId) {
+    return playlistTracks.filter(t => t.folderId === folderId).findIndex(t => t.id === trackId);
+}
+
+// Переключает «текущий» плейлист (тот, из которого играют и который показывает виджет).
+function switchPlaylistFolder(folderId) {
+    if (folderId === playlistActiveFolderId || !playlistFolders.some(f => f.id === folderId)) return;
+    playlistActiveFolderId = folderId;
+    localStorage.setItem(PLAYLIST_ACTIVE_FOLDER_KEY, playlistActiveFolderId);
+    playlistCurrentIndex = -1;
+    playlistAudio.pause();
+    playlistAudio.removeAttribute('src');
+    if (playlistCurrentObjectUrl) { URL.revokeObjectURL(playlistCurrentObjectUrl); playlistCurrentObjectUrl = null; }
+}
+
+// Нажатие на трек в любом плейлисте: делаем его текущим и играем
+function playTrackFromFolder(folderId, trackId) {
+    switchPlaylistFolder(folderId);
+    const idx = playlistTrackIndexInFolder(folderId, trackId);
+    if (idx !== -1) playPlaylistTrack(idx);
+}
+
+function movePlaylistTrackToFolder(trackId, folderId) {
+    const track = playlistTracks.find(t => t.id === trackId);
+    if (!track || track.folderId === folderId || !playlistFolders.some(f => f.id === folderId)) return;
+    // запоминаем, какой трек играет, чтобы индекс остался верным после переноса
+    const curId = (getActivePlaylistTracks()[playlistCurrentIndex] || {}).id;
+    track.folderId = folderId;
+    savePlaylistMeta(playlistTracks);
+    if (curId) {
+        if (curId === trackId && folderId !== playlistActiveFolderId) {
+            playlistAudio.pause();
+            playlistAudio.removeAttribute('src');
+            if (playlistCurrentObjectUrl) { URL.revokeObjectURL(playlistCurrentObjectUrl); playlistCurrentObjectUrl = null; }
+            playlistCurrentIndex = -1;
+        } else {
+            playlistCurrentIndex = playlistTrackIndexInFolder(playlistActiveFolderId, curId);
+        }
+    }
+    const f = playlistFolders.find(x => x.id === folderId);
+    if (f) f.collapsed = false;
+    savePlaylistFolders();
+    refreshPlaylistUi();
+}
+
+function buildPlaylistTrackRow(track, folder, index) {
+    const isCurrentFolder = folder.id === playlistActiveFolderId;
+    const row = document.createElement('div');
+    row.className = 'playlist-track-row' + (isCurrentFolder && index === playlistCurrentIndex ? ' is-current' : '');
+
+    const grip = document.createElement('span');
+    grip.className = 'sp-grip';
+    grip.title = 'Перетащите в другой плейлист';
+    grip.draggable = true;
+    grip.innerHTML = PL_ICON.grip;
+    grip.addEventListener('dragstart', (e) => {
+        playlistDragTrackId = track.id;
+        row.classList.add('dragging');
+        if (e.dataTransfer) { e.dataTransfer.setData('text/plain', track.id); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setDragImage(row, 16, 16); }
     });
+    grip.addEventListener('dragend', () => {
+        playlistDragTrackId = null;
+        row.classList.remove('dragging');
+        document.querySelectorAll('.sp-section.drop-target').forEach(el => el.classList.remove('drop-target'));
+    });
+
+    const play = document.createElement('button');
+    play.className = 'playlist-track-row-play';
+    play.type = 'button';
+    play.title = 'Играть';
+    play.innerHTML = PL_ICON.play;
+    play.addEventListener('click', () => playTrackFromFolder(folder.id, track.id));
+
+    const name = document.createElement('span');
+    name.className = 'playlist-track-row-name';
+    name.textContent = stripExt(track.name);
+
+    const remove = document.createElement('button');
+    remove.className = 'playlist-track-row-remove';
+    remove.type = 'button';
+    remove.title = 'Удалить';
+    remove.innerHTML = PL_ICON.x;
+    remove.addEventListener('click', () => removePlaylistTrack(track.id));
+
+    row.append(grip, play, name, remove);
+    return row;
+}
+
+// Список: каждый плейлист — раздел, который сворачивается (как в саундпаде)
+function renderPlaylistSettingsList() {
+    if (!playlistSettingsList) return;
+    playlistSettingsList.innerHTML = '';
+    playlistFolders.forEach((folder) => {
+        const tracks = playlistTracks.filter(t => t.folderId === folder.id);
+        const isActiveFolder = folder.id === playlistActiveFolderId;
+
+        const sec = document.createElement('div');
+        sec.className = 'sp-section' + (folder.collapsed ? ' collapsed' : '');
+        sec.dataset.folder = folder.id;
+
+        const head = document.createElement('div');
+        head.className = 'sp-sec-head';
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'sp-sec-toggle';
+        toggle.title = folder.collapsed ? 'Развернуть плейлист' : 'Свернуть плейлист';
+        toggle.innerHTML = PL_ICON.chevron;
+        const nm = document.createElement('span'); nm.className = 'sp-sec-name'; nm.textContent = folder.name;
+        const cnt = document.createElement('span'); cnt.className = 'sp-sec-count'; cnt.textContent = String(tracks.length);
+        toggle.append(nm, cnt);
+        if (isActiveFolder) {
+            const tag = document.createElement('span');
+            tag.className = 'pl-active-tag';
+            tag.textContent = 'Текущий';
+            toggle.appendChild(tag);
+        }
+        toggle.addEventListener('click', () => { folder.collapsed = !folder.collapsed; savePlaylistFolders(); renderPlaylistSettingsList(); });
+
+        const addBtn = document.createElement('button');
+        addBtn.type = 'button'; addBtn.className = 'sp-sec-btn'; addBtn.title = 'Добавить треки в этот плейлист';
+        addBtn.innerHTML = PL_ICON.plus + '<span>Треки</span>';
+        addBtn.addEventListener('click', () => {
+            playlistAddTargetFolderId = folder.id;
+            if (folder.collapsed) { folder.collapsed = false; savePlaylistFolders(); }
+            if (playlistFileInput) playlistFileInput.click();
+        });
+        const renBtn = document.createElement('button');
+        renBtn.type = 'button'; renBtn.className = 'sp-sec-btn'; renBtn.title = 'Переименовать плейлист';
+        renBtn.innerHTML = PL_ICON.edit;
+        renBtn.addEventListener('click', () => renamePlaylistFolder(folder.id));
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button'; delBtn.className = 'sp-sec-btn danger'; delBtn.title = 'Удалить плейлист';
+        delBtn.innerHTML = PL_ICON.trash;
+        delBtn.disabled = playlistFolders.length <= 1;
+        delBtn.addEventListener('click', () => deletePlaylistFolder(folder.id));
+        head.append(toggle, addBtn, renBtn, delBtn);
+
+        const body = document.createElement('div');
+        body.className = 'sp-sec-body';
+        if (!tracks.length) {
+            const empty = document.createElement('div');
+            empty.className = 'sp-sec-empty';
+            empty.textContent = 'Пусто. Нажмите «Треки», чтобы добавить файлы, или перетащите сюда трек из другого плейлиста.';
+            body.appendChild(empty);
+        }
+        tracks.forEach((track, i) => body.appendChild(buildPlaylistTrackRow(track, folder, i)));
+
+        sec.addEventListener('dragover', (e) => { if (playlistDragTrackId) { e.preventDefault(); sec.classList.add('drop-target'); } });
+        sec.addEventListener('dragleave', (e) => { if (!sec.contains(e.relatedTarget)) sec.classList.remove('drop-target'); });
+        sec.addEventListener('drop', (e) => {
+            e.preventDefault();
+            sec.classList.remove('drop-target');
+            const id = playlistDragTrackId;
+            playlistDragTrackId = null;
+            if (id) movePlaylistTrackToFolder(id, folder.id);
+        });
+
+        sec.append(head, body);
+        playlistSettingsList.appendChild(sec);
+    });
+}
+
+function renamePlaylistFolder(folderId) {
+    const folder = playlistFolders.find(f => f.id === folderId);
+    if (!folder) return;
+    const clean = String(prompt('Новое название плейлиста:', folder.name) || '').trim().slice(0, 40);
+    if (!clean || clean === folder.name) return;
+    if (playlistFolders.some(f => f.id !== folderId && f.name.toLowerCase() === clean.toLowerCase())) {
+        alert('Плейлист с таким названием уже существует.');
+        return;
+    }
+    folder.name = clean;
+    savePlaylistFolders();
+    refreshPlaylistUi();
 }
 
 function renderPlaylistFolders() {
@@ -3214,48 +3386,45 @@ function renderPlaylistFolders() {
         option.selected = folder.id === playlistActiveFolderId;
         playlistFolderSelect.appendChild(option);
     });
-    playlistFolderDeleteBtn.disabled = playlistFolders.length <= 1;
+    if (playlistFolderDeleteBtn) playlistFolderDeleteBtn.disabled = playlistFolders.length <= 1;
 }
 
 function createPlaylistFolder() {
     const name = prompt('Название нового плейлиста:');
-    const clean = String(name || '').trim();
+    const clean = String(name || '').trim().slice(0, 40);
     if (!clean) return;
     if (playlistFolders.some(f => f.name.toLowerCase() === clean.toLowerCase())) {
         alert('Плейлист с таким названием уже существует.');
         return;
     }
-    const folder = { id: `folder_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, name: clean };
-    playlistFolders.push(folder);
-    playlistActiveFolderId = folder.id;
+    // Новый плейлист просто появляется в списке; текущая музыка не прерывается
+    playlistFolders.push({ id: `folder_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, name: clean, collapsed: false });
     savePlaylistFolders();
-    localStorage.setItem(PLAYLIST_ACTIVE_FOLDER_KEY, playlistActiveFolderId);
-    playlistCurrentIndex = -1;
-    playlistAudio.pause();
-    playlistAudio.removeAttribute('src');
-    renderPlaylistFolders();
     refreshPlaylistUi();
 }
 
-function deleteActivePlaylistFolder() {
+function deletePlaylistFolder(folderId) {
     if (playlistFolders.length <= 1) {
         alert('Нельзя удалить последний плейлист.');
         return;
     }
-    const folder = playlistFolders.find(f => f.id === playlistActiveFolderId);
+    const folder = playlistFolders.find(f => f.id === folderId);
     if (!folder || !confirm(`Удалить плейлист «${folder.name}» вместе со всеми его треками?`)) return;
+    const wasActive = folder.id === playlistActiveFolderId;
     const ids = new Set(playlistTracks.filter(t => t.folderId === folder.id).map(t => t.id));
     playlistTracks = playlistTracks.filter(t => t.folderId !== folder.id);
     ids.forEach(id => playlistDbDelete(id).catch(() => {}));
     playlistFolders = playlistFolders.filter(f => f.id !== folder.id);
-    playlistActiveFolderId = playlistFolders[0].id;
+    if (wasActive) {
+        playlistActiveFolderId = playlistFolders[0].id;
+        localStorage.setItem(PLAYLIST_ACTIVE_FOLDER_KEY, playlistActiveFolderId);
+        playlistCurrentIndex = -1;
+        playlistAudio.pause();
+        playlistAudio.removeAttribute('src');
+        if (playlistCurrentObjectUrl) { URL.revokeObjectURL(playlistCurrentObjectUrl); playlistCurrentObjectUrl = null; }
+    }
     savePlaylistFolders();
     savePlaylistMeta(playlistTracks);
-    localStorage.setItem(PLAYLIST_ACTIVE_FOLDER_KEY, playlistActiveFolderId);
-    playlistCurrentIndex = -1;
-    playlistAudio.pause();
-    playlistAudio.removeAttribute('src');
-    renderPlaylistFolders();
     refreshPlaylistUi();
 }
 
@@ -3271,7 +3440,6 @@ if (playlistFolderSelect) {
     });
 }
 if (playlistFolderNewBtn) playlistFolderNewBtn.addEventListener('click', createPlaylistFolder);
-if (playlistFolderDeleteBtn) playlistFolderDeleteBtn.addEventListener('click', deleteActivePlaylistFolder);
 
 function refreshPlaylistUi() {
     renderPlaylistFolders();
@@ -3440,7 +3608,8 @@ playlistWidgetInfo.addEventListener('click', () => {
     settingsModal.style.display = 'flex';
 });
 
-async function addPlaylistTracks(files) {
+async function addPlaylistTracks(files, targetFolderId) {
+    const folderId = (targetFolderId && playlistFolders.some(f => f.id === targetFolderId)) ? targetFolderId : playlistActiveFolderId;
     for (const file of Array.from(files || [])) {
         if (file.size > PLAYLIST_MAX_TRACK_SIZE) {
             alert(`Файл «${file.name}» слишком большой (максимум 20 МБ).`);
@@ -3453,7 +3622,7 @@ async function addPlaylistTracks(files) {
                 id,
                 name: file.name,
                 addedAt: Date.now(),
-                folderId: playlistActiveFolderId
+                folderId
             });
             savePlaylistMeta(playlistTracks);
         } catch (e) {
@@ -3465,6 +3634,16 @@ async function addPlaylistTracks(files) {
 }
 
 async function removePlaylistTrack(id) {
+    const anyTrack = playlistTracks.find(t => t.id === id);
+    if (!anyTrack) return;
+    if (anyTrack.folderId !== playlistActiveFolderId) {
+        // трек из другого (не текущего) плейлиста: текущее воспроизведение не затрагиваем
+        playlistTracks = playlistTracks.filter(t => t.id !== id);
+        savePlaylistMeta(playlistTracks);
+        try { await playlistDbDelete(id); } catch (e) { /* ignore */ }
+        refreshPlaylistUi();
+        return;
+    }
     const activeTracks = getActivePlaylistTracks();
     const index = activeTracks.findIndex(t => t.id === id);
     if (index === -1) return;
@@ -3485,8 +3664,9 @@ async function removePlaylistTrack(id) {
 
 playlistFileInput.addEventListener('change', () => {
     if (playlistFileInput.files && playlistFileInput.files.length) {
-        addPlaylistTracks(playlistFileInput.files);
+        addPlaylistTracks(playlistFileInput.files, playlistAddTargetFolderId);
     }
+    playlistAddTargetFolderId = null;
     playlistFileInput.value = '';
 });
 
