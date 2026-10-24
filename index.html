@@ -3563,6 +3563,27 @@
             flex: none; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
             padding: 1px 6px; border-radius: 6px; background: var(--accent); color: #fff;
         }
+
+        /* ===== Без «блока в блоке» =====
+           Каждая секция настроек — одна карточка. Внутри неё группы настроек больше не рисуют
+           свои карточки (раньше .control-group имел собственный фон и рамку): они лежат плоско
+           и отделены друг от друга тонкой линией. */
+        .settings-section .control-group, .settings-section .theme-preview-card {
+            background: none; border: 0; border-radius: 0; padding: 0;
+        }
+        .settings-section > .control-group + .control-group,
+        .settings-section > .control-group + .theme-actions-row,
+        .settings-section > .control-group + .profile-hint {
+            padding-top: 12px; border-top: 1px solid var(--card-line);
+        }
+        .settings-section .control-group { gap: 8px; }
+        .settings-section .control-group > label:not(.checkbox-label):not(.btn-file-label) { color: var(--text); font-size: 13px; font-weight: 600; }
+        .settings-section .theme-preview-card { gap: 10px; }
+
+        /* отдельные группы без секции — такие же карточки, как секции */
+        .settings-tab-panel > .control-group {
+            background: var(--card-fill); border: 1px solid var(--card-line); border-radius: var(--radius-md); padding: 12px; gap: 8px;
+        }
     </style>
 </head>
 <body>
