@@ -1676,7 +1676,9 @@ function applyTheme(theme) {
     const isLightBg = (bgParts.r * 299 + bgParts.g * 587 + bgParts.b * 114) / 1000 > 128;
     const raisedShift = isLightBg ? -4 : 4;
     const cardShift = isLightBg ? -7 : 7;
-    const inputShift = isLightBg ? 4 : -3;
+    // Поле ввода — приподнятый, а не «вдавленный» оттенок цвета окна: на тёмной теме светлее карточки
+    // (раньше было темнее фона, отсюда «чёрные» поля); на светлой — чуть светлее фона. Всё от выбранного цвета окна.
+    const inputShift = isLightBg ? 4 : 12;
     const borderShift = isLightBg ? -14 : 14;
     const borderSoftShift = isLightBg ? -9 : 8;
     root.setProperty('--bg-app', bg);
@@ -3247,7 +3249,7 @@ function movePlaylistTrackToFolder(trackId, folderId) {
 function buildPlaylistTrackRow(track, folder, index) {
     const isCurrentFolder = folder.id === playlistActiveFolderId;
     const row = document.createElement('div');
-    row.className = 'playlist-track-row' + (isCurrentFolder && index === playlistCurrentIndex ? ' is-current' : '');
+    row.className = 'sp-row pl-row' + (isCurrentFolder && index === playlistCurrentIndex ? ' playing' : '');
 
     const grip = document.createElement('span');
     grip.className = 'sp-grip';
@@ -3266,24 +3268,28 @@ function buildPlaylistTrackRow(track, folder, index) {
     });
 
     const play = document.createElement('button');
-    play.className = 'playlist-track-row-play';
+    play.className = 'sp-play';
     play.type = 'button';
     play.title = 'Играть';
     play.innerHTML = PL_ICON.play;
     play.addEventListener('click', () => playTrackFromFolder(folder.id, track.id));
 
-    const name = document.createElement('span');
-    name.className = 'playlist-track-row-name';
+    const nameWrap = document.createElement('div');
+    nameWrap.className = 'sp-name-wrap';
+    const name = document.createElement('div');
+    name.className = 'sp-name-static';
     name.textContent = stripExt(track.name);
+    name.title = stripExt(track.name);
+    nameWrap.appendChild(name);
 
     const remove = document.createElement('button');
-    remove.className = 'playlist-track-row-remove';
+    remove.className = 'sp-del';
     remove.type = 'button';
-    remove.title = 'Удалить';
-    remove.innerHTML = PL_ICON.x;
+    remove.title = 'Удалить трек';
+    remove.innerHTML = PL_ICON.trash;
     remove.addEventListener('click', () => removePlaylistTrack(track.id));
 
-    row.append(grip, play, name, remove);
+    row.append(grip, play, nameWrap, remove);
     return row;
 }
 

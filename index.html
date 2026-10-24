@@ -3584,6 +3584,32 @@
         .settings-tab-panel > .control-group {
             background: var(--card-fill); border: 1px solid var(--card-line); border-radius: var(--radius-md); padding: 12px; gap: 8px;
         }
+
+        /* ===== Мягкие поля ввода и единые строки треков =====
+           Все поля берут --bg-input, который теперь считается от цвета окна как приподнятый оттенок
+           (см. applyTheme), поэтому они не чёрные и перекрашиваются вместе с темой. */
+        .login-card input, .chat-input-area input, .chat-input-area textarea,
+        .input-group input, .input-group select, .input-group textarea,
+        .control-group select, .control-group input[type="text"], .control-group input[type="number"],
+        .control-group input[type="password"], .settings-search, .playlist-folder-select,
+        .theme-color-hex-input, .input-with-btn input, .sp-name:focus {
+            background: var(--bg-input);
+        }
+        .login-card input:focus, .chat-input-area input:focus, .chat-input-area textarea:focus,
+        .input-group input:focus, .input-group select:focus, .input-group textarea:focus,
+        .control-group select:focus, .control-group input[type="text"]:focus, .settings-search:focus,
+        .playlist-folder-select:focus, .theme-color-hex-input:focus, .input-with-btn input:focus {
+            background: var(--bg-input);
+        }
+        .control-group input[type="text"], .control-group select, .settings-search { color: var(--text); }
+        .theme-color-swatch { background: var(--bg-input); }
+
+        /* Строки треков плейлиста — как строки звуков в саундпаде */
+        .sp-row.pl-row { grid-template-columns: auto auto minmax(0, 1fr) auto; }
+        .sp-name-static {
+            padding: 3px 6px; font-size: 12.5px; font-weight: 600; color: var(--text);
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
     </style>
 </head>
 <body>
