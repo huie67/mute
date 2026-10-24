@@ -568,7 +568,6 @@ const playlistPrevBtn = document.getElementById('playlist-prev-btn');
 const playlistPlayPauseBtn = document.getElementById('playlist-playpause-btn');
 const playlistNextBtn = document.getElementById('playlist-next-btn');
 const playlistFileInput = document.getElementById('playlist-file-input');
-const playlistRewindBtn = document.getElementById('playlist-rewind-btn');
 const playlistFolderSelect = document.getElementById('playlist-folder-select');
 const playlistFolderNewBtn = document.getElementById('playlist-folder-new-btn');
 const playlistFolderDeleteBtn = document.getElementById('playlist-folder-delete-btn');
@@ -3528,13 +3527,6 @@ playlistAudio.addEventListener('seeked', () => { if (listenSession && listenSess
 playlistPlayPauseBtn.addEventListener('click', togglePlaylistPlayPause);
 playlistPrevBtn.addEventListener('click', playlistPrevTrack);
 playlistNextBtn.addEventListener('click', playlistNextTrack);
-if (playlistRewindBtn) {
-    playlistRewindBtn.addEventListener('click', () => {
-        if (playlistCurrentIndex === -1 || !isFinite(playlistAudio.duration)) return;
-        playlistAudio.currentTime = Math.max(0, playlistAudio.currentTime - 10);
-        if (listenSession && listenSession.role === 'host') sendListenStateToGuest();
-    });
-}
 
 // ---------- Перемотка своего плейлиста (владелец плейлиста всегда может перематывать;
 // если сейчас идёт совместное прослушивание и мы хост — перемотка сама уедет

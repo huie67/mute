@@ -3519,18 +3519,20 @@
            при наведении, текущий — мягкой акцентной заливкой; разделы отделены линией.
            ===================================================================== */
         .playlist-widget { padding: 10px 12px; gap: 8px; border-radius: var(--radius-md); background: var(--surface); border: 1px solid var(--line); }
-        .playlist-widget-info { flex: none; min-width: 0; gap: 2px; display: flex; flex-direction: column; cursor: pointer; }
-        .playlist-widget-top, .playlist-widget-icon { display: none; }
+        .playlist-widget-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 6px; }
+        .playlist-widget-info { flex: 1 1 90px; min-width: 90px; gap: 2px; display: flex; flex-direction: column; cursor: pointer; }
+        .playlist-widget-icon { display: none; }
         .playlist-track-sub {
             order: -1; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted);
         }
         .playlist-track-name { font-size: 14px; font-weight: 600; }
         .playlist-time { width: 36px; font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; text-align: left; }
         .playlist-time.right { text-align: right; }
-        .playlist-widget-controls { margin-left: 0; justify-content: center; gap: 6px; width: 100%; }
-        .playlist-ctrl-btn { width: 30px; height: 30px; border-radius: 50%; background: var(--btn); color: var(--text); }
+        .playlist-widget-controls { display: flex; align-items: center; flex: none; margin-left: auto; gap: 4px; }
+        /* все кнопки управления одного размера и не меняют его ни при наведении, ни при нажатии */
+        .playlist-ctrl-btn { flex: none; width: 28px; height: 28px; border-radius: 50%; background: var(--btn); color: var(--text); transform: none !important; }
         .playlist-ctrl-btn:hover { background: var(--btn-hover); }
-        .playlist-ctrl-btn.playlist-play-btn { width: 36px; height: 36px; background: var(--accent); color: #fff; }
+        .playlist-ctrl-btn.playlist-play-btn { background: var(--accent); color: #fff; }
         .playlist-ctrl-btn.playlist-play-btn:hover { background: var(--accent); filter: brightness(1.12); }
         .playlist-ctrl-btn:disabled { background: var(--btn); }
         .playlist-ctrl-btn.playlist-play-btn:disabled { background: var(--accent); filter: saturate(0.4); }
@@ -3697,21 +3699,22 @@
                     </div>
                 </div>
                 <div class="playlist-widget" id="playlist-widget">
-                    <div class="playlist-widget-info" id="playlist-widget-info" title="Открыть настройки плейлиста">
-                        <span class="playlist-track-sub" id="playlist-track-sub">Плейлист пуст</span>
-                        <span class="playlist-track-name" id="playlist-track-name">Нет трека</span>
+                    <div class="playlist-widget-top">
+                        <div class="playlist-widget-info" id="playlist-widget-info" title="Открыть настройки плейлиста">
+                            <span class="playlist-track-sub" id="playlist-track-sub">Плейлист пуст</span>
+                            <span class="playlist-track-name" id="playlist-track-name">Нет трека</span>
+                        </div>
+                        <div class="playlist-widget-controls">
+                            <button class="playlist-ctrl-btn" id="playlist-prev-btn" type="button" title="Предыдущий трек"><svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><polygon points="19 20 9 12 19 4 19 20"></polygon><rect x="5" y="4" width="2" height="16"></rect></svg></button>
+                            <button class="playlist-ctrl-btn playlist-play-btn" id="playlist-playpause-btn" type="button" title="Пуск/Пауза"><svg class="icon-play" viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg><svg class="icon-pause" viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg></button>
+                            <button class="playlist-ctrl-btn" id="playlist-next-btn" type="button" title="Следующий трек"><svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><polygon points="5 4 15 12 5 20 5 4"></polygon><rect x="17" y="4" width="2" height="16"></rect></svg></button>
+                            <button class="playlist-ctrl-btn" id="playlist-volume-btn" type="button" title="Громкость плейлиста (только у вас)"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg></button>
+                        </div>
                     </div>
                     <div class="playlist-seek-row" id="playlist-seek-row">
                         <span class="playlist-time" id="playlist-time-current">0:00</span>
                         <input type="range" id="playlist-seek" class="playlist-seek" min="0" max="1000" value="0" step="1">
                         <span class="playlist-time right" id="playlist-time-duration">0:00</span>
-                    </div>
-                    <div class="playlist-widget-controls">
-                        <button class="playlist-ctrl-btn" id="playlist-rewind-btn" type="button" title="Назад на 10 секунд" aria-label="Назад на 10 секунд"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"></path><polyline points="3 4 3 9 8 9"></polyline><text x="12" y="16" text-anchor="middle" font-size="7" fill="currentColor" stroke="none">10</text></svg></button>
-                        <button class="playlist-ctrl-btn" id="playlist-prev-btn" type="button" title="Предыдущий трек"><svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><polygon points="19 20 9 12 19 4 19 20"></polygon><rect x="5" y="4" width="2" height="16"></rect></svg></button>
-                        <button class="playlist-ctrl-btn playlist-play-btn" id="playlist-playpause-btn" type="button" title="Пуск/Пауза"><svg class="icon-play" viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg><svg class="icon-pause" viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg></button>
-                        <button class="playlist-ctrl-btn" id="playlist-next-btn" type="button" title="Следующий трек"><svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><polygon points="5 4 15 12 5 20 5 4"></polygon><rect x="17" y="4" width="2" height="16"></rect></svg></button>
-                        <button class="playlist-ctrl-btn" id="playlist-volume-btn" type="button" title="Громкость плейлиста (только у вас)"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg></button>
                     </div>
                 </div>
                 <div class="action-row">
