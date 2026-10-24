@@ -3151,9 +3151,9 @@
            Эффекты (тени, свечение, переходы) гасятся режимом «Лёгкий интерфейс».
            ===================================================================== */
         :root {
-            --radius-sm: 10px;
-            --radius-md: 14px;
-            --radius-lg: 20px;
+            --radius-sm: 9px;
+            --radius-md: 12px;
+            --radius-lg: 16px;
             --line: color-mix(in srgb, var(--text) 10%, transparent);
             --line-strong: color-mix(in srgb, var(--text) 20%, transparent);
             --surface: color-mix(in srgb, var(--text) 5%, transparent);
@@ -3430,6 +3430,86 @@
             .mention-autocomplete, .emoji-picker, .settings-subtopics.open { animation: none !important; }
             .msg-part, .reaction-chip, .auth-tab, .room-choice-card, .titlebar-btn { transition: none !important; }
         }
+
+        /* =====================================================================
+           ЕДИНЫЙ СТИЛЬ «КАК В ОВЕРЛЕЕ» — часть 3: полный перевод интерфейса
+           Берём из overlay.html буквально: шрифт Segoe UI 14/1.3; блоки-карточки
+           (padding 12, радиус 12, заливка 6% и рамка 8% цвета текста); строки
+           «подпись слева — переключатель справа»; подсказки 12.5 px приглушённым;
+           кнопки с заливкой 12%; красные кружки-флаги с белыми иконками;
+           окна — радиус 16, рамка 14%, тень 0 10 40; появление «прозрачность + сдвиг
+           8 px» за 0.2 с по (0.2, 0, 0, 1). Цвета — из темы (акцент, окно, текст).
+           ===================================================================== */
+        :root {
+            --card-fill: color-mix(in srgb, var(--text) 6%, transparent);
+            --card-line: color-mix(in srgb, var(--text) 8%, transparent);
+            --panel-line: color-mix(in srgb, var(--text) 14%, transparent);
+            --shadow-card: 0 10px 40px rgba(0, 0, 0, 0.55);
+        }
+        html, body, button, input, textarea, select {
+            font-family: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+        }
+        body { font-size: 14px; line-height: 1.35; }
+
+        /* ---- Блоки-карточки (как .pblock панели оверлея) ---- */
+        .settings-section {
+            padding: 12px; gap: 10px; border-radius: var(--radius-md);
+            background: var(--card-fill); border: 1px solid var(--card-line);
+        }
+        .settings-section-title { color: var(--text-muted); letter-spacing: 0.06em; padding: 0; }
+        .settings-tab-panel { gap: 12px; }
+        .settings-body { padding: 20px 24px 24px; }
+        .profile-hint, .theme-sync-hint, .sp-hint, .playlist-empty-hint { font-size: 12.5px; color: var(--text-muted); }
+        .control-group label { font-size: 12px; color: var(--text-muted); }
+        .sound-row { background: var(--card-fill); border: 1px solid var(--card-line); border-radius: var(--radius-sm); }
+        .sound-row-name { font-weight: 600; }
+
+        /* ---- Строки «подпись — переключатель» (как .popt) ---- */
+        .checkbox-label {
+            flex-direction: row-reverse; justify-content: space-between; gap: 12px;
+            font-size: 13px; color: var(--text); padding: 2px 0;
+        }
+        .sp-opt { font-size: 13px; }
+
+        /* ---- Кнопки: заливка 12%, без рамок, вес 600 ---- */
+        .btn-secondary-ghost, .sound-icon-btn {
+            background: var(--btn); border: 0; color: var(--text); border-radius: var(--radius-sm);
+            transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+        }
+        .btn-secondary-ghost:hover, .sound-icon-btn:hover { background: var(--btn-hover); color: var(--text); border: 0; }
+        .sound-icon-btn { border-radius: 6px; color: var(--text-muted); }
+        .btn-danger-ghost {
+            background: color-mix(in srgb, var(--danger) 14%, transparent); border: 0; color: var(--danger);
+            border-radius: var(--radius-sm); font-weight: 600;
+        }
+        .btn-danger-ghost:hover { background: color-mix(in srgb, var(--danger) 24%, transparent); }
+        .btn-primary, .btn-danger, .btn-secondary, .btn-secondary-ghost, .btn-file-label, .btn-danger-ghost { font-weight: 600; }
+
+        /* ---- Окна: радиус 16, рамка 14%, тень, появление со сдвигом 8 px ---- */
+        .modal-card, .login-card { border: 1px solid var(--panel-line); border-radius: var(--radius-lg); box-shadow: var(--shadow-card); }
+        .modal-card { animation: ui-rise-in var(--t-med) var(--ease) backwards; }
+        .user-volume-popover, .demo-volume-popup, .soundpad-pop:not([hidden]) { animation: ui-rise-in 0.16s var(--ease) backwards; }
+        .user-volume-popover, .demo-volume-popup, .soundpad-pop { border: 1px solid var(--panel-line); border-radius: var(--radius-md); box-shadow: var(--shadow-card); }
+        .modal-card h3 { font-weight: 700; }
+        .toast { border-radius: var(--radius-md); box-shadow: var(--shadow-card); }
+
+        /* ---- Участники и статусы: красные кружки-флаги с белыми иконками ---- */
+        .voice-user-row .voice-user-name { font-weight: 600; }
+        .status-badge { background: var(--danger); border: 0; color: #fff; }
+        .status-badge svg { width: 10px; height: 10px; stroke: #fff; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+
+        /* ---- Плеер как блок «Музыка» оверлея ---- */
+        .playlist-track-name { font-size: 13px; font-weight: 600; }
+
+        /* ---- Видео: рамка-кадр как #demo-frame (радиус 8, тёмная подложка) ---- */
+        .video-wrapper { border-radius: 8px; background: rgba(0, 0, 0, 0.35); }
+
+        /* ---- Метки-пилюли (как .msg-tag): счётчики, роли ---- */
+        .unread-count-badge { font-weight: 700; letter-spacing: 0.02em; }
+
+        /* ---- Заголовки экранов ---- */
+        .top-bar { border-bottom-color: var(--line); }
+        .top-bar h2, #room-title { font-weight: 700; }
     </style>
 </head>
 <body>
