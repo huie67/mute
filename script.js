@@ -1538,7 +1538,7 @@ document.addEventListener('DOMContentLoaded', function () {
             it.sec.classList.remove('flash-section');
             void it.sec.offsetWidth;
             it.sec.classList.add('flash-section');
-            setTimeout(() => it.sec.classList.remove('flash-section'), 1300);
+            setTimeout(() => it.sec.classList.remove('flash-section'), 1000);
         }, 60);
     }
     function run() {
@@ -1676,9 +1676,10 @@ function applyTheme(theme) {
     const isLightBg = (bgParts.r * 299 + bgParts.g * 587 + bgParts.b * 114) / 1000 > 128;
     const raisedShift = isLightBg ? -4 : 4;
     const cardShift = isLightBg ? -7 : 7;
-    // Поле ввода — приподнятый, а не «вдавленный» оттенок цвета окна: на тёмной теме светлее карточки
-    // (раньше было темнее фона, отсюда «чёрные» поля); на светлой — чуть светлее фона. Всё от выбранного цвета окна.
-    const inputShift = isLightBg ? 4 : 12;
+    // Поле ввода — мягкий оттенок цвета окна: на тёмной теме чуть светлее фона, но темнее карточки-секции
+    // (раньше было темнее фона — «чёрное», потом светлее карточки — не отличалось от блока);
+    // на светлой — чуть светлее фона. Всё считается от выбранного цвета окна.
+    const inputShift = isLightBg ? 4 : 7;
     const borderShift = isLightBg ? -14 : 14;
     const borderSoftShift = isLightBg ? -9 : 8;
     root.setProperty('--bg-app', bg);
@@ -6731,7 +6732,7 @@ function renderSettingsSubtopics(tabName) {
                 sec.classList.remove('flash-section');
                 void sec.offsetWidth;
                 sec.classList.add('flash-section');
-                setTimeout(() => sec.classList.remove('flash-section'), 1300);
+                setTimeout(() => sec.classList.remove('flash-section'), 1000);
             });
             list.appendChild(b);
         });

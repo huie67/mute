@@ -3610,6 +3610,20 @@
             padding: 3px 6px; font-size: 12.5px; font-weight: 600; color: var(--text);
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
         }
+
+        /* ===== Подсветка настройки при переходе из меню/поиска =====
+           Заливка и контур ВНУТРИ карточки (кольцо снаружи обрезалось краем прокрутки и пропадало
+           в «Лёгком интерфейсе», где отключены тени и анимации). Класс ставит script.js на 1 секунду,
+           плавный уход — через transition; без переходов выключение просто мгновенное. */
+        .settings-section {
+            outline: 2px solid transparent; outline-offset: -2px; scroll-margin-top: 12px;
+            transition: background-color 0.4s var(--ease), outline-color 0.4s var(--ease);
+        }
+        .settings-section.flash-section {
+            animation: none;
+            background: color-mix(in srgb, var(--accent) 16%, var(--card-fill));
+            outline-color: var(--accent);
+        }
     </style>
 </head>
 <body>
