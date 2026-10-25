@@ -3670,6 +3670,41 @@
             width: 36px; height: 36px; min-width: 36px; flex: 0 0 36px; margin-bottom: 1px; border-radius: var(--radius-sm);
         }
         .attach-btn:not(:disabled):hover { background: var(--btn); color: var(--text); }
+
+        /* ===== Единый «док»: нижняя панель слева и строка ввода чата =====
+           Один и тот же цвет (--dock-bg считается от цвета окна), одна рамка, один радиус и
+           одинаковые кнопки без подложки — поэтому два блока выглядят как пара. Блок кнопок
+           слева сделан компактнее: меньше отступы, ниже кнопки, плотнее плеер. */
+        :root { --dock-bg: var(--bg-elevated); --dock-line: var(--line); --dock-btn: 36px; }
+        .bottom-actions, .chat-input-area {
+            background: var(--dock-bg); border: 1px solid var(--dock-line); border-radius: var(--radius-md);
+        }
+        .bottom-actions { padding: 6px; gap: 6px; }
+        .chat-input-area { padding: 5px 6px 5px 12px; }
+
+        /* одинаковые кнопки в обоих блоках */
+        .bottom-actions .icon-btn, .attach-btn, .playlist-ctrl-btn {
+            background: transparent; border: 0; color: var(--text-muted); border-radius: var(--radius-sm);
+        }
+        .bottom-actions .icon-btn { height: var(--dock-btn); }
+        .attach-btn { width: var(--dock-btn); height: var(--dock-btn); min-width: var(--dock-btn); flex: 0 0 var(--dock-btn); margin-bottom: 0; }
+        .bottom-actions .icon-btn svg, .attach-btn svg { width: 18px; height: 18px; }
+        .bottom-actions .icon-btn:not(.active):hover, .attach-btn:not(:disabled):hover, .playlist-ctrl-btn:not(:disabled):hover {
+            background: var(--btn); color: var(--text);
+        }
+        .bottom-actions .action-row { gap: 2px; }
+
+        /* плеер внутри блока — плотнее */
+        .bottom-actions .playlist-widget, .bottom-actions .listen-session-bar { padding: 2px 4px 8px; gap: 4px; }
+        .bottom-actions .playlist-widget-top { gap: 6px; row-gap: 4px; }
+        .bottom-actions .playlist-track-name { font-size: 13px; }
+        .bottom-actions .playlist-track-sub { font-size: 10px; }
+        .playlist-ctrl-btn { width: 26px; height: 26px; }
+        .bottom-actions .playlist-widget-controls { gap: 2px; }
+
+        /* поле чата в той же высоте, что и ряд кнопок слева */
+        .chat-input-area input, .chat-input-area textarea,
+        .chat-input-area input:focus, .chat-input-area textarea:focus { min-height: 36px; padding: 7px 4px; }
     </style>
 </head>
 <body>
