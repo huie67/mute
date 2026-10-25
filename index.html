@@ -3624,6 +3624,52 @@
             background: color-mix(in srgb, var(--accent) 16%, var(--card-fill));
             outline-color: var(--accent);
         }
+
+        /* ===== Нижняя панель слева и строка ввода чата — по одному блоку, кнопки без плашек =====
+           Плеер, совместное прослушивание и ряд кнопок (микрофон, звук, саундпад, настройки) лежат
+           в ОДНОЙ карточке: у вложенных элементов нет своего фона и рамки, они разделены тонкой линией.
+           Кнопки без подложки: иконка приглушённая, при наведении появляется мягкая заливка.
+           В чате так же: поле и кнопки — одна «плашка», у поля и кнопок своего фона и рамки нет. */
+        .bottom-actions {
+            gap: 10px; padding: 10px; border: 1px solid var(--card-line); border-top-width: 1px;
+            border-radius: var(--radius-md); background: var(--card-fill);
+        }
+        .bottom-actions .playlist-widget, .bottom-actions .listen-session-bar {
+            background: none; border: 0; border-radius: 0; padding: 0 0 10px; border-bottom: 1px solid var(--card-line);
+        }
+        .bottom-actions .action-row { gap: 4px; }
+        .bottom-actions .icon-btn { background: transparent; color: var(--text-muted); }
+        .bottom-actions .icon-btn:not(.active):hover { background: var(--btn); color: var(--text); }
+        .bottom-actions .icon-btn.active, .bottom-actions .icon-btn.active:hover {
+            background: color-mix(in srgb, var(--danger) 18%, transparent); color: var(--danger);
+        }
+        #soundpad-btn.active, #soundpad-btn.active:hover { background: var(--accent-soft); color: var(--accent); }
+
+        /* кнопки плеера: без подложки, играть — цветом акцента */
+        .playlist-ctrl-btn, .playlist-ctrl-btn:disabled { background: transparent; color: var(--text-muted); }
+        .playlist-ctrl-btn:not(:disabled):hover { background: var(--btn); color: var(--text); }
+        .playlist-ctrl-btn.playlist-play-btn, .playlist-ctrl-btn.playlist-play-btn:disabled { background: transparent; color: var(--accent); filter: none; }
+        .playlist-ctrl-btn.playlist-play-btn:not(:disabled):hover { background: var(--btn); color: var(--accent); filter: none; }
+        .playlist-ctrl-btn:disabled { opacity: 0.4; }
+
+        /* Чат: поле и кнопки — одна плашка */
+        .chat-input-area {
+            margin: 10px 12px 14px; padding: 4px 6px 4px 12px; gap: 2px; align-items: flex-end;
+            border: 1px solid var(--line); border-top: 1px solid var(--line); border-radius: var(--radius-md);
+            background: var(--bg-input);
+            transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+        }
+        .chat-input-area:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+        .chat-input-area input, .chat-input-area textarea,
+        .chat-input-area input:focus, .chat-input-area textarea:focus {
+            background: transparent; border: 0; border-radius: 0; box-shadow: none; padding: 9px 4px; min-height: 40px; color: var(--text);
+        }
+        .attach-btn { color: var(--text-muted); }
+        .attach-btn {
+            background: transparent; border: 0; color: var(--text-muted);
+            width: 36px; height: 36px; min-width: 36px; flex: 0 0 36px; margin-bottom: 1px; border-radius: var(--radius-sm);
+        }
+        .attach-btn:not(:disabled):hover { background: var(--btn); color: var(--text); }
     </style>
 </head>
 <body>
