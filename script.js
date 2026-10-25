@@ -3577,7 +3577,7 @@ playlistVolumeBtn.addEventListener('click', (e) => {
     pop.className = 'user-volume-popover fade-in';
     pop.innerHTML = `
         <div class="user-volume-popover-title">Громкость музыки</div>
-        <input type="range" id="playlist-volume-range" min="0" max="100" step="5" value="${playlistVolumePercent}">
+        <input type="range" id="playlist-volume-range" min="0" max="100" step="1" value="${playlistVolumePercent}">
         <div class="user-volume-popover-value">${playlistVolumePercent}%</div>
         <span class="profile-hint">Только у вас — на плейлист и совместное прослушивание</span>
     `;
@@ -6043,7 +6043,7 @@ function renderRemoteVideoState(peerId) {
             </button>
             <div class="demo-volume-popup" id="demo-vol-popup-${peerId}">
                 <span>Громкость демки: <span id="demo-vol-value-${peerId}">${demoVolumes[peerId] ?? 100}%</span></span>
-                <input type="range" id="demo-vol-slider-${peerId}" min="0" max="150" step="5" value="${demoVolumes[peerId] ?? 100}">
+                <input type="range" id="demo-vol-slider-${peerId}" min="0" max="150" step="1" value="${demoVolumes[peerId] ?? 100}">
             </div>
             <video autoplay playsinline></video>
         `;
@@ -6361,7 +6361,7 @@ function openUserVolumePopover(peerId, anchorEl, username) {
     pop.className = 'user-volume-popover fade-in';
     pop.innerHTML = `
         <div class="user-volume-popover-title">Громкость: <span style="color:${getUserColor(username)}">${escapeHtml(username)}</span></div>
-        <input type="range" id="user-volume-range" min="0" max="500" step="5" value="${percent}">
+        <input type="range" id="user-volume-range" min="0" max="500" step="1" value="${percent}">
         <div class="user-volume-popover-value">${percent}%</div>
         <span class="profile-hint">Меняется только у вас — собеседник об этом не узнает</span>
         <button type="button" class="listen-invite-btn" id="user-local-mute-btn"></button>
@@ -9769,7 +9769,7 @@ function spBuildRow(s) {
     nameWrap.append(name, dur);
 
     const vol = document.createElement('input');
-    vol.type = 'range'; vol.min = '0'; vol.max = '100'; vol.step = '5'; vol.value = String(s.vol);
+    vol.type = 'range'; vol.min = '0'; vol.max = '100'; vol.step = '1'; vol.value = String(s.vol);
     vol.title = 'Громкость этого звука';
     vol.style.setProperty('--fill', s.vol + '%');
     vol.addEventListener('input', () => { s.vol = Number(vol.value); vol.style.setProperty('--fill', vol.value + '%'); spSave(); });
