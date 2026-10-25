@@ -10054,6 +10054,21 @@ function spTogglePop(force) {
     document.addEventListener('input', (e) => { if (e.target && e.target.type === 'range') updateSeekFill(e.target); }, true);
     const initAll = () => document.querySelectorAll('input[type="range"]').forEach(updateSeekFill);
     initAll();
+    // Ползунки, которые строятся позже через innerHTML (громкость участника, демонстрации, плеера и т.д.),
+    // получают значение атрибутом value, а не свойством — заливку для них считает наблюдатель.
+    try {
+        const mo = new MutationObserver((muts) => {
+            for (const m of muts) {
+                if (m.type === 'attributes') { if (m.target.type === 'range') updateSeekFill(m.target); continue; }
+                m.addedNodes.forEach((n) => {
+                    if (n.nodeType !== 1) return;
+                    if (n.matches && n.matches('input[type="range"]')) updateSeekFill(n);
+                    if (n.querySelectorAll) n.querySelectorAll('input[type="range"]').forEach(updateSeekFill);
+                });
+            }
+        });
+        mo.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['value', 'min', 'max'] });
+    } catch (e) { /* без наблюдателя заливка у динамических ползунков появится только после ввода */ }
     // ползунки в скрытых вкладках/окнах получают значения позже — обновляем при открытии настроек
     document.addEventListener('click', (e) => { if (e.target && e.target.closest && e.target.closest('.settings-tab, #settings-btn')) setTimeout(initAll, 0); }, true);
 })();

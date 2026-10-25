@@ -3705,6 +3705,42 @@
         /* поле чата в той же высоте, что и ряд кнопок слева */
         .chat-input-area input, .chat-input-area textarea,
         .chat-input-area input:focus, .chat-input-area textarea:focus { min-height: 36px; padding: 7px 4px; }
+
+        /* =====================================================================
+           ЧАСТЬ 5: переключатели каналов, ползунки в цвете темы, палитра основного экрана
+           ===================================================================== */
+
+        /* ---- «Звук» → «Каналы для этого звука»: мини-переключатели 28×16 ----
+           Общая геометрия переключателей (бегунок 16 px, top: 2px, без transform) ломала их
+           собственные размеры (бегунок 10 px, top: 50%, translate(-50%)): бегунок уезжал вверх.
+           Здесь задана согласованная геометрия: бегунок 12 px, отступ 2 px, ход 12 px. */
+        .sound-channel-row input[type="checkbox"] { width: 28px; height: 16px; flex: 0 0 28px; }
+        .sound-channel-row input[type="checkbox"]::after { top: 2px; left: 2px; width: 12px; height: 12px; transform: none; }
+        .sound-channel-row input[type="checkbox"]:checked::after { transform: translateX(12px); }
+        .sound-channel-row input[type="checkbox"]:active::after { width: 14px; }
+        .sound-channel-row input[type="checkbox"]:checked:active::after { transform: translateX(10px); }
+        .sound-channel-row { padding: 4px 6px; border-radius: 8px; }
+        .sp-opt input[type="checkbox"] { width: 36px; height: 20px; }
+
+        /* ---- Ползунки целиком в цвете темы: заливка, бегунок и ореол ---- */
+        input[type="range"]::-webkit-slider-thumb {
+            background: var(--accent);
+            box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent), 0 1px 3px rgba(0, 0, 0, 0.4);
+        }
+        input[type="range"].playlist-seek::-webkit-slider-thumb,
+        input[type="range"].listen-session-seek::-webkit-slider-thumb,
+        #sp-master-slider::-webkit-slider-thumb { background: var(--accent); }
+        input[type="range"] { accent-color: var(--accent); }
+
+        /* ---- Основной экран той же палитры, что окна и карточки приложения ----
+           Боковая панель и чат — как тело окон (--bg-card), рейка серверов — на ступень темнее,
+           центральная область — цвет окна. Док-блоки (--bg-elevated) на них читаются как приподнятые. */
+        .sidebar, .chat-panel { background: var(--bg-card); }
+        .chat-panel { border-left-color: var(--line); }
+        .servers-rail { background: var(--bg-raised); }
+        .top-bar { background: transparent; }
+        .checkbox-label { color: var(--text); }
+        .demo-volume-popup { background: color-mix(in srgb, var(--bg-card) 94%, transparent); }
     </style>
 </head>
 <body>
