@@ -1736,12 +1736,9 @@ function persistTheme(theme, { syncServer = true } = {}) {
     setThemeSyncStatus('Сохранение на аккаунте…', false);
     themeSaveServerTimer = setTimeout(async () => {
         try {
-            const res = await fetch('/auth/theme', {
+            const res = await authFetch('/auth/theme', {
                 method: 'PUT',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${currentUser.token}`
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ accent: theme.accent, textMode: theme.textMode, bgColor: theme.bgColor })
             });
             if (!res.ok) {
@@ -1789,9 +1786,7 @@ function resetTheme() {
 async function syncThemeFromServer() {
     if (!currentUser.token) return;
     try {
-        const res = await fetch('/auth/theme', {
-            headers: { 'Authorization': `Bearer ${currentUser.token}` }
-        });
+        const res = await authFetch('/auth/theme');
         if (!res.ok) return;
         const data = await res.json();
         if (data && data.theme && (data.theme.accent || data.theme.textMode || data.theme.bgColor)) {
@@ -4097,6 +4092,75 @@ function showAuthError(message) {
     authError.textContent = message;
     authError.style.display = message ? 'block' : 'none';
 }
+
+// ---------- Продление сессии (автовход) ----------
+// Токен аккаунта живёт 30 дней и хранится в профиле. Чтобы не приходилось перезаходить:
+//  • при запуске/обновлении страницы токен тихо продлевается на сервере (/auth/refresh);
+//  • то же раз в несколько часов и при возврате в окно;
+//  • если запрос с токеном вернул 401, один раз продлеваем и повторяем запрос.
+// Результат: 'ok' — продлён; 'invalid' — сервер токен не признаёт (нужен пароль);
+// 'offline' — сервер недоступен (остаёмся на прежнем токене и пробуем позже).
+let lastTokenRefreshAt = 0;
+let tokenRefreshPromise = null;
+async function refreshAuthToken() {
+    if (!currentUser.token) return 'invalid';
+    if (tokenRefreshPromise) return tokenRefreshPromise;
+    tokenRefreshPromise = (async () => {
+        try {
+            const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+            const timer = ctrl ? setTimeout(() => ctrl.abort(), 8000) : null;
+            const res = await fetch('/auth/refresh', {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${currentUser.token}` },
+                signal: ctrl ? ctrl.signal : undefined
+            });
+            if (timer) clearTimeout(timer);
+            if (res.status === 401) return 'invalid';
+            if (!res.ok) return 'offline';
+            const data = await res.json();
+            if (!data || !data.token) return 'offline';
+            currentUser.token = data.token;
+            if (data.username) currentUser.username = data.username;
+            if (data.avatar) currentUser.avatar = data.avatar;
+            lastTokenRefreshAt = Date.now();
+            saveProfileToStorage();
+            return 'ok';
+        } catch (e) {
+            return 'offline';
+        } finally {
+            tokenRefreshPromise = null;
+        }
+    })();
+    return tokenRefreshPromise;
+}
+
+// fetch с токеном: при 401 продлевает сессию и повторяет запрос один раз
+async function authFetch(url, options = {}) {
+    const withToken = () => ({
+        ...options,
+        headers: { ...(options.headers || {}), 'Authorization': `Bearer ${currentUser.token}` }
+    });
+    let res = await fetch(url, withToken());
+    if (res.status === 401 && currentUser.token) {
+        const r = await refreshAuthToken();
+        if (r === 'ok') res = await fetch(url, withToken());
+        else if (r === 'invalid') notifySessionExpired();
+    }
+    return res;
+}
+
+let sessionExpiredNotified = false;
+function notifySessionExpired() {
+    if (sessionExpiredNotified) return;
+    sessionExpiredNotified = true;
+    showToast('Сессия истекла — войдите заново (Настройки → Профиль → Выйти).', 8000);
+}
+
+// Каждые 6 часов и при возврате в окно (если прошло больше часа) — тихо продлеваем сессию
+setInterval(() => { if (currentUser.token) refreshAuthToken(); }, 6 * 60 * 60 * 1000);
+document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && currentUser.token && Date.now() - lastTokenRefreshAt > 60 * 60 * 1000) refreshAuthToken();
+});
 
 function setAuthMode(mode) {
     authMode = mode;
@@ -8983,6 +9047,20 @@ logoutConfirmBtn.addEventListener('click', () => {
         currentUser.token = stored.token || null;
         usernameInput.value = currentUser.username;
         avatarInput.value = currentUser.avatar;
+        // Автовход: перед запуском продлеваем токен. Если сервер его больше не признаёт (например,
+        // истёк срок или аккаунт удалён), честно показываем экран входа с ником, а не делаем вид,
+        // что вы в аккаунте, при том что часть настроек без токена не работает.
+        if (currentUser.token) {
+            const refreshed = await refreshAuthToken();
+            if (refreshed === 'invalid') {
+                currentUser.token = null;
+                clearProfileStorage();
+                setAuthMode('login');
+                showAuthError('Сессия истекла — войдите заново.');
+                passwordInput.focus();
+                return;
+            }
+        }
         await completeLogin();
         syncThemeFromServer(); // подтягиваем тему, если её поменяли на другом устройстве
     }
@@ -9043,12 +9121,9 @@ saveProfileBtn.addEventListener('click', async () => {
         // Если это зарегистрированный аккаунт (есть токен) — сначала сохраняем ник/аватарку
         // на сервере. Он же проверит, не занят ли новый ник, и перевыпустит токен.
         if (currentUser.token) {
-            const res = await fetch('/auth/profile', {
+            const res = await authFetch('/auth/profile', {
                 method: 'PUT',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${currentUser.token}`
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ username: newUsername, avatar: newAvatar })
             });
             const data = await res.json();

@@ -713,11 +713,20 @@ function isTrustedUploadUrl(u) {
 // JWT нужен, чтобы после входа клиент мог доказать серверу, что он — действительно
 // владелец ника (иначе пароль был бы бессмысленным: кто угодно мог бы представиться
 // чужим зарегистрированным ником прямо в чате, без всякого пароля).
-const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
+// Если JWT_SECRET не задан в окружении, раньше секрет генерировался случайно при КАЖДОМ запуске:
+// после деплоя или «засыпания» хостинга все токены становились недействительны, и приложение
+// продолжало считать вас вошедшим, хотя сервер вас уже не узнавал (пока не перезайдёшь).
+// Теперь запасной секрет выводится из DATABASE_URL (он секретный и стабильный между запусками),
+// поэтому вход переживает перезапуски. Для лучшей защиты всё равно задайте свой JWT_SECRET.
+function deriveStableSecret() {
+    const base = process.env.DATABASE_URL;
+    if (!base) return crypto.randomBytes(32).toString('hex');
+    return crypto.createHash('sha256').update('mute-jwt-secret:v1:' + base).digest('hex');
+}
+const JWT_SECRET = process.env.JWT_SECRET || deriveStableSecret();
 if (!process.env.JWT_SECRET) {
-    console.warn('⚠️  JWT_SECRET не задан — сгенерирован временный на время работы процесса. ' +
-        'После перезапуска сервера все выданные токены станут недействительны (потребуется перевход). ' +
-        'Задайте свой JWT_SECRET в .env, чтобы вход сохранялся между перезапусками.');
+    console.warn('⚠️  JWT_SECRET не задан — используется запасной секрет, выведенный из DATABASE_URL ' +
+        '(вход переживает перезапуски). Для надёжности задайте свой JWT_SECRET в .env.');
 }
 
 const USERNAME_MIN = 2;
@@ -840,6 +849,34 @@ app.post('/auth/login', async (req, res) => {
     } catch (err) {
         console.error('❌ Ошибка входа:', err);
         res.status(500).json({ error: 'Не удалось войти' });
+    }
+});
+
+// Продление сессии: клиент присылает свой токен (даже если срок 30 дней уже вышел, но не больше
+// 90 дней с выдачи), сервер проверяет подпись, убеждается, что аккаунт существует, и выдаёт новый токен.
+// Так вход «скользящий»: пока приложением пользуются, перезаходить не нужно.
+const TOKEN_REFRESH_GRACE_SEC = 90 * 24 * 60 * 60;
+app.post('/auth/refresh', async (req, res) => {
+    const authHeader = req.headers.authorization || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    let decoded = null;
+    try {
+        decoded = token ? jwt.verify(token, JWT_SECRET, { ignoreExpiration: true }) : null;
+    } catch (e) { decoded = null; }
+    if (!decoded || !decoded.uid) return res.status(401).json({ error: 'Не авторизован' });
+    const ageSec = Math.floor(Date.now() / 1000) - (decoded.iat || 0);
+    if (ageSec > TOKEN_REFRESH_GRACE_SEC) return res.status(401).json({ error: 'Сессия истекла' });
+    try {
+        const result = await pool.query(
+            'SELECT id, username, avatar, theme_color, theme_text_mode, theme_bg_color FROM users WHERE id = $1',
+            [decoded.uid]
+        );
+        const user = result.rows[0];
+        if (!user) return res.status(401).json({ error: 'Аккаунт не найден' });
+        res.json({ token: signToken(user), username: user.username, avatar: user.avatar, theme: themeFromUserRow(user) });
+    } catch (err) {
+        console.error('❌ Ошибка продления сессии:', err);
+        res.status(500).json({ error: 'Не удалось продлить сессию' });
     }
 });
 
