@@ -6045,7 +6045,7 @@ function renderRemoteVideoState(peerId) {
                 <span>Громкость демки: <span id="demo-vol-value-${peerId}">${demoVolumes[peerId] ?? 100}%</span></span>
                 <input type="range" id="demo-vol-slider-${peerId}" min="0" max="150" step="1" value="${demoVolumes[peerId] ?? 100}">
             </div>
-            <video autoplay playsinline></video>
+            <video autoplay playsinline muted></video>
         `;
         remoteVideos.appendChild(wrap);
         setupDemoVolumeControl(peerId);
@@ -6058,6 +6058,11 @@ function renderRemoteVideoState(peerId) {
     }
 
     const videoEl = wrap.querySelector('video');
+    // ВАЖНО: элемент обязан быть заглушён. В потоке демонстрирующего два аудиотрека (голос и звук
+    // демки), и незаглушённое <video> проигрывало их напрямую на полной громкости, в обход
+    // ползунков: громкость человека (пока он показывает экран) и громкость демки ничего не меняли,
+    // голос ещё и звучал дважды. Реальный звук идёт только через gain-узлы (см. attachRemoteStream).
+    videoEl.muted = true;
     if (videoEl.srcObject !== remoteStream) {
         videoEl.srcObject = remoteStream;
         videoEl.play().catch(err => console.log("[Внимание] Автоплей заблокирован:", err));
@@ -9625,6 +9630,8 @@ async function spPlay(id) {
 
         const inst = {
             sending,
+            gainNode: gain,
+            sound: snd,
             stopped: false,
             stop() { try { src.stop(); } catch (e) { /* уже остановлен */ } },
             finish() {
@@ -9646,6 +9653,14 @@ async function spPlay(id) {
         console.warn('[Саундпад]', e);
         showToast('Не удалось воспроизвести звук: ' + (e && e.message ? e.message : e));
     }
+}
+// Громкость звука/общая громкость меняется на лету, в том числе у уже играющих звуков
+function spApplyLiveVolumes() {
+    spPlaying.forEach((inst) => {
+        if (inst.gainNode && inst.sound) {
+            inst.gainNode.gain.value = (Math.max(0, Math.min(100, inst.sound.vol)) / 100) * (sp.master / 100);
+        }
+    });
 }
 function spPlayToggle(id) {
     if (spPlaying.has(id)) spPlaying.get(id).stop();
@@ -9772,7 +9787,7 @@ function spBuildRow(s) {
     vol.type = 'range'; vol.min = '0'; vol.max = '100'; vol.step = '1'; vol.value = String(s.vol);
     vol.title = 'Громкость этого звука';
     vol.style.setProperty('--fill', s.vol + '%');
-    vol.addEventListener('input', () => { s.vol = Number(vol.value); vol.style.setProperty('--fill', vol.value + '%'); spSave(); });
+    vol.addEventListener('input', () => { s.vol = Number(vol.value); vol.style.setProperty('--fill', vol.value + '%'); spSave(); spApplyLiveVolumes(); });
 
     const keys = document.createElement('span');
     keys.className = 'sp-keys';
@@ -10024,6 +10039,7 @@ function spTogglePop(force) {
     if (spEl.master) spEl.master.addEventListener('input', () => {
         sp.master = Number(spEl.master.value);
         spEl.master.style.setProperty('--fill', sp.master + '%');
+        spApplyLiveVolumes();
         if (spEl.masterVal) spEl.masterVal.textContent = sp.master + '%';
         spSave();
     });
