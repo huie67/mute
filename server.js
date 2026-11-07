@@ -25,6 +25,8 @@ const io = new Server(server, {
 app.use(express.static(__dirname, {
     setHeaders: (res, filePath) => {
         if (/\.(html|js|css)$/i.test(filePath)) res.setHeader('Cache-Control', 'no-cache');
+        // Встроенные звуки: версия в адресе (?v=N в script.js), поэтому кэшируем на год и не перепроверяем.
+        else if (/[\\/]sounds[\\/][^\\/]+\.mp3$/i.test(filePath)) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
     }
 }));
 
