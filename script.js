@@ -702,11 +702,10 @@ const messagesDiv = document.getElementById('messages');
 const messageInput = document.getElementById('message-input');
 const remoteVideos = document.getElementById('remote-videos');
 
-// Локальный кэш истории: повторное переключение между недавно открытыми
-// каналами не ждёт сеть. Храним только ограниченное число комнат, чтобы RAM
-// не росла бесконечно. В кэше лежат данные сообщений, а не декодированные
-// изображения — сами картинки остаются под контролем DOM-лимита.
-const CHAT_HISTORY_CACHE_MAX_ROOMS = 5; // только данные (текст), без картинок/DOM — копейки; DOM держится лишь для открытого канала
+// Кэш истории каналов в памяти ОТКЛЮЧЁН: раньше недавно открытые каналы держались в оперативной памяти,
+// чтобы открываться мгновенно. Теперь канал каждый раз загружается с сервера, а в памяти остаётся
+// только открытый. Чтобы вернуть кэш, поставьте число комнат больше нуля (например, 5).
+const CHAT_HISTORY_CACHE_MAX_ROOMS = 0;
 const CHAT_HISTORY_CACHE_MAX_MESSAGES = 100;
 const chatHistoryCache = new Map();
 
@@ -799,6 +798,7 @@ let chatScrollAnchor = null;    // удерживаемая позиция ча�
 const CHAT_READ_POS_KEY = 'mute:chatReadPosition';
 const CHAT_READ_POS_MAX_ROOMS = 50;
 let chatRenderedRoom = null;       // чей чат сейчас отрисован в messagesDiv
+let chatMemoryReleased = false;    // лента очищена ради экономии памяти (вкладка была неактивна), история загрузится при возврате
 let chatReadPositionByRoom = {};
 try {
     const rawPos = JSON.parse(localStorage.getItem(CHAT_READ_POS_KEY) || '{}');
@@ -829,6 +829,7 @@ function clearChatMessages() {
 }
 
 function getCachedChatHistory(room) {
+    if (CHAT_HISTORY_CACHE_MAX_ROOMS <= 0) return null;
     const key = String(room || '');
     const cached = chatHistoryCache.get(key);
     if (!cached) return null;
@@ -839,6 +840,7 @@ function getCachedChatHistory(room) {
 }
 
 function setCachedChatHistory(room, messages) {
+    if (CHAT_HISTORY_CACHE_MAX_ROOMS <= 0) return;
     const key = String(room || '');
     if (!key || !Array.isArray(messages)) return;
     chatHistoryCache.delete(key);
@@ -5114,6 +5116,10 @@ function selectRoomButton(btn) {
             markRoomRead(roomName);
         } else {
             unreadSnapshotByRoom.delete(String(roomName)); // старый снимок не должен гасить вспышку
+            // Кэша каналов нет — не оставляем в ленте чат прежнего канала, пока история нового грузится с сервера
+            clearChatMessages();
+            lastMessageDateKey = null;
+            chatRenderedRoom = null;
         }
 
         // Запрос к серверу чуть откладываем: при быстром листании каналов уходит только
@@ -6204,7 +6210,7 @@ function buildVoiceUserRow(id, user, interactive = true) {
     row.innerHTML = `
         <div class="user-avatar-wrap">
             <img src="${user.avatar || 'https://api.dicebear.com/7.x/identicon/svg?seed=def'}" class="user-avatar" ${ids('avatar')} alt="">
-            <span class="status-badge mic-mute-badge${(user.micMuted || user.deafened) ? ' visible' : ''}" ${ids('mic-badge')} title="Микрофон выключен">${MIC_OFF_ICON_SVG}</span>
+            <span class="status-badge mic-mute-badge${(user.micMuted && !user.deafened) ? ' visible' : ''}" ${ids('mic-badge')} title="Микрофон выключен">${MIC_OFF_ICON_SVG}</span>
             <span class="status-badge deafen-badge${user.deafened ? ' visible' : ''}" ${ids('deafen-badge')} title="Наушники выключены">${DEAFEN_OFF_ICON_SVG}</span>
         </div>
         <span class="voice-user-name" title="${escapeHtml(user.username || 'Участник')}" style="color:${getUserColor(user.username)}">${escapeHtml(user.username || 'Участник')}</span>
@@ -6567,10 +6573,11 @@ async function pollNetQuality() {
 setInterval(pollNetQuality, NET_QUALITY_POLL_MS);
 
 // Обновляет значки конкретного участника без перерисовки всего списка.
-// При дефене микрофон тоже фактически выключен, поэтому значок мьюта показываем и в этом случае.
+// При дефене показываем ТОЛЬКО значок наушников: микрофон и так подразумевается выключенным,
+// два значка сразу (микрофон + наушники) только загромождали аватарку.
 function setUserStatusBadges(peerId, micMuted, deafened) {
     const micBadge = document.getElementById(`mic-badge-${peerId}`);
-    if (micBadge) micBadge.classList.toggle('visible', !!micMuted || !!deafened);
+    if (micBadge) micBadge.classList.toggle('visible', !!micMuted && !deafened);
     const deafenBadge = document.getElementById(`deafen-badge-${peerId}`);
     if (deafenBadge) deafenBadge.classList.toggle('visible', !!deafened);
 }
@@ -8823,6 +8830,15 @@ socket.on('chat message', (payload) => {
         return;
     }
 
+    // Лента очищена ради памяти (вкладка неактивна): сообщение не рисуем, оно придёт вместе с историей
+    // при возврате; но непрочитанное и звук учитываем, как для любого неоткрытого канала.
+    if (chatMemoryReleased) {
+        if (isOwnMessage) return;
+        addUnreadMessage(room, payload);
+        notifyIncomingMessage(payload, room, senderName);
+        return;
+    }
+
     // Это эхо нашего же сообщения, уже показанного сразу? Тогда просто подтверждаем его.
     if (isOwnMessage && payload.cid) {
         const pend = messagesDiv.querySelector(`.msg-part.pending[data-cid="${CSS.escape(String(payload.cid))}"]`);
@@ -10111,3 +10127,53 @@ function spTogglePop(force) {
     // ползунки в скрытых вкладках/окнах получают значения позже — обновляем при открытии настроек
     document.addEventListener('click', (e) => { if (e.target && e.target.closest && e.target.closest('.settings-tab, #settings-btn')) setTimeout(initAll, 0); }, true);
 })();
+
+
+// ---------- Освобождение памяти, когда вкладка/окно неактивны ----------
+// Если окно скрыто (свёрнуто или вкладка не на виду) дольше 30 секунд, освобождаем то, что тяжелее всего
+// и легко восстанавливается:
+//  • ленту чата вместе с картинками и GIF (декодированные кадры занимают больше всего памяти) —
+//    при возврате история заново загружается с сервера (кэша каналов больше нет);
+//  • декодированные звуки саундпада (AudioBuffer до сотен МБ у длинных файлов) — декодируются снова
+//    при следующем нажатии, если ничего не играет.
+// Звонок, голос, демонстрации, музыка и звуки уведомлений не затрагиваются.
+const MEMORY_RELEASE_AFTER_MS = 30 * 1000;
+let memoryReleaseTimer = null;
+
+function releaseInactiveMemory() {
+    memoryReleaseTimer = null;
+    if (!document.hidden) return;
+    const freed = [];
+    if (selectedRoom && messagesDiv && messagesDiv.firstElementChild) {
+        rememberChatReadPosition(chatRenderedRoom); // запоминаем, докуда дочитали
+        clearChatMessages();                          // убирает и src картинок, и сами узлы
+        lastMessageDateKey = null;
+        chatRenderedRoom = null;
+        chatMemoryReleased = true;
+        freed.push('лента чата');
+    }
+    if (typeof spBuffers !== 'undefined' && spBuffers.size && spPlaying.size === 0) {
+        spBuffers.clear();
+        freed.push('звуки саундпада');
+    }
+    chatHistoryCache.clear();
+    if (freed.length) console.log('[Память] Окно неактивно 30 с — освобождено:', freed.join(', '));
+}
+
+function restoreAfterInactive() {
+    if (memoryReleaseTimer) { clearTimeout(memoryReleaseTimer); memoryReleaseTimer = null; }
+    if (!chatMemoryReleased) return;
+    chatMemoryReleased = false;
+    if (!selectedRoom) return;
+    // Загружаем историю открытого канала заново; разделитель «Непрочитанные» и позиция чтения восстановятся
+    unreadSnapshotByRoom.set(String(selectedRoom), { ids: getUnreadIds(selectedRoom), at: Date.now() });
+    if (socket && socket.connected) socket.emit('select chat room', { room: selectedRoom });
+}
+
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+        if (!memoryReleaseTimer) memoryReleaseTimer = setTimeout(releaseInactiveMemory, MEMORY_RELEASE_AFTER_MS);
+    } else {
+        restoreAfterInactive();
+    }
+});

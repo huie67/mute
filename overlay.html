@@ -428,7 +428,7 @@
         row.appendChild(wrap); row.appendChild(name);
         if (u.muted || u.deafened) {
           var flags = document.createElement('div'); flags.className = 'voice-flags';
-          if (u.muted) { var f1 = document.createElement('span'); f1.className = 'flag'; f1.innerHTML = MIC_OFF; flags.appendChild(f1); }
+          if (u.muted && !u.deafened) { var f1 = document.createElement('span'); f1.className = 'flag'; f1.innerHTML = MIC_OFF; flags.appendChild(f1); }
           if (u.deafened) { var f2 = document.createElement('span'); f2.className = 'flag'; f2.innerHTML = DEAF_OFF; flags.appendChild(f2); }
           row.appendChild(flags);
         }
