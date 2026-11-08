@@ -920,10 +920,11 @@ function closeMentionAutocomplete() {
 function setChatEnabled(enabled) {
     messageInput.disabled = !enabled;
     messageInput.placeholder = enabled ? 'Написать в чат...' : 'Выберите сервер слева, чтобы открыть чат';
-    ['attach-file-btn', 'emoji-btn'].forEach(id => {
+    ['attach-file-btn', 'emoji-btn', 'gif-btn'].forEach(id => {
         const b = document.getElementById(id);
         if (b) b.disabled = !enabled;
     });
+    if (!enabled && gifUiReady) closeGifPicker();
     if (!enabled && typeof clearReply === 'function') clearReply();
     closeMentionAutocomplete();
 }
@@ -10156,6 +10157,7 @@ function releaseInactiveMemory() {
         spBuffers.clear();
         freed.push('звуки саундпада');
     }
+    if (gifUiReady) closeGifPicker(true);
     chatHistoryCache.clear();
     if (freed.length) console.log('[Память] Окно неактивно 30 с — освобождено:', freed.join(', '));
 }
@@ -10177,3 +10179,156 @@ document.addEventListener('visibilitychange', () => {
         restoreAfterInactive();
     }
 });
+
+
+// ---------- GIF из каталога (как в Discord) ----------
+// Кнопка «GIF» в строке чата открывает окно с поиском и популярными GIF. Запросы идут на наш сервер
+// (/api/gifs/...), который обращается к Tenor и хранит ключ API у себя. Выбранный GIF отправляется
+// обычным вложением-картинкой (ссылка на media.tenor.com), поэтому у остальных он показывается так же,
+// как загруженные картинки: с паузой в неактивном окне и просмотром по клику.
+// var (а не let): флаг читается раньше, чем исполнится этот блок (setChatEnabled при загрузке), и должен быть просто пуст
+var gifUiReady = false;
+const gifPicker = { el: null, grid: null, wrap: null, status: null, input: null, anchor: null, q: '', pos: '', loading: false, ended: false, token: 0, debounce: null };
+
+function ensureGifPicker() {
+    if (gifPicker.el) return gifPicker.el;
+    const el = document.createElement('div');
+    el.className = 'gif-picker';
+    el.innerHTML = `
+        <div class="gif-picker-head"><input type="text" class="gif-search" placeholder="Поиск GIF" maxlength="100" autocomplete="off" spellcheck="false"></div>
+        <div class="gif-grid-wrap"><div class="gif-grid"></div><div class="gif-status"></div></div>
+        <div class="gif-picker-foot">GIF: Tenor</div>`;
+    document.body.appendChild(el);
+    gifPicker.el = el;
+    gifPicker.grid = el.querySelector('.gif-grid');
+    gifPicker.wrap = el.querySelector('.gif-grid-wrap');
+    gifPicker.status = el.querySelector('.gif-status');
+    gifPicker.input = el.querySelector('.gif-search');
+
+    gifPicker.input.addEventListener('input', () => {
+        clearTimeout(gifPicker.debounce);
+        gifPicker.debounce = setTimeout(() => loadGifs(true), 350);
+    });
+    gifPicker.input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { clearTimeout(gifPicker.debounce); loadGifs(true); } });
+    gifPicker.wrap.addEventListener('scroll', () => {
+        const w = gifPicker.wrap;
+        if (w.scrollTop + w.clientHeight > w.scrollHeight - 160) loadGifs(false); // подгружаем ещё
+    }, { passive: true });
+    gifPicker.grid.addEventListener('click', (e) => {
+        const btn = e.target.closest('.gif-item');
+        if (!btn) return;
+        sendGif({ url: btn.dataset.url });
+    });
+    document.addEventListener('mousedown', (e) => {
+        if (!el.classList.contains('open') || el.contains(e.target)) return;
+        if (gifPicker.anchor && gifPicker.anchor.contains(e.target)) return;
+        closeGifPicker();
+    });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && el.classList.contains('open')) closeGifPicker(); });
+    window.addEventListener('blur', () => closeGifPicker());
+    window.addEventListener('resize', () => { if (el.classList.contains('open')) positionGifPicker(); });
+    return el;
+}
+
+function positionGifPicker() {
+    const el = gifPicker.el, a = gifPicker.anchor;
+    if (!el || !a) return;
+    const r = a.getBoundingClientRect();
+    const w = el.offsetWidth || 380, h = el.offsetHeight || 440;
+    const left = Math.min(Math.max(8, r.right - w), window.innerWidth - w - 8);
+    let top = r.top - h - 8;
+    if (top < 8) top = Math.max(8, Math.min(r.bottom + 8, window.innerHeight - h - 8));
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
+}
+
+function closeGifPicker(freeMemory = false) {
+    if (!gifPicker.el) return;
+    gifPicker.el.classList.remove('open');
+    clearTimeout(gifPicker.debounce);
+    gifPicker.token++; // отменяем возможные ответы «в полёте»
+    if (freeMemory) { gifPicker.grid.innerHTML = ''; gifPicker.pos = ''; gifPicker.ended = false; }
+}
+
+function setGifStatus(text) {
+    if (gifPicker.status) gifPicker.status.textContent = text || '';
+}
+
+async function loadGifs(reset) {
+    if (!gifPicker.el) return;
+    if (reset) {
+        gifPicker.token++;
+        gifPicker.q = gifPicker.input.value.trim();
+        gifPicker.pos = '';
+        gifPicker.ended = false;
+        gifPicker.loading = false;
+        gifPicker.grid.innerHTML = '';
+        gifPicker.wrap.scrollTop = 0;
+    }
+    if (gifPicker.loading || gifPicker.ended) return;
+    gifPicker.loading = true;
+    const myToken = gifPicker.token;
+    setGifStatus(gifPicker.grid.children.length ? 'Загрузка…' : 'Загрузка…');
+    try {
+        const params = new URLSearchParams({ locale: 'ru_RU' });
+        if (gifPicker.q) params.set('q', gifPicker.q);
+        if (gifPicker.pos) params.set('pos', gifPicker.pos);
+        const res = await fetch(`/api/gifs/${gifPicker.q ? 'search' : 'trending'}?${params}`);
+        if (myToken !== gifPicker.token) return; // пользователь уже ввёл другой запрос
+        if (res.status === 503) { gifPicker.ended = true; setGifStatus('GIF пока не настроены: администратору нужно добавить TENOR_API_KEY на сервере.'); return; }
+        if (res.status === 429) { setGifStatus('Слишком много запросов — подождите минуту.'); return; }
+        if (!res.ok) { setGifStatus('Не удалось загрузить GIF. Попробуйте ещё раз.'); return; }
+        const data = await res.json();
+        if (myToken !== gifPicker.token) return;
+        const frag = document.createDocumentFragment();
+        (data.results || []).forEach((g) => {
+            if (!g || typeof g.url !== 'string' || typeof g.preview !== 'string') return;
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'gif-item';
+            b.dataset.url = g.url;
+            b.title = g.title || 'GIF';
+            const img = document.createElement('img');
+            img.src = g.preview;
+            img.alt = g.title || 'GIF';
+            img.loading = 'lazy';
+            img.decoding = 'async';
+            img.draggable = false;
+            if (g.w > 0 && g.h > 0) img.style.aspectRatio = `${g.w} / ${g.h}`; // место резервируется заранее, лента не «прыгает»
+            b.appendChild(img);
+            frag.appendChild(b);
+        });
+        gifPicker.grid.appendChild(frag);
+        gifPicker.pos = data.next || '';
+        if (!gifPicker.pos || !(data.results || []).length) gifPicker.ended = true;
+        setGifStatus(gifPicker.grid.children.length ? '' : 'Ничего не найдено');
+    } catch (e) {
+        if (myToken === gifPicker.token) setGifStatus('Нет связи с сервером. Попробуйте ещё раз.');
+    } finally {
+        if (myToken === gifPicker.token) gifPicker.loading = false;
+    }
+}
+
+function sendGif({ url }) {
+    if (!url || messageInput.disabled) return;
+    sendChatPayloadAndStick({ text: '', attachments: [{ kind: 'image', url, name: 'GIF', size: null }] });
+    closeGifPicker();
+    messageInput.focus();
+}
+
+gifUiReady = true;
+
+(function initGifButton() {
+    const btn = document.getElementById('gif-btn');
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+        ensureGifPicker();
+        if (gifPicker.el.classList.contains('open') && gifPicker.anchor === btn) { closeGifPicker(); return; }
+        if (typeof closeEmojiPicker === 'function') closeEmojiPicker();
+        gifPicker.anchor = btn;
+        gifPicker.el.classList.add('open');
+        positionGifPicker();
+        if (!gifPicker.grid.children.length) loadGifs(true);
+        gifPicker.input.focus();
+    });
+})();

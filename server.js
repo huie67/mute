@@ -280,13 +280,16 @@ function sanitizeAttachments(raw) {
     if (!Array.isArray(raw)) return [];
     const out = [];
     for (const a of raw.slice(0, MAX_ATTACHMENTS)) {
-        if (!a || !isTrustedUploadUrl(a.url)) continue;
+        if (!a) continue;
+        // GIF из каталога Tenor — только как картинка и только с адресов Tenor (см. isTrustedGifUrl)
+        const isGif = a.kind === 'image' && isTrustedGifUrl(a.url);
+        if (!isGif && !isTrustedUploadUrl(a.url)) continue;
         const kind = a.kind === 'image' ? 'image' : 'file';
         const size = Number(a.size);
         out.push({
             kind,
             url: a.url,
-            name: sanitizeDisplayFileName(a.name || (kind === 'image' ? 'image' : 'file')),
+            name: isGif ? 'GIF' : sanitizeDisplayFileName(a.name || (kind === 'image' ? 'image' : 'file')),
             size: Number.isFinite(size) && size >= 0 ? Math.round(size) : null
         });
     }
@@ -710,6 +713,102 @@ function isTrustedUploadUrl(u) {
             && p.pathname.toLowerCase().startsWith(`/${String(process.env.CLOUDINARY_CLOUD_NAME || '').trim().toLowerCase()}/`);
     } catch (e) { return false; }
 }
+
+// ---------- GIF из каталога Tenor ----------
+// Ключ TENOR_API_KEY лежит только на сервере (в окружении), в браузер не попадает: клиент ходит на
+// /api/gifs/search и /api/gifs/trending, а сервер запрашивает Tenor, оставляет только нужные поля и
+// кэширует ответы на 5 минут, чтобы не тратить квоту. Ограничение: не больше 60 запросов в минуту с адреса.
+// Получить бесплатный ключ: Google Cloud Console → включить «Tenor API» → создать ключ API.
+const TENOR_API_KEY = String(process.env.TENOR_API_KEY || '').trim();
+const GIF_PAGE_SIZE = 24;
+const GIF_CACHE_TTL_MS = 5 * 60 * 1000;
+const GIF_CACHE_MAX = 300;
+const GIF_RATE_LIMIT_PER_MIN = 60;
+const gifCache = new Map();   // ключ запроса -> { at, data }
+const gifRate = new Map();    // адрес -> { count, resetAt }
+
+// Адреса GIF, которым мы доверяем в сообщениях: только медиа-серверы Tenor по https и только .gif
+function isTrustedGifUrl(u) {
+    if (typeof u !== 'string' || u.length > 500) return false;
+    try {
+        const p = new URL(u);
+        return p.protocol === 'https:' && /^(media\d*|c)\.tenor\.com$/i.test(p.hostname) && /\.gif$/i.test(p.pathname);
+    } catch (e) { return false; }
+}
+
+function gifClientIp(req) {
+    const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    return fwd || req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
+}
+function gifRateLimited(ip) {
+    const now = Date.now();
+    let r = gifRate.get(ip);
+    if (!r || now > r.resetAt) { r = { count: 0, resetAt: now + 60 * 1000 }; gifRate.set(ip, r); }
+    r.count++;
+    if (gifRate.size > 5000) { for (const [k, v] of gifRate) if (now > v.resetAt) gifRate.delete(k); }
+    return r.count > GIF_RATE_LIMIT_PER_MIN;
+}
+
+// Из ответа Tenor оставляем минимум: превью, полный GIF и пропорции
+function normalizeTenorResponse(json) {
+    const results = [];
+    for (const r of (json && Array.isArray(json.results) ? json.results : [])) {
+        const f = r && r.media_formats;
+        if (!f || !f.gif || !isTrustedGifUrl(f.gif.url)) continue;
+        const preview = (f.tinygif && isTrustedGifUrl(f.tinygif.url)) ? f.tinygif : f.gif;
+        const dims = Array.isArray(preview.dims) && preview.dims.length === 2 ? preview.dims : (f.gif.dims || [0, 0]);
+        results.push({
+            id: String(r.id || ''),
+            title: String(r.content_description || '').slice(0, 120),
+            url: f.gif.url,
+            preview: preview.url,
+            w: Number(dims[0]) || 0,
+            h: Number(dims[1]) || 0
+        });
+    }
+    return { results, next: json && json.next ? String(json.next) : '' };
+}
+
+async function handleGifRequest(kind, req, res) {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!TENOR_API_KEY) return res.status(503).json({ error: 'gifs_not_configured' });
+    if (gifRateLimited(gifClientIp(req))) return res.status(429).json({ error: 'rate_limited' });
+
+    const q = String(req.query.q || '').trim().slice(0, 100);
+    const pos = String(req.query.pos || '').slice(0, 100);
+    const rawLocale = String(req.query.locale || '');
+    const locale = /^[a-z]{2}(_[A-Z]{2})?$/.test(rawLocale) ? rawLocale : 'ru_RU';
+    if (kind === 'search' && !q) return res.json({ results: [], next: '' });
+
+    const cacheKey = `${kind}|${locale}|${q.toLowerCase()}|${pos}`;
+    const hit = gifCache.get(cacheKey);
+    if (hit && Date.now() - hit.at < GIF_CACHE_TTL_MS) return res.json(hit.data);
+
+    const params = new URLSearchParams({
+        key: TENOR_API_KEY, client_key: 'mute', limit: String(GIF_PAGE_SIZE),
+        media_filter: 'gif,tinygif', contentfilter: 'medium', locale
+    });
+    if (kind === 'search') params.set('q', q);
+    if (pos) params.set('pos', pos);
+    try {
+        const resp = await fetch(`https://tenor.googleapis.com/v2/${kind === 'search' ? 'search' : 'featured'}?${params}`,
+            { signal: AbortSignal.timeout(6000) });
+        if (!resp.ok) {
+            console.error('❌ Tenor вернул', resp.status);
+            return res.status(502).json({ error: 'tenor_failed', status: resp.status });
+        }
+        const data = normalizeTenorResponse(await resp.json());
+        gifCache.set(cacheKey, { at: Date.now(), data });
+        while (gifCache.size > GIF_CACHE_MAX) gifCache.delete(gifCache.keys().next().value);
+        res.json(data);
+    } catch (err) {
+        console.error('❌ Ошибка запроса к Tenor:', err && err.message);
+        res.status(502).json({ error: 'tenor_failed' });
+    }
+}
+app.get('/api/gifs/search', (req, res) => handleGifRequest('search', req, res));
+app.get('/api/gifs/trending', (req, res) => handleGifRequest('trending', req, res));
+// ---------- /GIF ----------
 
 // ---------- Аккаунты: регистрация/вход по паролю ----------
 // JWT нужен, чтобы после входа клиент мог доказать серверу, что он — действительно
