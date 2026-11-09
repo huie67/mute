@@ -920,11 +920,10 @@ function closeMentionAutocomplete() {
 function setChatEnabled(enabled) {
     messageInput.disabled = !enabled;
     messageInput.placeholder = enabled ? 'Написать в чат...' : 'Выберите сервер слева, чтобы открыть чат';
-    ['attach-file-btn', 'emoji-btn', 'gif-btn'].forEach(id => {
+    ['attach-file-btn', 'emoji-btn'].forEach(id => {
         const b = document.getElementById(id);
         if (b) b.disabled = !enabled;
     });
-    if (!enabled && gifUiReady) closeGifPicker();
     if (!enabled && typeof clearReply === 'function') clearReply();
     closeMentionAutocomplete();
 }
@@ -4401,6 +4400,7 @@ async function completeLogin() {
     }
 
     await initPeer();
+    syncMyGifsFromServer(); // коллекция GIF из аккаунта (в фоне, без ожидания)
 }
 
 // Список ICE-серверов (STUN + TURN) для установки соединения между собеседниками.
@@ -7764,6 +7764,16 @@ function ensureEmojiPicker() {
     document.body.appendChild(emojiPickerEl);
     emojiPickerEl.addEventListener('mousedown', (e) => e.preventDefault()); // не уводим фокус из поля ввода
     emojiPickerEl.addEventListener('click', (e) => {
+        // Раздел GIF: убрать из коллекции / добавить свой / отправить
+        const gifDel = e.target.closest('.my-gif-del');
+        if (gifDel) { e.stopPropagation(); removeMyGif(gifDel.closest('.my-gif').dataset.id); return; }
+        if (e.target.closest('.my-gif-add')) { pickGifFiles(); return; }
+        const gifItem = e.target.closest('.my-gif');
+        if (gifItem && emojiPickerState) {
+            const g = myGifs.find((x) => x.id === gifItem.dataset.id);
+            if (g) { closeEmojiPicker(); sendMyGif(g); }
+            return;
+        }
         const cell = e.target.closest('.emoji-cell');
         if (cell && emojiPickerState) {
             const emoji = cell.dataset.emoji;
@@ -7798,6 +7808,7 @@ function ensureEmojiPicker() {
 function closeEmojiPicker() {
     if (emojiPickerEl) emojiPickerEl.classList.remove('open');
     emojiPickerState = null;
+    updateEmojiBtnIcon();
 }
 
 function renderEmojiGrid() {
@@ -7815,14 +7826,16 @@ function renderEmojiGrid() {
     quick.style.display = emojiPickerState.quick ? 'flex' : 'none';
     if (emojiPickerState.quick) QUICK_REACTIONS.forEach(e => quick.appendChild(mkCell(e)));
 
-    // Вкладка 0 — недавние, дальше — категории.
+    // Вкладка 0 — недавние, дальше — категории, в конце (только в чате, не у реакций) — «GIF».
     const tabs = emojiPickerEl.querySelector('.emoji-tabs');
     tabs.innerHTML = '';
     const tabIcons = ['🕘', ...EMOJI_CATEGORIES.map(c => c.icon)];
+    if (emojiPickerState.allowGif) tabIcons.push('GIF');
+    const gifTab = gifTabIndex();
     tabIcons.forEach((icon, i) => {
         const b = document.createElement('button');
         b.type = 'button';
-        b.className = 'emoji-tab' + (i === emojiPickerState.tab ? ' active' : '');
+        b.className = 'emoji-tab' + (i === emojiPickerState.tab ? ' active' : '') + (emojiPickerState.allowGif && i === gifTab ? ' emoji-tab-gif' : '');
         b.dataset.tab = String(i);
         b.textContent = icon;
         tabs.appendChild(b);
@@ -7830,6 +7843,10 @@ function renderEmojiGrid() {
 
     const grid = emojiPickerEl.querySelector('.emoji-grid');
     grid.innerHTML = '';
+    const isGifTab = !!emojiPickerState.allowGif && emojiPickerState.tab === gifTab;
+    grid.classList.toggle('gif-mode', isGifTab);
+    updateEmojiBtnIcon();
+    if (isGifTab) { renderMyGifGrid(grid); return; }
     const items = emojiPickerState.tab === 0 ? loadRecentEmoji() : EMOJI_CATEGORIES[emojiPickerState.tab - 1].items;
     if (!items.length) {
         const empty = document.createElement('div');
@@ -7842,14 +7859,14 @@ function renderEmojiGrid() {
 }
 
 // quick — ряд быстрых реакций сверху; closeOnPick — закрывать после выбора (Shift — оставить).
-function openEmojiPicker({ anchor, onPick, quick = false, closeOnPick = true }) {
+function openEmojiPicker({ anchor, onPick, quick = false, closeOnPick = true, allowGif = false, startTab = null }) {
     ensureEmojiPicker();
     if (emojiPickerEl.classList.contains('open') && emojiPickerState && emojiPickerState.anchor === anchor) {
         closeEmojiPicker();
         return;
     }
     const hasRecent = loadRecentEmoji().length > 0;
-    emojiPickerState = { onPick, closeOnPick, anchor, quick, tab: hasRecent ? 0 : 1 };
+    emojiPickerState = { onPick, closeOnPick, anchor, quick, allowGif, tab: startTab !== null ? startTab : (hasRecent ? 0 : 1) };
     renderEmojiGrid();
     emojiPickerEl.classList.add('open');
 
@@ -7875,7 +7892,7 @@ function insertEmojiIntoInput(emoji) {
 const emojiBtn = document.getElementById('emoji-btn');
 if (emojiBtn) {
     emojiBtn.addEventListener('click', () => {
-        openEmojiPicker({ anchor: emojiBtn, onPick: insertEmojiIntoInput, quick: false, closeOnPick: true });
+        openEmojiPicker({ anchor: emojiBtn, onPick: insertEmojiIntoInput, quick: false, closeOnPick: true, allowGif: true });
     });
 }
 
@@ -10157,7 +10174,6 @@ function releaseInactiveMemory() {
         spBuffers.clear();
         freed.push('звуки саундпада');
     }
-    if (gifUiReady) closeGifPicker(true);
     chatHistoryCache.clear();
     if (freed.length) console.log('[Память] Окно неактивно 30 с — освобождено:', freed.join(', '));
 }
@@ -10181,154 +10197,204 @@ document.addEventListener('visibilitychange', () => {
 });
 
 
-// ---------- GIF из каталога (как в Discord) ----------
-// Кнопка «GIF» в строке чата открывает окно с поиском и популярными GIF. Запросы идут на наш сервер
-// (/api/gifs/...), который обращается к Tenor и хранит ключ API у себя. Выбранный GIF отправляется
-// обычным вложением-картинкой (ссылка на media.tenor.com), поэтому у остальных он показывается так же,
-// как загруженные картинки: с паузой в неактивном окне и просмотром по клику.
-// var (а не let): флаг читается раньше, чем исполнится этот блок (setChatEnabled при загрузке), и должен быть просто пуст
-var gifUiReady = false;
-const gifPicker = { el: null, grid: null, wrap: null, status: null, input: null, anchor: null, q: '', pos: '', loading: false, ended: false, token: 0, debounce: null };
-
-function ensureGifPicker() {
-    if (gifPicker.el) return gifPicker.el;
-    const el = document.createElement('div');
-    el.className = 'gif-picker';
-    el.innerHTML = `
-        <div class="gif-picker-head"><input type="text" class="gif-search" placeholder="Поиск GIF" maxlength="100" autocomplete="off" spellcheck="false"></div>
-        <div class="gif-grid-wrap"><div class="gif-grid"></div><div class="gif-status"></div></div>
-        <div class="gif-picker-foot">GIF: Tenor</div>`;
-    document.body.appendChild(el);
-    gifPicker.el = el;
-    gifPicker.grid = el.querySelector('.gif-grid');
-    gifPicker.wrap = el.querySelector('.gif-grid-wrap');
-    gifPicker.status = el.querySelector('.gif-status');
-    gifPicker.input = el.querySelector('.gif-search');
-
-    gifPicker.input.addEventListener('input', () => {
-        clearTimeout(gifPicker.debounce);
-        gifPicker.debounce = setTimeout(() => loadGifs(true), 350);
-    });
-    gifPicker.input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { clearTimeout(gifPicker.debounce); loadGifs(true); } });
-    gifPicker.wrap.addEventListener('scroll', () => {
-        const w = gifPicker.wrap;
-        if (w.scrollTop + w.clientHeight > w.scrollHeight - 160) loadGifs(false); // подгружаем ещё
-    }, { passive: true });
-    gifPicker.grid.addEventListener('click', (e) => {
-        const btn = e.target.closest('.gif-item');
-        if (!btn) return;
-        sendGif({ url: btn.dataset.url });
-    });
-    document.addEventListener('mousedown', (e) => {
-        if (!el.classList.contains('open') || el.contains(e.target)) return;
-        if (gifPicker.anchor && gifPicker.anchor.contains(e.target)) return;
-        closeGifPicker();
-    });
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && el.classList.contains('open')) closeGifPicker(); });
-    window.addEventListener('blur', () => closeGifPicker());
-    window.addEventListener('resize', () => { if (el.classList.contains('open')) positionGifPicker(); });
-    return el;
-}
-
-function positionGifPicker() {
-    const el = gifPicker.el, a = gifPicker.anchor;
-    if (!el || !a) return;
-    const r = a.getBoundingClientRect();
-    const w = el.offsetWidth || 380, h = el.offsetHeight || 440;
-    const left = Math.min(Math.max(8, r.right - w), window.innerWidth - w - 8);
-    let top = r.top - h - 8;
-    if (top < 8) top = Math.max(8, Math.min(r.bottom + 8, window.innerHeight - h - 8));
-    el.style.left = `${left}px`;
-    el.style.top = `${top}px`;
-}
-
-function closeGifPicker(freeMemory = false) {
-    if (!gifPicker.el) return;
-    gifPicker.el.classList.remove('open');
-    clearTimeout(gifPicker.debounce);
-    gifPicker.token++; // отменяем возможные ответы «в полёте»
-    if (freeMemory) { gifPicker.grid.innerHTML = ''; gifPicker.pos = ''; gifPicker.ended = false; }
-}
-
-function setGifStatus(text) {
-    if (gifPicker.status) gifPicker.status.textContent = text || '';
-}
-
-async function loadGifs(reset) {
-    if (!gifPicker.el) return;
-    if (reset) {
-        gifPicker.token++;
-        gifPicker.q = gifPicker.input.value.trim();
-        gifPicker.pos = '';
-        gifPicker.ended = false;
-        gifPicker.loading = false;
-        gifPicker.grid.innerHTML = '';
-        gifPicker.wrap.scrollTop = 0;
-    }
-    if (gifPicker.loading || gifPicker.ended) return;
-    gifPicker.loading = true;
-    const myToken = gifPicker.token;
-    setGifStatus(gifPicker.grid.children.length ? 'Загрузка…' : 'Загрузка…');
+// ---------- Мои GIF: раздел окна смайликов ----------
+// В окне смайликов (кнопка рядом с полем чата) есть раздел «GIF» со своими GIF. Файл загружается обычным
+// /upload (Cloudinary), в сообщение уходит ссылка-картинка, поэтому у остальных GIF выглядит как любая
+// загруженная картинка. Список GIF хранится на устройстве, а при входе в аккаунт — ещё и на сервере
+// (/auth/gifs), чтобы он был одинаковым на всех устройствах. Сами файлы с Cloudinary при удалении из
+// коллекции не стираются: убирается только ссылка из вашего списка.
+const MY_GIFS_KEY = 'mute_my_gifs_v1';
+const MY_GIFS_SYNCED_KEY = 'mute_my_gifs_synced_for';
+const MY_GIFS_MAX = 100;
+const MY_GIF_MAX_BYTES = 8 * 1024 * 1024; // как лимит /upload на сервере
+let myGifs = (function loadMyGifsLocal() {
     try {
-        const params = new URLSearchParams({ locale: 'ru_RU' });
-        if (gifPicker.q) params.set('q', gifPicker.q);
-        if (gifPicker.pos) params.set('pos', gifPicker.pos);
-        const res = await fetch(`/api/gifs/${gifPicker.q ? 'search' : 'trending'}?${params}`);
-        if (myToken !== gifPicker.token) return; // пользователь уже ввёл другой запрос
-        if (res.status === 503) { gifPicker.ended = true; setGifStatus('GIF пока не настроены: администратору нужно добавить TENOR_API_KEY на сервере.'); return; }
-        if (res.status === 429) { setGifStatus('Слишком много запросов — подождите минуту.'); return; }
-        if (!res.ok) { setGifStatus('Не удалось загрузить GIF. Попробуйте ещё раз.'); return; }
-        const data = await res.json();
-        if (myToken !== gifPicker.token) return;
-        const frag = document.createDocumentFragment();
-        (data.results || []).forEach((g) => {
-            if (!g || typeof g.url !== 'string' || typeof g.preview !== 'string') return;
-            const b = document.createElement('button');
-            b.type = 'button';
-            b.className = 'gif-item';
-            b.dataset.url = g.url;
-            b.title = g.title || 'GIF';
-            const img = document.createElement('img');
-            img.src = g.preview;
-            img.alt = g.title || 'GIF';
-            img.loading = 'lazy';
-            img.decoding = 'async';
-            img.draggable = false;
-            if (g.w > 0 && g.h > 0) img.style.aspectRatio = `${g.w} / ${g.h}`; // место резервируется заранее, лента не «прыгает»
-            b.appendChild(img);
-            frag.appendChild(b);
-        });
-        gifPicker.grid.appendChild(frag);
-        gifPicker.pos = data.next || '';
-        if (!gifPicker.pos || !(data.results || []).length) gifPicker.ended = true;
-        setGifStatus(gifPicker.grid.children.length ? '' : 'Ничего не найдено');
-    } catch (e) {
-        if (myToken === gifPicker.token) setGifStatus('Нет связи с сервером. Попробуйте ещё раз.');
-    } finally {
-        if (myToken === gifPicker.token) gifPicker.loading = false;
-    }
+        const a = JSON.parse(localStorage.getItem(MY_GIFS_KEY) || '[]');
+        return Array.isArray(a) ? a.filter((g) => g && typeof g.id === 'string' && typeof g.url === 'string').slice(0, MY_GIFS_MAX) : [];
+    } catch (e) { return []; }
+})();
+let myGifsPushTimer = null;
+let myGifFileInput = null;
+let myGifUploading = false;
+
+function saveMyGifsLocal() {
+    try { localStorage.setItem(MY_GIFS_KEY, JSON.stringify(myGifs)); } catch (e) { /* ignore */ }
 }
 
-function sendGif({ url }) {
-    if (!url || messageInput.disabled) return;
-    sendChatPayloadAndStick({ text: '', attachments: [{ kind: 'image', url, name: 'GIF', size: null }] });
-    closeGifPicker();
+// Уменьшенное превью: Cloudinary умеет сжимать и анимированные GIF; если не вышло — покажем оригинал
+function gifThumbUrl(url) {
+    return /\/image\/upload\//.test(url) && !/\/image\/upload\/[^/]*\bw_\d+/.test(url)
+        ? url.replace('/image/upload/', '/image/upload/w_240,c_limit/')
+        : url;
+}
+
+function gifTabIndex() { return EMOJI_CATEGORIES.length + 1; }
+function isGifTabOpen() {
+    return !!(emojiPickerEl && emojiPickerEl.classList.contains('open') && emojiPickerState && emojiPickerState.allowGif && emojiPickerState.tab === gifTabIndex());
+}
+
+// Иконка кнопки: смайлик, а когда открыт раздел GIF — «GIF» (плюс короткие «подмигивания» ниже)
+function updateEmojiBtnIcon() {
+    const btn = document.getElementById('emoji-btn');
+    if (btn) btn.classList.toggle('show-gif', isGifTabOpen());
+}
+(function initEmojiBtnTeaser() {
+    const btn = document.getElementById('emoji-btn');
+    if (!btn || (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)) return;
+    setInterval(() => {
+        // не мигаем в скрытом окне, в «Лёгком интерфейсе», при выключенной кнопке и пока открыто окно смайликов
+        if (document.hidden || btn.disabled || document.documentElement.classList.contains('light-ui')) return;
+        if (emojiPickerEl && emojiPickerEl.classList.contains('open')) return;
+        btn.classList.add('show-gif');
+        setTimeout(() => { if (!isGifTabOpen()) btn.classList.remove('show-gif'); }, 2200);
+    }, 9000);
+})();
+
+function renderMyGifGrid(grid) {
+    grid.innerHTML = '';
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'my-gif-add';
+    add.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg><span>' + (myGifUploading ? 'Загрузка…' : 'Добавить GIF') + '</span>';
+    grid.appendChild(add);
+    if (!myGifs.length) {
+        const empty = document.createElement('div');
+        empty.className = 'emoji-empty';
+        empty.textContent = 'Здесь будут ваши GIF. Нажмите «Добавить GIF» и выберите файл (до 8 МБ).';
+        grid.appendChild(empty);
+        return;
+    }
+    myGifs.forEach((g) => {
+        const item = document.createElement('div');
+        item.className = 'my-gif';
+        item.dataset.id = g.id;
+        item.title = g.name || 'GIF';
+        const img = document.createElement('img');
+        img.alt = g.name || 'GIF';
+        img.loading = 'lazy';
+        img.decoding = 'async';
+        img.draggable = false;
+        img.src = gifThumbUrl(g.url);
+        img.addEventListener('error', () => { if (img.src !== g.url) img.src = g.url; }, { once: true });
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'my-gif-del';
+        del.title = 'Убрать из коллекции';
+        del.innerHTML = '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg>';
+        item.append(img, del);
+        grid.appendChild(item);
+    });
+}
+
+function refreshGifTabIfOpen() {
+    if (isGifTabOpen()) renderEmojiGrid();
+}
+
+function sendMyGif(g) {
+    if (!g || messageInput.disabled) return;
+    sendChatPayloadAndStick({ text: '', attachments: [{ kind: 'image', url: g.url, name: g.name || 'GIF', size: null }] });
     messageInput.focus();
 }
 
-gifUiReady = true;
+function removeMyGif(id) {
+    myGifs = myGifs.filter((g) => g.id !== id);
+    saveMyGifsLocal();
+    scheduleMyGifsPush();
+    refreshGifTabIfOpen();
+}
 
-(function initGifButton() {
-    const btn = document.getElementById('gif-btn');
-    if (!btn) return;
-    btn.addEventListener('click', () => {
-        ensureGifPicker();
-        if (gifPicker.el.classList.contains('open') && gifPicker.anchor === btn) { closeGifPicker(); return; }
-        if (typeof closeEmojiPicker === 'function') closeEmojiPicker();
-        gifPicker.anchor = btn;
-        gifPicker.el.classList.add('open');
-        positionGifPicker();
-        if (!gifPicker.grid.children.length) loadGifs(true);
-        gifPicker.input.focus();
-    });
-})();
+function pickGifFiles() {
+    if (!myGifFileInput) {
+        myGifFileInput = document.createElement('input');
+        myGifFileInput.type = 'file';
+        myGifFileInput.accept = 'image/gif';
+        myGifFileInput.multiple = true;
+        myGifFileInput.style.display = 'none';
+        document.body.appendChild(myGifFileInput);
+        myGifFileInput.addEventListener('change', async () => {
+            const files = Array.from(myGifFileInput.files || []);
+            myGifFileInput.value = '';
+            if (files.length) await addMyGifFiles(files);
+        });
+    }
+    myGifFileInput.click();
+}
+
+async function addMyGifFiles(files) {
+    if (myGifUploading) { showToast('GIF уже загружаются — дождитесь окончания'); return; }
+    myGifUploading = true;
+    let added = 0;
+    try {
+        for (const file of files) {
+            if (myGifs.length >= MY_GIFS_MAX) { showToast(`В коллекции не больше ${MY_GIFS_MAX} GIF`); break; }
+            if (!/^image\/gif$/i.test(file.type) && !/\.gif$/i.test(file.name)) { showToast(`«${file.name}» — не GIF`); continue; }
+            if (file.size > MY_GIF_MAX_BYTES) { showToast(`«${file.name}» больше 8 МБ — выберите файл поменьше`); continue; }
+            try {
+                const fd = new FormData();
+                fd.append('image', file);
+                const data = await postFormWithProgress('/upload', fd, () => {});
+                if (!data || !data.url) throw new Error('сервер не вернул ссылку');
+                if (myGifs.some((g) => g.url === data.url)) continue;
+                myGifs.unshift({
+                    id: 'g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+                    url: data.url,
+                    name: file.name.replace(/\.gif$/i, '').slice(0, 60) || 'GIF',
+                    at: Date.now()
+                });
+                added++;
+            } catch (err) {
+                if (err && err.message === 'cancelled') break;
+                console.error('[GIF] Не удалось загрузить', file.name, err);
+                showToast(`Не удалось загрузить «${file.name}»: ${err && err.message ? err.message : err}`);
+            }
+        }
+    } finally {
+        myGifUploading = false;
+    }
+    if (added) {
+        saveMyGifsLocal();
+        scheduleMyGifsPush();
+        showToast(added === 1 ? 'GIF добавлен в вашу коллекцию' : `Добавлено GIF: ${added}`);
+        // окно закрывается при выборе файла (смена фокуса) — открываем его снова на разделе GIF
+        const btn = document.getElementById('emoji-btn');
+        if (btn && !btn.disabled) {
+            if (emojiPickerEl && emojiPickerEl.classList.contains('open')) refreshGifTabIfOpen();
+            else openEmojiPicker({ anchor: btn, onPick: insertEmojiIntoInput, quick: false, closeOnPick: true, allowGif: true, startTab: gifTabIndex() });
+        }
+    }
+}
+
+// ---- синхронизация с аккаунтом ----
+function scheduleMyGifsPush(delay = 800) {
+    if (!currentUser.token) return; // гость: только на этом устройстве
+    clearTimeout(myGifsPushTimer);
+    myGifsPushTimer = setTimeout(async () => {
+        try {
+            await authFetch('/auth/gifs', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ gifs: myGifs })
+            });
+        } catch (e) { /* повторим при следующем изменении или входе */ }
+    }, delay);
+}
+
+async function syncMyGifsFromServer() {
+    if (!currentUser.token) return;
+    try {
+        const res = await authFetch('/auth/gifs');
+        if (!res.ok) return;
+        const data = await res.json();
+        const server = Array.isArray(data.gifs) ? data.gifs : [];
+        const syncedFor = localStorage.getItem(MY_GIFS_SYNCED_KEY);
+        if (!server.length && myGifs.length && syncedFor !== currentUser.username) {
+            // первый вход этого ника на устройстве: на сервере пусто, а локально GIF уже есть — отправляем их
+            scheduleMyGifsPush(0);
+        } else {
+            myGifs = server.slice(0, MY_GIFS_MAX); // дальше источник истины — сервер (удаления тоже синхронизируются)
+            saveMyGifsLocal();
+            refreshGifTabIfOpen();
+        }
+        localStorage.setItem(MY_GIFS_SYNCED_KEY, currentUser.username);
+    } catch (e) { /* нет связи — остаёмся на локальной коллекции */ }
+}
