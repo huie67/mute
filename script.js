@@ -7767,9 +7767,6 @@ function ensureEmojiPicker() {
         // Раздел GIF: убрать из коллекции / добавить свой / отправить
         const gifDel = e.target.closest('.my-gif-del');
         if (gifDel) { e.stopPropagation(); removeMyGif(gifDel.closest('.my-gif').dataset.id); return; }
-        if (e.target.closest('.my-gif-add')) { gifAddMode = gifAddMode === 'choose' ? 'closed' : 'choose'; renderEmojiGrid(); return; }
-        if (e.target.closest('.gif-add-link-choice')) { gifAddMode = 'link'; renderEmojiGrid(); return; }
-        if (e.target.closest('.gif-add-file-choice')) { gifAddMode = 'closed'; pickGifFiles(); return; }
         const gifItem = e.target.closest('.my-gif');
         if (gifItem && emojiPickerState) {
             const g = myGifs.find((x) => x.id === gifItem.dataset.id);
@@ -10262,12 +10259,30 @@ function renderMyGifGrid(grid) {
     add.className = 'my-gif-add';
     add.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg><span>' + (myGifUploading ? 'Загрузка…' : 'Добавить GIF') + '</span>';
     add.disabled = myGifUploading;
+    // Обработчик ставится непосредственно на кнопку: меню не зависит от всплытия события.
+    add.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (myGifUploading) return;
+        gifAddMode = gifAddMode === 'choose' ? 'closed' : 'choose';
+        renderEmojiGrid();
+    });
     grid.appendChild(add);
 
     if (gifAddMode === 'choose') {
         const choices = document.createElement('div');
         choices.className = 'gif-add-choices';
         choices.innerHTML = '<button type="button" class="gif-add-choice gif-add-link-choice">Добавить по ссылке</button><button type="button" class="gif-add-choice gif-add-file-choice">Загрузить файл</button>';
+        choices.querySelector('.gif-add-link-choice').addEventListener('click', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            gifAddMode = 'link';
+            renderEmojiGrid();
+        });
+        choices.querySelector('.gif-add-file-choice').addEventListener('click', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            gifAddMode = 'closed';
+            pickGifFiles();
+        });
         grid.appendChild(choices);
     } else if (gifAddMode === 'link') {
         const row = document.createElement('div');
