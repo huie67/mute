@@ -855,6 +855,210 @@ app.post('/auth/login', async (req, res) => {
     }
 });
 
+// ---------- Добавление GIF по ссылке ----------
+// Пользователь вставляет ссылку на GIF → СЕРВЕР скачивает файл и кладёт его в наш Cloudinary (как обычную
+// загрузку), а в коллекцию попадает уже наша ссылка. Так другим участникам не уходит их IP на чужой сайт,
+// ссылка не «протухает», а проверка «в сообщение — только наш Cloudinary» остаётся прежней.
+// Так как сервер ходит по адресу, который прислал пользователь, включена защита от обращений во внутреннюю
+// сеть (SSRF): только https и порт 443; адрес проверяется при КАЖДОМ соединении (включая переходы по
+// редиректам) и не должен быть локальным/частным; размер до 8 МБ; файл обязан начинаться с сигнатуры GIF.
+// Принимаются прямые ссылки на .gif, а также страницы (Tenor, Giphy и т. п.): тогда ищем GIF в мета-тегах.
+const gifDns = require('dns');
+const gifHttps = require('https');
+const gifNet = require('net');
+const GIF_IMPORT_MAX_BYTES = 8 * 1024 * 1024;
+const GIF_IMPORT_HTML_MAX_BYTES = 768 * 1024;
+const GIF_IMPORT_TIMEOUT_MS = 8000;      // простой соединения
+const GIF_IMPORT_TOTAL_MS = 15000;       // общий предел на один запрос
+const GIF_IMPORT_MAX_REDIRECTS = 4;
+const GIF_IMPORT_RATE_PER_MIN = 10;
+
+const gifBlockList = new gifNet.BlockList();
+[['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16], ['172.16.0.0', 12],
+ ['192.0.0.0', 24], ['192.0.2.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15], ['198.51.100.0', 24],
+ ['203.0.113.0', 24], ['224.0.0.0', 4], ['240.0.0.0', 4]].forEach(([a, p]) => gifBlockList.addSubnet(a, p, 'ipv4'));
+[['::', 96], ['::1', 128], ['64:ff9b::', 96], ['fc00::', 7], ['fe80::', 10], ['ff00::', 8],
+ ['2001:db8::', 32]].forEach(([a, p]) => gifBlockList.addSubnet(a, p, 'ipv6'));
+// ВАЖНО: подсеть ::ffff:0:0/96 сюда добавлять нельзя — Node сопоставляет с ней ВСЕ IPv4-адреса, и заблокировался бы весь интернет.
+
+function isPrivateIp(ip) {
+    let addr = String(ip);
+    const fam = gifNet.isIP(addr);
+    if (!fam) return true; // не похоже на IP — считаем небезопасным
+    if (fam === 6) {
+        // IPv4 внутри IPv6 (::ffff:127.0.0.1, ::ffff:7f00:1): приводим к каноничному виду и проверяем как обычный IPv4
+        let canon;
+        try { canon = new URL(`http://[${addr}]/`).hostname.replace(/^\[|\]$/g, ''); } catch (e) { return true; }
+        const m = canon.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+        if (m) {
+            const hi = parseInt(m[1], 16), lo = parseInt(m[2], 16);
+            return isPrivateIp(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`);
+        }
+        addr = canon;
+    }
+    return gifBlockList.check(addr, fam === 4 ? 'ipv4' : 'ipv6');
+}
+
+// Адрес для скачивания: только https, порт 443, без логина/пароля, не localhost и не частный IP
+function parseRemoteGifUrl(u) {
+    if (typeof u !== 'string' || u.length > 1000) return null;
+    let p;
+    try { p = new URL(u.trim()); } catch (e) { return null; }
+    if (p.protocol !== 'https:' || p.username || p.password) return null;
+    if (p.port && p.port !== '443') return null;
+    const host = p.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (!host || host === 'localhost' || /\.(localhost|local|internal|lan|home)$/.test(host)) return null;
+    if (gifNet.isIP(host) && isPrivateIp(host)) return null;
+    return p;
+}
+
+// Проверка адреса ПРИ СОЕДИНЕНИИ (защищает и от подмены DNS между проверкой и подключением)
+function gifSafeLookup(hostname, options, callback) {
+    gifDns.lookup(hostname, { all: true }, (err, addrs) => {
+        if (err) return callback(err);
+        if (!addrs.length || addrs.some((a) => isPrivateIp(a.address))) {
+            return callback(Object.assign(new Error('blocked_address'), { code: 'blocked' }));
+        }
+        if (options && options.all) return callback(null, addrs);
+        callback(null, addrs[0].address, addrs[0].family);
+    });
+}
+
+function gifImportError(code) { return Object.assign(new Error(code), { code }); }
+
+function gifRequest(p, opts) {
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        const done = (fn, v) => { if (!settled) { settled = true; clearTimeout(total); fn(v); } };
+        const req = gifHttps.request({
+            protocol: 'https:', hostname: p.hostname, port: p.port || 443, path: p.pathname + p.search, method: 'GET',
+            headers: { 'User-Agent': 'Mozilla/5.0 (compatible; MuteGifImport/1.0)', 'Accept': 'image/gif,image/*;q=0.8,text/html;q=0.5', 'Accept-Encoding': 'identity' },
+            lookup: opts.lookup || gifSafeLookup,
+            timeout: opts.timeoutMs || GIF_IMPORT_TIMEOUT_MS,
+            rejectUnauthorized: opts.rejectUnauthorized !== false
+        }, (res) => {
+            const status = res.statusCode;
+            if (status >= 300 && status < 400 && res.headers.location) { res.resume(); return done(resolve, { status, location: res.headers.location }); }
+            if (status !== 200) { res.resume(); return done(resolve, { status }); }
+            const isHtml = /text\/html|application\/xhtml/i.test(String(res.headers['content-type'] || ''));
+            const limit = isHtml ? GIF_IMPORT_HTML_MAX_BYTES : (opts.maxBytes || GIF_IMPORT_MAX_BYTES);
+            const declared = Number(res.headers['content-length']);
+            if (declared && declared > limit) { res.destroy(); return done(reject, gifImportError('too_big')); }
+            const chunks = [];
+            let size = 0;
+            res.on('data', (c) => {
+                size += c.length;
+                if (size > limit) { res.destroy(); return done(reject, gifImportError('too_big')); }
+                chunks.push(c);
+            });
+            res.on('end', () => done(resolve, { status, isHtml, body: Buffer.concat(chunks) }));
+            res.on('error', (e) => done(reject, e));
+        });
+        const total = setTimeout(() => { req.destroy(); done(reject, gifImportError('timeout')); }, opts.totalMs || GIF_IMPORT_TOTAL_MS);
+        req.on('timeout', () => { req.destroy(); done(reject, gifImportError('timeout')); });
+        req.on('error', (e) => done(reject, e.code === 'blocked' ? e : (e.message === 'blocked_address' ? gifImportError('blocked') : e)));
+        req.end();
+    });
+}
+
+// Скачивание с переходами по редиректам; адрес каждого перехода проверяется заново
+async function gifFetchFollow(urlStr, opts) {
+    let current = parseRemoteGifUrl(urlStr);
+    if (!current) throw gifImportError('bad_url');
+    for (let hop = 0; hop <= GIF_IMPORT_MAX_REDIRECTS; hop++) {
+        const r = await gifRequest(current, opts);
+        if (r.location) {
+            let next;
+            try { next = new URL(r.location, current); } catch (e) { throw gifImportError('bad_url'); }
+            current = parseRemoteGifUrl(next.href);
+            if (!current) throw gifImportError('blocked');
+            continue;
+        }
+        if (r.status !== 200) throw gifImportError(`http_${r.status}`);
+        return { ...r, finalUrl: current };
+    }
+    throw gifImportError('too_many_redirects');
+}
+
+function isGifBuffer(b) {
+    return Buffer.isBuffer(b) && b.length > 10 && (b.toString('latin1', 0, 6) === 'GIF87a' || b.toString('latin1', 0, 6) === 'GIF89a');
+}
+
+// Кандидаты на ссылку GIF внутри HTML страницы (Tenor/Giphy/и т. п.): прямые .gif — в начале списка
+function extractGifCandidates(html, baseUrl) {
+    const found = [];
+    const add = (raw) => {
+        if (!raw) return;
+        try {
+            const u = new URL(raw.replace(/&amp;/g, '&'), baseUrl);
+            if (u.protocol === 'https:' && !found.includes(u.href)) found.push(u.href);
+        } catch (e) { /* пропускаем */ }
+    };
+    const attr = (tag, name) => { const m = tag.match(new RegExp(`${name}\\s*=\\s*("([^"]*)"|'([^']*)')`, 'i')); return m ? (m[2] !== undefined ? m[2] : m[3]) : null; };
+    for (const m of html.matchAll(/<meta\b[^>]*>/gi)) {
+        const key = String(attr(m[0], 'property') || attr(m[0], 'name') || attr(m[0], 'itemprop') || '').toLowerCase();
+        if (['og:image', 'og:image:url', 'og:image:secure_url', 'twitter:image', 'twitter:image:src', 'contenturl'].includes(key)) add(attr(m[0], 'content'));
+    }
+    for (const m of html.matchAll(/<link\b[^>]*>/gi)) {
+        if (/image_src/i.test(attr(m[0], 'rel') || '')) add(attr(m[0], 'href'));
+    }
+    const isGifPath = (h) => { try { return /\.gif$/i.test(new URL(h).pathname); } catch (e) { return false; } };
+    return [...found.filter(isGifPath), ...found.filter((h) => !isGifPath(h))].slice(0, 6);
+}
+
+async function downloadGifBuffer(rawUrl, opts = {}) {
+    const first = await gifFetchFollow(rawUrl, opts);
+    if (isGifBuffer(first.body)) return first.body;
+    if (first.isHtml) {
+        for (const cand of extractGifCandidates(first.body.toString('utf8'), first.finalUrl.href).slice(0, 3)) {
+            try {
+                const r = await gifFetchFollow(cand, opts);
+                if (isGifBuffer(r.body)) return r.body;
+            } catch (e) { /* пробуем следующего кандидата */ }
+        }
+    }
+    throw gifImportError('not_gif');
+}
+
+const gifImportRate = new Map();
+function gifImportRateLimited(ip) {
+    const now = Date.now();
+    let r = gifImportRate.get(ip);
+    if (!r || now > r.resetAt) { r = { count: 0, resetAt: now + 60 * 1000 }; gifImportRate.set(ip, r); }
+    r.count++;
+    if (gifImportRate.size > 5000) { for (const [k, v] of gifImportRate) if (now > v.resetAt) gifImportRate.delete(k); }
+    return r.count > GIF_IMPORT_RATE_PER_MIN;
+}
+function gifImportErrorText(code) {
+    if (code === 'too_big') return 'GIF больше 8 МБ — выберите файл поменьше';
+    if (code === 'not_gif') return 'По ссылке не найден GIF. Нужна прямая ссылка на .gif (или страница Tenor/Giphy).';
+    if (code === 'timeout') return 'Сайт слишком долго отвечает';
+    if (code === 'blocked') return 'Эта ссылка недоступна';
+    if (code === 'bad_url') return 'Нужна ссылка вида https://…';
+    if (code === 'too_many_redirects') return 'Слишком много перенаправлений';
+    if (/^http_\d+$/.test(code)) return `Сайт ответил ошибкой ${code.slice(5)}`;
+    return 'Не удалось скачать GIF по этой ссылке';
+}
+
+app.post('/api/gif-from-url', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    if (gifImportRateLimited(fwd || req.ip || 'unknown')) return res.status(429).json({ error: 'Слишком много запросов — подождите минуту' });
+    const p = parseRemoteGifUrl(req.body && req.body.url);
+    if (!p) return res.status(400).json({ error: gifImportErrorText('bad_url') });
+    try {
+        const buffer = await downloadGifBuffer(p.href);
+        const result = await uploadBufferToCloudinary(buffer);
+        res.json({ url: result.secure_url });
+    } catch (err) {
+        const code = (err && err.code) || '';
+        const known = ['too_big', 'not_gif', 'timeout', 'blocked', 'bad_url', 'too_many_redirects'].includes(code) || /^http_\d+$/.test(code);
+        if (!known) console.error('❌ Ошибка добавления GIF по ссылке:', err && err.message);
+        res.status(known ? 422 : 502).json({ error: known ? gifImportErrorText(code) : `Не удалось сохранить GIF: ${typeof cloudErrorText === 'function' ? cloudErrorText(err) : 'ошибка загрузки'}` });
+    }
+});
+// ---------- /Добавление GIF по ссылке ----------
+
 // ---------- Мои GIF (коллекция в аккаунте) ----------
 // Пользователь загружает свои GIF через обычный /upload (Cloudinary), а список ссылок хранится в аккаунте,
 // чтобы коллекция была одинаковой на всех его устройствах. Принимаем только наши ссылки Cloudinary на .gif.

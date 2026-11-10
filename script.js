@@ -7762,7 +7762,7 @@ function ensureEmojiPicker() {
     emojiPickerEl.className = 'emoji-picker';
     emojiPickerEl.innerHTML = '<div class="emoji-quick"></div><div class="emoji-tabs"></div><div class="emoji-grid"></div>';
     document.body.appendChild(emojiPickerEl);
-    emojiPickerEl.addEventListener('mousedown', (e) => e.preventDefault()); // не уводим фокус из поля ввода
+    emojiPickerEl.addEventListener('mousedown', (e) => { if (!e.target.closest('.gif-link-input')) e.preventDefault(); }); // не уводим фокус из поля чата (кроме поля для ссылки на GIF)
     emojiPickerEl.addEventListener('click', (e) => {
         // Раздел GIF: убрать из коллекции / добавить свой / отправить
         const gifDel = e.target.closest('.my-gif-del');
@@ -10250,8 +10250,36 @@ function updateEmojiBtnIcon() {
     }, 9000);
 })();
 
+let gifLinkDraft = ''; // набранное в поле ссылки (сохраняется при перерисовке раздела)
+const looksLikeUrl = (v) => /^https?:\/\/\S+$/i.test(String(v || '').trim());
+
 function renderMyGifGrid(grid) {
     grid.innerHTML = '';
+    // Поле «вставьте ссылку»: вставка адреса сразу добавляет GIF; Enter или кнопка — то же самое
+    const row = document.createElement('div');
+    row.className = 'gif-link-row';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'gif-link-input';
+    input.placeholder = 'Вставьте ссылку на GIF';
+    input.maxLength = 1000;
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.value = gifLinkDraft;
+    input.disabled = myGifUploading;
+    const linkBtn = document.createElement('button');
+    linkBtn.type = 'button';
+    linkBtn.className = 'gif-link-btn';
+    linkBtn.textContent = myGifUploading ? 'Добавляю…' : 'Добавить';
+    linkBtn.disabled = myGifUploading;
+    const submit = () => addMyGifFromUrl(input.value);
+    input.addEventListener('input', () => { gifLinkDraft = input.value; });
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
+    input.addEventListener('paste', () => setTimeout(() => { gifLinkDraft = input.value; if (looksLikeUrl(input.value)) submit(); }, 0));
+    linkBtn.addEventListener('click', submit);
+    row.append(input, linkBtn);
+    grid.appendChild(row);
+
     const add = document.createElement('button');
     add.type = 'button';
     add.className = 'my-gif-add';
@@ -10260,7 +10288,7 @@ function renderMyGifGrid(grid) {
     if (!myGifs.length) {
         const empty = document.createElement('div');
         empty.className = 'emoji-empty';
-        empty.textContent = 'Здесь будут ваши GIF. Нажмите «Добавить GIF» и выберите файл (до 8 МБ).';
+        empty.textContent = 'Здесь будут ваши GIF. Вставьте ссылку на GIF выше или нажмите «Добавить GIF» и выберите файл (до 8 МБ).';
         grid.appendChild(empty);
         return;
     }
@@ -10284,6 +10312,57 @@ function renderMyGifGrid(grid) {
         item.append(img, del);
         grid.appendChild(item);
     });
+}
+
+function gifNameFromUrl(u) {
+    try {
+        const seg = decodeURIComponent(new URL(u).pathname.split('/').filter(Boolean).pop() || '');
+        const name = seg.replace(/\.[a-z0-9]{2,4}$/i, '').replace(/[-_]+/g, ' ').trim().slice(0, 60);
+        return name || 'GIF';
+    } catch (e) { return 'GIF'; }
+}
+
+// Ссылка на GIF → сервер сам скачивает файл и кладёт в наш Cloudinary, в коллекцию попадает уже наша ссылка
+async function addMyGifFromUrl(raw) {
+    const url = String(raw || '').trim();
+    if (!url) { showToast('Вставьте ссылку на GIF'); return false; }
+    if (/^http:\/\//i.test(url)) { showToast('Нужна ссылка, начинающаяся с https://'); return false; }
+    if (!/^https:\/\/\S{4,}$/i.test(url)) { showToast('Это не похоже на ссылку. Пример: https://…/cat.gif'); return false; }
+    if (myGifUploading) { showToast('GIF уже загружаются — дождитесь окончания'); return false; }
+    if (myGifs.length >= MY_GIFS_MAX) { showToast(`В коллекции не больше ${MY_GIFS_MAX} GIF`); return false; }
+    myGifUploading = true;
+    refreshGifTabIfOpen(); // кнопка станет «Добавляю…»
+    try {
+        let res;
+        try {
+            res = await fetch('/api/gif-from-url', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url })
+            });
+        } catch (netErr) {
+            throw new Error('Нет связи с сервером. Попробуйте ещё раз.');
+        }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.url) throw new Error(data.error || 'Не удалось добавить GIF по ссылке');
+        myGifs.unshift({
+            id: 'g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+            url: data.url,
+            name: gifNameFromUrl(url),
+            at: Date.now()
+        });
+        gifLinkDraft = '';
+        saveMyGifsLocal();
+        scheduleMyGifsPush();
+        showToast('GIF добавлен в вашу коллекцию');
+        return true;
+    } catch (err) {
+        showToast(err && err.message ? err.message : 'Не удалось добавить GIF по ссылке');
+        return false;
+    } finally {
+        myGifUploading = false;
+        refreshGifTabIfOpen();
+    }
 }
 
 function refreshGifTabIfOpen() {
