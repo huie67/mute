@@ -7767,6 +7767,7 @@ function ensureEmojiPicker() {
         // Раздел GIF: убрать из коллекции / добавить свой / отправить
         const gifDel = e.target.closest('.my-gif-del');
         if (gifDel) { e.stopPropagation(); removeMyGif(gifDel.closest('.my-gif').dataset.id); return; }
+        if (e.target.closest('.my-gif-add')) { pickGifFiles(); return; }
         const gifItem = e.target.closest('.my-gif');
         if (gifItem && emojiPickerState) {
             const g = myGifs.find((x) => x.id === gifItem.dataset.id);
@@ -10249,71 +10250,45 @@ function updateEmojiBtnIcon() {
     }, 9000);
 })();
 
-let gifLinkDraft = ''; // ссылка, введённая при добавлении GIF\nlet gifAddMode = 'closed'; // меню выбора способа добавления
+let gifLinkDraft = ''; // набранное в поле ссылки (сохраняется при перерисовке раздела)
 const looksLikeUrl = (v) => /^https?:\/\/\S+$/i.test(String(v || '').trim());
 
 function renderMyGifGrid(grid) {
     grid.innerHTML = '';
+    // Поле «вставьте ссылку»: вставка адреса сразу добавляет GIF; Enter или кнопка — то же самое
+    const row = document.createElement('div');
+    row.className = 'gif-link-row';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'gif-link-input';
+    input.placeholder = 'Вставьте ссылку на GIF';
+    input.maxLength = 1000;
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.value = gifLinkDraft;
+    input.disabled = myGifUploading;
+    const linkBtn = document.createElement('button');
+    linkBtn.type = 'button';
+    linkBtn.className = 'gif-link-btn';
+    linkBtn.textContent = myGifUploading ? 'Добавляю…' : 'Добавить';
+    linkBtn.disabled = myGifUploading;
+    const submit = () => addMyGifFromUrl(input.value);
+    input.addEventListener('input', () => { gifLinkDraft = input.value; });
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
+    input.addEventListener('paste', () => setTimeout(() => { gifLinkDraft = input.value; if (looksLikeUrl(input.value)) submit(); }, 0));
+    linkBtn.addEventListener('click', submit);
+    row.append(input, linkBtn);
+    grid.appendChild(row);
+
     const add = document.createElement('button');
     add.type = 'button';
     add.className = 'my-gif-add';
     add.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg><span>' + (myGifUploading ? 'Загрузка…' : 'Добавить GIF') + '</span>';
-    add.disabled = myGifUploading;
-    // Обработчик ставится непосредственно на кнопку: меню не зависит от всплытия события.
-    add.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        if (myGifUploading) return;
-        gifAddMode = gifAddMode === 'choose' ? 'closed' : 'choose';
-        renderEmojiGrid();
-    });
     grid.appendChild(add);
-
-    if (gifAddMode === 'choose') {
-        const choices = document.createElement('div');
-        choices.className = 'gif-add-choices';
-        choices.innerHTML = '<button type="button" class="gif-add-choice gif-add-link-choice">Добавить по ссылке</button><button type="button" class="gif-add-choice gif-add-file-choice">Загрузить файл</button>';
-        choices.querySelector('.gif-add-link-choice').addEventListener('click', (e) => {
-            e.preventDefault(); e.stopPropagation();
-            gifAddMode = 'link';
-            renderEmojiGrid();
-        });
-        choices.querySelector('.gif-add-file-choice').addEventListener('click', (e) => {
-            e.preventDefault(); e.stopPropagation();
-            gifAddMode = 'closed';
-            pickGifFiles();
-        });
-        grid.appendChild(choices);
-    } else if (gifAddMode === 'link') {
-        const row = document.createElement('div');
-        row.className = 'gif-link-row';
-        const input = document.createElement('input');
-        input.type = 'url';
-        input.className = 'gif-link-input';
-        input.placeholder = 'Вставьте ссылку на GIF';
-        input.maxLength = 1000;
-        input.autocomplete = 'off';
-        input.spellcheck = false;
-        input.value = gifLinkDraft;
-        input.disabled = myGifUploading;
-        const linkBtn = document.createElement('button');
-        linkBtn.type = 'button';
-        linkBtn.className = 'gif-link-btn';
-        linkBtn.textContent = myGifUploading ? 'Добавляю…' : 'Добавить';
-        linkBtn.disabled = myGifUploading;
-        const submit = () => addMyGifFromUrl(input.value);
-        input.addEventListener('input', () => { gifLinkDraft = input.value; });
-        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
-        linkBtn.addEventListener('click', submit);
-        row.append(input, linkBtn);
-        grid.appendChild(row);
-        input.focus();
-    }
-
     if (!myGifs.length) {
         const empty = document.createElement('div');
         empty.className = 'emoji-empty';
-        empty.textContent = 'Здесь будут ваши GIF. Нажмите «Добавить GIF», чтобы выбрать ссылку или загрузить файл (до 8 МБ).';
+        empty.textContent = 'Здесь будут ваши GIF. Вставьте ссылку на GIF выше или нажмите «Добавить GIF» и выберите файл (до 8 МБ).';
         grid.appendChild(empty);
         return;
     }
