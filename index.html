@@ -3808,6 +3808,19 @@
         .gif-link-back:hover:not(:disabled) { background: var(--btn); color: var(--text); }
         .gif-link-back:disabled { opacity: 0.5; cursor: default; }
         .my-gif-add:disabled { opacity: 0.6; cursor: default; }
+    
+        /* ===== Левая колонка: полоска серверов + сайдбар сверху, блок с микрофоном/плеером снизу ===
+           Блок .bottom-actions вынесен из .sidebar и растянут на всю ширину левой колонки —
+           он идёт и под полоской серверов, и под списком участников. Ширина колонки
+           определяется шириной сайдбара (её по-прежнему меняет ресайзер), так что блок тянется сам. */
+        .left-col {
+            display: flex; flex-direction: column; flex-shrink: 0;
+            min-height: 0; background: var(--bg-card);
+        }
+        .left-top { display: flex; flex: 1 1 auto; min-height: 0; }
+        .left-top > .servers-rail { flex-shrink: 0; overflow-y: auto; overflow-x: hidden; }
+        .left-top > .sidebar { padding-bottom: 8px; }
+        .left-col > .bottom-actions { flex-shrink: 0; margin: 0 8px 8px; }
     </style>
 </head>
 <body>
@@ -3900,29 +3913,32 @@
     </script>
 
     <div id="app-container" class="fade-in">
-        <div class="servers-rail" id="servers-rail">
-            <div class="server-icon server-add-btn" id="add-server-btn" title="Создать сервер" aria-label="Создать сервер">
-                <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <line x1="12" y1="5" x2="12" y2="19"></line>
-                    <line x1="5" y1="12" x2="19" y2="12"></line>
-                </svg>
+        <div class="left-col" id="left-col">
+            <div class="left-top">
+            <div class="servers-rail" id="servers-rail">
+                <div class="server-icon server-add-btn" id="add-server-btn" title="Создать сервер" aria-label="Создать сервер">
+                    <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="12" y1="5" x2="12" y2="19"></line>
+                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                    </svg>
+                </div>
+                <div id="custom-servers-list"></div>
             </div>
-            <div id="custom-servers-list"></div>
-        </div>
 
-        <div class="sidebar" id="sidebar">
-            <div class="sidebar-section">
-                <h3 id="voice-users-heading">Участники канала</h3>
-                <div class="sidebar-list">
-                    <div class="sidebar-item" id="room-name-display" style="display:none"></div>
-                    <div class="voice-users-list" id="voice-users-container"></div>
-                    <div id="voice-preview" style="display:none">
-                        <div class="voice-offcall-divider" id="voice-preview-title"></div>
-                        <div class="voice-users-list" id="voice-preview-container"></div>
+            <div class="sidebar" id="sidebar">
+                <div class="sidebar-section">
+                    <h3 id="voice-users-heading">Участники канала</h3>
+                    <div class="sidebar-list">
+                        <div class="sidebar-item" id="room-name-display" style="display:none"></div>
+                        <div class="voice-users-list" id="voice-users-container"></div>
+                        <div id="voice-preview" style="display:none">
+                            <div class="voice-offcall-divider" id="voice-preview-title"></div>
+                            <div class="voice-users-list" id="voice-preview-container"></div>
+                        </div>
                     </div>
                 </div>
             </div>
-            
+            </div>
             <div class="bottom-actions">
                 <div class="listen-session-bar" id="listen-session-bar">
                     <div class="listen-session-row-top">
