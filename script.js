@@ -2346,11 +2346,17 @@ const REMOTE_VOLUME_STORAGE_KEY = 'mute:remoteVolumes';
 let remoteVoiceGainNodes = {};
 let remoteAudioSources = {};
 let remoteDemoAudioSources = {};
+// Значения держим в памяти: раньше gain считался из localStorage, а запись туда шла с отложкой
+// 250 мс — из-за этого громкость собеседника менялась с задержкой (и «догоняла» только когда
+// перестаёшь двигать ползунок). Теперь память обновляется мгновенно, на диск пишем позже.
+let remoteVolumesCache = null;
 function loadRemoteVolumes() {
+    if (remoteVolumesCache) return remoteVolumesCache;
     try {
         const raw = localStorage.getItem(REMOTE_VOLUME_STORAGE_KEY);
-        return raw ? JSON.parse(raw) : {};
-    } catch (e) { return {}; }
+        remoteVolumesCache = raw ? (JSON.parse(raw) || {}) : {};
+    } catch (e) { remoteVolumesCache = {}; }
+    return remoteVolumesCache;
 }
 function getRemoteVolumePercent(username) {
     const all = loadRemoteVolumes();
@@ -2359,15 +2365,13 @@ function getRemoteVolumePercent(username) {
 }
 let remoteVolumeSaveTimer = null;
 function saveRemoteVolume(username, percent) {
-    try {
-        const all = loadRemoteVolumes();
-        all[username || ''] = percent;
-        if (remoteVolumeSaveTimer) clearTimeout(remoteVolumeSaveTimer);
-        remoteVolumeSaveTimer = setTimeout(() => {
-            remoteVolumeSaveTimer = null;
-            try { localStorage.setItem(REMOTE_VOLUME_STORAGE_KEY, JSON.stringify(all)); } catch (e) {}
-        }, 250);
-    } catch (e) { /* ignore */ }
+    const all = loadRemoteVolumes();
+    all[username || ''] = percent; // сразу в память — gain читает отсюда
+    if (remoteVolumeSaveTimer) clearTimeout(remoteVolumeSaveTimer);
+    remoteVolumeSaveTimer = setTimeout(() => {
+        remoteVolumeSaveTimer = null;
+        try { localStorage.setItem(REMOTE_VOLUME_STORAGE_KEY, JSON.stringify(all)); } catch (e) {}
+    }, 250);
 }
 
 // Заглушить участника только для себя (хранится на устройстве по нику).
