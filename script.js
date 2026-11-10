@@ -9275,6 +9275,15 @@ makeColumnResizable(
     { min: 180, max: 420, storageKey: 'mute:sidebarWidth' }
 );
 
+// Пока нет ни демонстраций, ни видео участников — всё место справа отдаём чату.
+(function syncVideoArea() {
+    const mc = document.querySelector('.main-content');
+    if (!mc || !remoteVideos) return;
+    const update = () => mc.classList.toggle('has-videos', remoteVideos.children.length > 0);
+    new MutationObserver(update).observe(remoteVideos, { childList: true });
+    update();
+})();
+
 makeColumnResizable(
     document.getElementById('chat-resizer'),
     document.getElementById('chat-panel'),

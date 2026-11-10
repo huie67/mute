@@ -3815,12 +3815,21 @@
            определяется шириной сайдбара (её по-прежнему меняет ресайзер), так что блок тянется сам. */
         .left-col {
             display: flex; flex-direction: column; flex-shrink: 0;
-            min-height: 0; background: var(--bg-card);
+            min-height: 0;
+            /* первые 72px (ширина .servers-rail) окрашены как рейка — она визуально продолжается под блоком */
+            background: linear-gradient(to right, var(--bg-raised) 0, var(--bg-raised) 72px, var(--bg-card) 72px);
         }
         .left-top { display: flex; flex: 1 1 auto; min-height: 0; }
         .left-top > .servers-rail { flex-shrink: 0; overflow-y: auto; overflow-x: hidden; }
         .left-top > .sidebar { padding-bottom: 8px; }
         .left-col > .bottom-actions { flex-shrink: 0; margin: 0 8px 8px; }
+        /* ===== Нет демонстраций/видео — вся область отдаётся чату ===== */
+        .main-content:not(.has-videos) .call-area,
+        .main-content:not(.has-videos) #chat-resizer { display: none; }
+        .main-content:not(.has-videos) .chat-panel {
+            flex: 1 1 auto; width: auto !important; min-width: 0; border-left: 0;
+        }
+
     </style>
 </head>
 <body>
