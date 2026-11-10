@@ -7767,7 +7767,6 @@ function ensureEmojiPicker() {
         // Раздел GIF: убрать из коллекции / добавить свой / отправить
         const gifDel = e.target.closest('.my-gif-del');
         if (gifDel) { e.stopPropagation(); removeMyGif(gifDel.closest('.my-gif').dataset.id); return; }
-        if (e.target.closest('.my-gif-add')) { pickGifFiles(); return; }
         const gifItem = e.target.closest('.my-gif');
         if (gifItem && emojiPickerState) {
             const g = myGifs.find((x) => x.id === gifItem.dataset.id);
@@ -7808,6 +7807,7 @@ function ensureEmojiPicker() {
 function closeEmojiPicker() {
     if (emojiPickerEl) emojiPickerEl.classList.remove('open');
     emojiPickerState = null;
+    gifAddMode = null;
     updateEmojiBtnIcon();
 }
 
@@ -10251,44 +10251,95 @@ function updateEmojiBtnIcon() {
 })();
 
 let gifLinkDraft = ''; // набранное в поле ссылки (сохраняется при перерисовке раздела)
+let gifAddMode = null;  // null — плитка «Добавить GIF»; 'menu' — выбор «Файлом / По ссылке»; 'link' — поле для ссылки
 const looksLikeUrl = (v) => /^https?:\/\/\S+$/i.test(String(v || '').trim());
 
-function renderMyGifGrid(grid) {
-    grid.innerHTML = '';
-    // Поле «вставьте ссылку»: вставка адреса сразу добавляет GIF; Enter или кнопка — то же самое
-    const row = document.createElement('div');
-    row.className = 'gif-link-row';
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.className = 'gif-link-input';
-    input.placeholder = 'Вставьте ссылку на GIF';
-    input.maxLength = 1000;
-    input.autocomplete = 'off';
-    input.spellcheck = false;
-    input.value = gifLinkDraft;
-    input.disabled = myGifUploading;
-    const linkBtn = document.createElement('button');
-    linkBtn.type = 'button';
-    linkBtn.className = 'gif-link-btn';
-    linkBtn.textContent = myGifUploading ? 'Добавляю…' : 'Добавить';
-    linkBtn.disabled = myGifUploading;
-    const submit = () => addMyGifFromUrl(input.value);
-    input.addEventListener('input', () => { gifLinkDraft = input.value; });
-    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
-    input.addEventListener('paste', () => setTimeout(() => { gifLinkDraft = input.value; if (looksLikeUrl(input.value)) submit(); }, 0));
-    linkBtn.addEventListener('click', submit);
-    row.append(input, linkBtn);
-    grid.appendChild(row);
+const GIF_ICON_PLUS = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>';
+const GIF_ICON_FILE = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"></path><path d="M14 3v5h5"></path></svg>';
+const GIF_ICON_LINK = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.5 1.5"></path><path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.5-1.5"></path></svg>';
+const GIF_ICON_BACK = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"></path></svg>';
 
+function setGifAddMode(mode) {
+    gifAddMode = mode;
+    refreshGifTabIfOpen();
+}
+
+// Плитка «Добавить GIF» → выбор способа: файлом или по ссылке (ссылка вставляется в поле, GIF добавляется сразу)
+function buildGifAddControl() {
+    if (gifAddMode === 'link') {
+        const row = document.createElement('div');
+        row.className = 'gif-link-row';
+        const back = document.createElement('button');
+        back.type = 'button';
+        back.className = 'gif-link-back';
+        back.title = 'Назад';
+        back.innerHTML = GIF_ICON_BACK;
+        back.disabled = myGifUploading;
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'gif-link-input';
+        input.placeholder = 'Вставьте ссылку на GIF';
+        input.maxLength = 1000;
+        input.autocomplete = 'off';
+        input.spellcheck = false;
+        input.value = gifLinkDraft;
+        input.disabled = myGifUploading;
+        const linkBtn = document.createElement('button');
+        linkBtn.type = 'button';
+        linkBtn.className = 'gif-link-btn';
+        linkBtn.textContent = myGifUploading ? 'Добавляю…' : 'Добавить';
+        linkBtn.disabled = myGifUploading;
+        const submit = () => { gifLinkDraft = input.value; return addMyGifFromUrl(input.value); }; // при ошибке адрес остаётся в поле, его можно поправить
+        back.addEventListener('click', () => setGifAddMode('menu'));
+        input.addEventListener('input', () => { gifLinkDraft = input.value; });
+        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
+        input.addEventListener('paste', () => setTimeout(() => { gifLinkDraft = input.value; if (looksLikeUrl(input.value)) submit(); }, 0));
+        linkBtn.addEventListener('click', submit);
+        row.append(back, input, linkBtn);
+        if (!myGifUploading) setTimeout(() => input.focus(), 0);
+        return row;
+    }
+    if (gifAddMode === 'menu') {
+        const menu = document.createElement('div');
+        menu.className = 'gif-add-menu';
+        const mk = (cls, icon, label, onClick) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = cls;
+            b.innerHTML = icon + '<span>' + label + '</span>';
+            b.addEventListener('click', onClick);
+            return b;
+        };
+        menu.append(
+            mk('gif-add-opt gif-add-file', GIF_ICON_FILE, 'Файлом', () => { gifAddMode = null; pickGifFiles(); refreshGifTabIfOpen(); }),
+            mk('gif-add-opt gif-add-link', GIF_ICON_LINK, 'По ссылке', () => setGifAddMode('link'))
+        );
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'gif-link-back';
+        close.title = 'Отмена';
+        close.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg>';
+        close.addEventListener('click', () => setGifAddMode(null));
+        menu.appendChild(close);
+        return menu;
+    }
     const add = document.createElement('button');
     add.type = 'button';
     add.className = 'my-gif-add';
-    add.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg><span>' + (myGifUploading ? 'Загрузка…' : 'Добавить GIF') + '</span>';
-    grid.appendChild(add);
+    add.innerHTML = GIF_ICON_PLUS + '<span>' + (myGifUploading ? 'Загрузка…' : 'Добавить GIF') + '</span>';
+    add.disabled = myGifUploading;
+    add.addEventListener('click', () => setGifAddMode('menu'));
+    return add;
+}
+
+function renderMyGifGrid(grid) {
+    grid.innerHTML = '';
+    grid.appendChild(buildGifAddControl());
+
     if (!myGifs.length) {
         const empty = document.createElement('div');
         empty.className = 'emoji-empty';
-        empty.textContent = 'Здесь будут ваши GIF. Вставьте ссылку на GIF выше или нажмите «Добавить GIF» и выберите файл (до 8 МБ).';
+        empty.textContent = 'Здесь будут ваши GIF. Нажмите «Добавить GIF»: можно выбрать файл (до 8 МБ) или вставить ссылку.';
         grid.appendChild(empty);
         return;
     }
@@ -10352,6 +10403,7 @@ async function addMyGifFromUrl(raw) {
             at: Date.now()
         });
         gifLinkDraft = '';
+        gifAddMode = null;
         saveMyGifsLocal();
         scheduleMyGifsPush();
         showToast('GIF добавлен в вашу коллекцию');
