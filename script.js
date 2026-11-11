@@ -10245,6 +10245,32 @@ let memoryReleaseTimer = null;
 // Окно «не на экране» — свёрнуто или скрыто (не просто потеряло фокус: на втором мониторе чат читают).
 function windowIsOffscreen() { return document.hidden || windowMinimized; }
 
+// Дополнительно, только в приложении (Tauri/Windows): просим Rust-часть ужать рабочий набор процессов
+// (Mute + WebView2) — команда trim_memory. Через 5 с после очистки (чтобы успела сработать сборка мусора),
+// потом раз в 5 минут, пока окно остаётся свёрнутым. В обычном браузере и в старых сборках без команды
+// ничего не происходит.
+const NATIVE_TRIM_FIRST_MS = 5 * 1000;
+const NATIVE_TRIM_EVERY_MS = 5 * 60 * 1000;
+let nativeTrimTimer = null;
+function stopNativeTrim() {
+    if (nativeTrimTimer) { clearTimeout(nativeTrimTimer); nativeTrimTimer = null; }
+}
+async function nativeTrimTick() {
+    nativeTrimTimer = null;
+    const t = window.__TAURI__;
+    if (!(t && t.core && typeof t.core.invoke === 'function')) return;
+    let offscreen = windowIsOffscreen();
+    if (!offscreen && typeof window.__nativeWindowHidden === 'function') offscreen = await window.__nativeWindowHidden();
+    if (!offscreen || !windowIsInactive()) return; // окно вернулось на экран — больше не трогаем
+    try {
+        const r = await t.core.invoke('trim_memory');
+        console.log('[Память] Рабочий набор ужат у процессов (ужато, найдено):', r);
+    } catch (e) {
+        return; // сборка приложения без команды trim_memory — повторять незачем
+    }
+    if (!nativeTrimTimer) nativeTrimTimer = setTimeout(nativeTrimTick, NATIVE_TRIM_EVERY_MS);
+}
+
 async function releaseInactiveMemory() {
     memoryReleaseTimer = null;
     if (!windowIsInactive()) return; // успели вернуться в окно
@@ -10274,6 +10300,7 @@ async function releaseInactiveMemory() {
             chatMemoryReleased = true;
             freed.push('лента чата');
         }
+        if (!nativeTrimTimer) nativeTrimTimer = setTimeout(nativeTrimTick, NATIVE_TRIM_FIRST_MS);
     } else {
         // Окно видно, но без фокуса — проверим ещё раз позже: вдруг его свернут/спрячут в трей без события.
         memoryReleaseTimer = setTimeout(releaseInactiveMemory, 60 * 1000);
@@ -10293,7 +10320,7 @@ function restoreAfterInactive() {
 // Единая точка: вызывается из applyLowPerfState — то есть по visibilitychange, blur/focus
 // и нативным событиям окна Tauri (сворачивание, фокус, resize).
 function syncMemoryRelease() {
-    if (!windowIsOffscreen()) restoreAfterInactive(); // окно снова на экране — вернуть ленту чата
+    if (!windowIsOffscreen()) { restoreAfterInactive(); stopNativeTrim(); } // окно снова на экране — вернуть ленту чата
     if (windowIsInactive()) {
         if (!memoryReleaseTimer) memoryReleaseTimer = setTimeout(releaseInactiveMemory, MEMORY_RELEASE_AFTER_MS);
     } else if (memoryReleaseTimer) {
