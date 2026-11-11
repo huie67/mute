@@ -721,8 +721,6 @@ const voiceUsersContainer = document.getElementById('voice-users-container');
 
 const screenBtn = document.getElementById('screen-btn');
 const streamSelectModal = document.getElementById('stream-select-modal');
-const shareScreenChoice = document.getElementById('share-screen-choice');
-const shareCamChoice = document.getElementById('share-cam-choice');
 const closeStreamModal = document.getElementById('close-stream-modal');
 
 const messagesDiv = document.getElementById('messages');
@@ -6655,38 +6653,172 @@ screenBtn.addEventListener('click', () => {
         return;
     }
     if (!activeVideoStream) {
-        streamSelectModal.style.display = 'flex';
+        openStreamModal();
     } else {
         stopVideoStream();
     }
 });
 
-closeStreamModal.addEventListener('click', () => {
-    streamSelectModal.style.display = 'none';
-});
+// ---------- Окно запуска трансляции ----------
+// Тип (экран / камера), разрешение и FPS, приоритет (плавность/чёткость), звук демонстрации,
+// выбор камеры с живым предпросмотром. Выбор окна/экрана остаётся системным (getDisplayMedia).
+const streamEls = {
+    kindBtns: document.querySelectorAll('#stream-kind .stream-kind-btn'),
+    res: document.getElementById('stream-res-select'),
+    fps: document.getElementById('stream-fps-select'),
+    priority: document.getElementById('stream-priority-select'),
+    audioGroup: document.getElementById('stream-audio-group'),
+    audio: document.getElementById('stream-audio-check'),
+    deviceGroup: document.getElementById('stream-device-group'),
+    device: document.getElementById('stream-device-select'),
+    preview: document.getElementById('stream-preview'),
+    previewVideo: document.getElementById('stream-preview-video'),
+    previewNote: document.getElementById('stream-preview-note'),
+    screenNote: document.getElementById('stream-screen-note'),
+    startBtn: document.getElementById('stream-start-btn'),
+    cancelBtn: document.getElementById('stream-cancel-btn')
+};
+let streamKind = 'screen';
+let streamPreviewStream = null;
+let streamPreviewToken = 0;
 
-shareScreenChoice.addEventListener('click', async () => {
-    streamSelectModal.style.display = 'none';
-    try {
-        // Разрешение/FPS берутся из настроек (от 720p30 до 4K30/2K60).
-        const preset = getScreenQualityPreset();
-        const stream = await navigator.mediaDevices.getDisplayMedia({
-            video: { width: { ideal: preset.width }, height: { ideal: preset.height }, frameRate: { ideal: preset.frameRate } },
-            audio: true
-        });
-        startVideoStream(stream);
-    } catch (e) { console.error(e); }
-});
+function streamModalOpen() { return streamSelectModal.style.display === 'flex'; }
 
-shareCamChoice.addEventListener('click', async () => {
+function stopStreamPreview() {
+    streamPreviewToken++; // отменяет запрос предпросмотра, который ещё ждёт ответа
+    if (streamPreviewStream) {
+        streamPreviewStream.getTracks().forEach(t => t.stop());
+        streamPreviewStream = null;
+    }
+    streamEls.previewVideo.srcObject = null;
+}
+
+function closeStreamModalWindow() {
+    stopStreamPreview();
     streamSelectModal.style.display = 'none';
+}
+
+function parseQualityKey(key) {
+    const m = /^(\d+)p(\d+)$/.exec(key || '');
+    return m ? { res: m[1], fps: m[2] } : { res: '720', fps: '30' };
+}
+
+// 4K доступен только в 30 FPS (так в списке пресетов), поэтому 60 для него блокируем
+function syncStreamFpsOptions() {
+    const fps60 = streamEls.fps.querySelector('option[value="60"]');
+    const is4k = streamEls.res.value === '2160';
+    if (fps60) fps60.disabled = is4k;
+    if (is4k && streamEls.fps.value === '60') streamEls.fps.value = '30';
+}
+
+async function refreshStreamCameraList(preferId) {
+    let devices = [];
+    try { devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput'); } catch (e) { /* ignore */ }
+    const sel = streamEls.device;
+    sel.innerHTML = '';
+    if (!devices.length) {
+        const o = document.createElement('option');
+        o.value = ''; o.textContent = 'Камеры не найдены';
+        sel.appendChild(o);
+        return;
+    }
+    devices.forEach((d, i) => {
+        const o = document.createElement('option');
+        o.value = d.deviceId;
+        o.textContent = d.label || `Камера ${i + 1}`; // подписи появляются после выдачи доступа
+        sel.appendChild(o);
+    });
+    const want = preferId || loadVideoSettings().cameraDeviceId;
+    if (want && devices.some(d => d.deviceId === want)) sel.value = want;
+}
+
+async function startStreamPreview() {
+    stopStreamPreview();
+    const token = streamPreviewToken;
+    streamEls.previewNote.textContent = 'Запуск камеры…';
     try {
-        // То же самое: пресет из настроек видео (разрешение и FPS берутся из настроек видео).
-        const preset = getCameraQualityPreset();
-        const stream = await navigator.mediaDevices.getUserMedia({
-            video: { width: { ideal: preset.width }, height: { ideal: preset.height }, frameRate: { ideal: preset.frameRate } },
-            audio: false
-        });
+        const video = { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 24 } };
+        if (streamEls.device.value) video.deviceId = { exact: streamEls.device.value };
+        const s = await navigator.mediaDevices.getUserMedia({ video, audio: false });
+        if (token !== streamPreviewToken || !streamModalOpen() || streamKind !== 'cam') {
+            s.getTracks().forEach(t => t.stop()); // пока ждали, окно закрыли или переключили на экран
+            return;
+        }
+        streamPreviewStream = s;
+        streamEls.previewVideo.srcObject = s;
+        streamEls.previewNote.textContent = '';
+        await refreshStreamCameraList(s.getVideoTracks()[0].getSettings().deviceId);
+    } catch (e) {
+        if (token === streamPreviewToken) streamEls.previewNote.textContent = 'Нет доступа к камере или она занята другой программой';
+    }
+}
+
+function applyStreamKind(kind) {
+    streamKind = kind;
+    streamEls.kindBtns.forEach(b => b.classList.toggle('active', b.dataset.kind === kind));
+    const saved = loadVideoSettings();
+    const q = parseQualityKey(kind === 'screen' ? saved.screenQuality : saved.cameraQuality);
+    streamEls.res.value = q.res;
+    streamEls.fps.value = q.fps;
+    syncStreamFpsOptions();
+    const isCam = kind === 'cam';
+    streamEls.deviceGroup.style.display = isCam ? '' : 'none';
+    streamEls.preview.style.display = isCam ? '' : 'none';
+    streamEls.screenNote.style.display = isCam ? 'none' : '';
+    streamEls.audioGroup.style.display = isCam ? 'none' : '';
+    if (isCam) {
+        refreshStreamCameraList().then(() => { if (streamModalOpen() && streamKind === 'cam') startStreamPreview(); });
+    } else {
+        stopStreamPreview();
+    }
+}
+
+function openStreamModal() {
+    const saved = loadVideoSettings();
+    streamEls.priority.value = saved.streamPriority || 'auto';
+    streamEls.audio.checked = saved.streamAudio !== false;
+    streamSelectModal.style.display = 'flex';
+    applyStreamKind(saved.streamKind === 'cam' ? 'cam' : 'screen');
+}
+
+streamEls.kindBtns.forEach(b => b.addEventListener('click', () => applyStreamKind(b.dataset.kind)));
+streamEls.res.addEventListener('change', syncStreamFpsOptions);
+streamEls.device.addEventListener('change', () => { if (streamKind === 'cam') startStreamPreview(); });
+closeStreamModal.addEventListener('click', closeStreamModalWindow);
+streamEls.cancelBtn.addEventListener('click', closeStreamModalWindow);
+streamSelectModal.addEventListener('mousedown', (e) => { if (e.target === streamSelectModal) closeStreamModalWindow(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && streamModalOpen()) closeStreamModalWindow(); });
+
+streamEls.startBtn.addEventListener('click', async () => {
+    const kind = streamKind;
+    const key = `${streamEls.res.value}p${streamEls.fps.value}`;
+    const preset = VIDEO_QUALITY_PRESETS[key] || VIDEO_QUALITY_PRESETS['720p30'];
+    const priority = streamEls.priority.value;
+    const withAudio = streamEls.audio.checked;
+    const deviceId = streamEls.device.value;
+
+    // Запоминаем выбор: следующий запуск открывается с теми же настройками, а страница настроек видео остаётся в синхроне
+    const patch = { streamKind: kind, streamPriority: priority, streamAudio: withAudio };
+    if (kind === 'screen') { patch.screenQuality = key; if (screenQualitySelect) screenQualitySelect.value = key; }
+    else { patch.cameraQuality = key; if (cameraQualitySelect) cameraQualitySelect.value = key; if (deviceId) patch.cameraDeviceId = deviceId; }
+    saveVideoSettings(patch);
+
+    closeStreamModalWindow(); // заодно освобождает камеру, занятую предпросмотром
+    try {
+        const video = { width: { ideal: preset.width }, height: { ideal: preset.height }, frameRate: { ideal: preset.frameRate } };
+        let stream;
+        if (kind === 'screen') {
+            stream = await navigator.mediaDevices.getDisplayMedia({ video, audio: withAudio });
+        } else {
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ video: deviceId ? { ...video, deviceId: { exact: deviceId } } : video, audio: false });
+            } catch (err) {
+                if (!deviceId) throw err;
+                stream = await navigator.mediaDevices.getUserMedia({ video, audio: false }); // выбранной камеры уже нет — берём любую
+            }
+        }
+        const vt = stream.getVideoTracks()[0];
+        if (vt && priority !== 'auto') vt.contentHint = priority; // 'motion' держит FPS, 'detail' — резкость
         startVideoStream(stream);
     } catch (e) { console.error(e); }
 });
