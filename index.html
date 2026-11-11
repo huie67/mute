@@ -3867,6 +3867,70 @@
         .bottom-actions .playlist-widget-controls .playlist-ctrl-btn svg { width: 16px; height: 16px; }
         .bottom-actions .playlist-track-sub { letter-spacing: 0; }
 
+        /* ===== Окно управления сервером: навигация слева, содержимое справа ===== */
+        .modal-card.srv-modal {
+            width: min(820px, 94vw); height: min(620px, 90vh); max-height: none;
+            padding: 0; gap: 0; flex-direction: row; overflow: hidden;
+        }
+        .srv-nav {
+            width: 232px; flex-shrink: 0; display: flex; flex-direction: column; gap: 12px;
+            padding: 18px 12px; background: var(--bg-raised); border-right: 1px solid var(--line);
+        }
+        .srv-hero { display: flex; align-items: center; gap: 10px; padding: 2px 6px 12px; border-bottom: 1px solid var(--line); }
+        .srv-hero-avatar { width: 44px; height: 44px; border-radius: 12px; object-fit: cover; flex-shrink: 0; background: var(--surface-hover); }
+        .srv-hero-text { min-width: 0; }
+        .srv-hero-name { font-weight: 700; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .srv-hero-role { font-size: 11px; color: var(--text-faint); margin-top: 2px; }
+        .srv-tabs { flex-direction: column; background: transparent; border: 0; padding: 0; gap: 2px; }
+        .srv-tabs .settings-tab {
+            flex: none; text-align: left; padding: 9px 12px; font-size: 13px; border-radius: 8px;
+            display: flex; align-items: center; justify-content: space-between; gap: 8px;
+        }
+        .srv-tabs .settings-tab.active { background: var(--surface-hover); color: var(--text); box-shadow: inset 3px 0 0 var(--accent); }
+        .srv-count { font-size: 11px; color: var(--text-faint); font-weight: 600; }
+        .srv-count:empty { display: none; }
+        .srv-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+        .srv-main-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 20px 12px 24px; border-bottom: 1px solid var(--line); }
+        .srv-main-head h3 { margin: 0; }
+        .srv-main-body { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 24px; display: flex; flex-direction: column; }
+        .srv-main-body > .settings-tab-panel.active { flex: 1; min-height: 0; }
+        .srv-main-body .danger-zone { margin-top: auto; }
+        .srv-footer { padding: 12px 24px 16px; border-top: 1px solid var(--line); }
+        .srv-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 14px; }
+        .srv-card-title { font-size: 12px; font-weight: 600; color: var(--text-muted); }
+        .srv-code-row { display: flex; gap: 10px; align-items: stretch; }
+        .srv-code-row .room-code-box { flex: 1; min-width: 0; font-size: 22px; padding: 10px; }
+        .srv-copy-btn { flex-shrink: 0; padding: 0 14px; font-size: 12px; }
+        .srv-toolbar { display: flex; align-items: center; gap: 12px; }
+        .srv-search { flex: 1; min-width: 0; }
+        .srv-summary { font-size: 12px; color: var(--text-faint); white-space: nowrap; }
+        .srv-list { display: flex; flex-direction: column; gap: 6px; }
+        .srv-member { display: flex; align-items: center; gap: 12px; padding: 8px 10px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); }
+        .srv-member:hover { background: var(--surface-hover); }
+        .srv-av { position: relative; flex-shrink: 0; }
+        .srv-av img { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; display: block; }
+        .srv-dot { position: absolute; right: -1px; bottom: -1px; width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--surface); background: #6b7280; }
+        .srv-dot.online { background: #3ba55d; }
+        .srv-minfo { flex: 1; min-width: 0; }
+        .srv-mname { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13px; min-width: 0; }
+        .srv-mname > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .srv-msub { font-size: 11px; color: var(--text-faint); margin-top: 1px; }
+        .srv-badge { flex-shrink: 0; font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 6px; background: var(--btn); color: var(--text-muted); }
+        .srv-badge.owner { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); }
+        .srv-mactions { display: flex; gap: 6px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+        .srv-btn { border: 0; border-radius: 8px; padding: 6px 10px; font-size: 12px; font-weight: 600; font-family: inherit; cursor: pointer; white-space: nowrap; background: var(--btn); color: var(--text); }
+        .srv-btn:hover { background: var(--btn-hover); }
+        .srv-btn.danger { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+        .srv-btn.danger:hover { background: color-mix(in srgb, var(--danger) 24%, transparent); }
+        @media (max-width: 680px) {
+            .modal-card.srv-modal { flex-direction: column; height: min(680px, 92vh); }
+            .srv-nav { width: auto; flex-direction: row; align-items: center; padding: 10px 12px; border-right: 0; border-bottom: 1px solid var(--line); overflow-x: auto; }
+            .srv-hero { display: none; }
+            .srv-tabs { flex-direction: row; }
+            .srv-member { flex-wrap: wrap; }
+            .srv-mactions { width: 100%; justify-content: flex-start; }
+        }
+
         /* ===== Бегущая строка для длинных названий треков =====
            Обычное состояние — многоточие. Если название не помещается, JS ставит .is-marquee и считает
            --marq-shift (на сколько сдвинуть) и --marq-dur. Анимируется ТОЛЬКО transform (идёт на
@@ -4185,83 +4249,106 @@
         </div>
     </div>
 
-    <!-- Окно сервера: для владельца — редактирование, для остальных — просмотр кода входа -->
+    <!-- Окно управления сервером: слева разделы, справа содержимое. Владелец редактирует, остальные смотрят. -->
     <div id="server-info-modal" class="modal-overlay">
-        <div class="modal-card modal-card-fixed fade-in" style="width: 400px; height: min(660px, 90vh);">
-            <div class="modal-card-head">
-                <h3 id="server-info-title">Сервер</h3>
-                <button type="button" class="settings-close" id="close-server-info" title="Закрыть" aria-label="Закрыть"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
-            </div>
+        <div class="modal-card modal-card-fixed srv-modal fade-in">
+            <aside class="srv-nav">
+                <div class="srv-hero">
+                    <img id="srv-nav-avatar" class="srv-hero-avatar" src="" alt="">
+                    <div class="srv-hero-text">
+                        <div id="srv-nav-name" class="srv-hero-name"></div>
+                        <div id="server-info-title" class="srv-hero-role">Сервер</div>
+                    </div>
+                </div>
+                <div class="settings-tabs srv-tabs" id="server-info-tabs" style="display:none;">
+                    <button type="button" class="settings-tab active" data-server-tab="general">Обзор</button>
+                    <button type="button" class="settings-tab" data-server-tab="members">Участники <span class="srv-count" id="srv-members-count"></span></button>
+                    <button type="button" class="settings-tab" data-server-tab="bans" id="srv-bans-tab" style="display:none;">Чёрный список</button>
+                </div>
+            </aside>
 
-            <div class="settings-tabs" id="server-info-tabs" style="display:none;">
-                <button type="button" class="settings-tab active" data-server-tab="general">Настройки</button>
-                <button type="button" class="settings-tab" data-server-tab="members">Участники</button>
-            </div>
+            <section class="srv-main">
+                <header class="srv-main-head">
+                    <h3 id="srv-section-title">Обзор</h3>
+                    <button type="button" class="settings-close" id="close-server-info" title="Закрыть" aria-label="Закрыть"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
+                </header>
 
-            <div class="settings-tab-panel active" data-server-tab-panel="general">
-                <!-- Владелец: аватар, название, пароль -->
-                <div id="server-info-owner-view" class="server-info-fields">
-                    <div class="profile-row">
-                        <img id="server-info-avatar-preview" class="profile-avatar-preview" src="" alt="Аватар сервера">
-                        <div class="profile-avatar-controls">
-                            <div class="avatar-source-row">
-                                <input type="text" id="server-info-avatar-url" placeholder="Ссылка на фото сервера">
-                                <label class="btn-file-label" for="server-info-avatar-file">Файл…</label>
-                                <input type="file" id="server-info-avatar-file" accept="image/*" style="display:none">
+                <div class="srv-main-body">
+                    <!-- Обзор -->
+                    <div class="settings-tab-panel active" data-server-tab-panel="general">
+                        <!-- Владелец: аватар, название, пароль -->
+                        <div id="server-info-owner-view" class="srv-card server-info-fields">
+                            <div class="profile-row">
+                                <img id="server-info-avatar-preview" class="profile-avatar-preview" src="" alt="Аватар сервера">
+                                <div class="profile-avatar-controls">
+                                    <div class="avatar-source-row">
+                                        <input type="text" id="server-info-avatar-url" placeholder="Ссылка на фото сервера">
+                                        <label class="btn-file-label" for="server-info-avatar-file">Файл…</label>
+                                        <input type="file" id="server-info-avatar-file" accept="image/*" style="display:none">
+                                    </div>
+                                    <span class="profile-hint">Ссылка или файл</span>
+                                </div>
                             </div>
-                            <span class="profile-hint">Ссылка или файл</span>
+                            <div class="input-group"><label>Название</label><input id="server-info-name" maxlength="40"></div>
+                            <div class="input-group">
+                                <label>Новый пароль <span style="color:var(--text-faint)">(оставьте пустым, чтобы не менять)</span></label>
+                                <div class="input-with-btn">
+                                    <input id="server-info-password" type="password" maxlength="64" placeholder="Пароль">
+                                    <button type="button" class="btn-inline" id="server-info-remove-password" title="Убрать пароль с сервера">Убрать пароль</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Гость: только просмотр -->
+                        <div id="server-info-guest-view" class="srv-card server-info-guest">
+                            <img id="server-info-avatar-preview-guest" class="profile-avatar-preview" src="" alt="Аватар сервера" style="width:72px;height:72px;">
+                            <div id="server-info-name-guest" style="font-weight:700;"></div>
+                        </div>
+
+                        <!-- Код входа -->
+                        <div class="srv-card server-info-code-block">
+                            <div class="srv-card-title">Код входа на сервер</div>
+                            <div class="srv-code-row">
+                                <div id="server-info-code" class="room-code-box" title="Нажмите, чтобы скопировать"></div>
+                                <button type="button" class="btn-secondary srv-copy-btn" id="srv-copy-code">Скопировать</button>
+                            </div>
+                        </div>
+
+                        <p class="auth-error" id="server-info-error" style="display:none"></p>
+
+                        <!-- Опасная зона: отделена от основных действий -->
+                        <div class="danger-zone">
+                            <button class="btn-danger-ghost" id="server-info-delete">Удалить сервер навсегда</button>
+                            <button class="btn-danger-ghost" id="server-info-leave">Покинуть сервер</button>
                         </div>
                     </div>
-                    <div class="input-group"><label>Название</label><input id="server-info-name" maxlength="40"></div>
-                    <div class="input-group">
-                        <label>Новый пароль <span style="color:var(--text-faint)">(оставьте пустым, чтобы не менять)</span></label>
-                        <div class="input-with-btn">
-                            <input id="server-info-password" type="password" maxlength="64" placeholder="Пароль">
-                            <button type="button" class="btn-inline" id="server-info-remove-password" title="Убрать пароль с сервера">Убрать пароль</button>
+
+                    <!-- Участники -->
+                    <div class="settings-tab-panel" data-server-tab-panel="members">
+                        <div class="srv-toolbar">
+                            <input type="search" id="srv-members-search" class="srv-search" placeholder="Поиск по нику" autocomplete="off" spellcheck="false">
+                            <span class="srv-summary" id="srv-members-summary"></span>
+                        </div>
+                        <div id="server-members-list" class="srv-list"></div>
+                        <div class="profile-hint" id="server-members-empty" style="display:none;">Никого нет</div>
+                        <p class="auth-error" id="server-members-error" style="display:none"></p>
+                    </div>
+
+                    <!-- Чёрный список: виден только владельцу и модераторам -->
+                    <div class="settings-tab-panel" data-server-tab-panel="bans">
+                        <div id="server-bans-section" style="display:none;">
+                            <div class="profile-hint" style="margin-bottom:10px;">Этим людям нельзя зайти на сервер, пока вы не уберёте их из списка.</div>
+                            <div id="server-bans-list" class="srv-list"></div>
+                            <div class="profile-hint" id="server-bans-empty" style="display:none;">Список пуст</div>
                         </div>
                     </div>
                 </div>
 
-                <!-- Гость: только просмотр -->
-                <div id="server-info-guest-view" class="server-info-guest">
-                    <img id="server-info-avatar-preview-guest" class="profile-avatar-preview" src="" alt="Аватар сервера" style="width:72px;height:72px;">
-                    <div id="server-info-name-guest" style="font-weight:700;"></div>
+                <!-- Главное действие внизу; закрытие — крестиком в шапке -->
+                <div class="modal-footer srv-footer">
+                    <button class="btn-primary" id="server-info-save" style="display:none; flex:1;">Сохранить</button>
                 </div>
-
-                <!-- Код входа -->
-                <div class="server-info-code-block">
-                    <div class="room-code-hint">Код входа на сервер</div>
-                    <div id="server-info-code" class="room-code-box" title="Нажмите, чтобы скопировать"></div>
-                    <div class="room-code-hint">Клик — скопируется</div>
-                </div>
-
-                <p class="auth-error" id="server-info-error" style="display:none"></p>
-
-                <!-- Опасная зона: отделена от основных действий -->
-                <div class="danger-zone">
-                    <button class="btn-danger-ghost" id="server-info-delete">Удалить сервер навсегда</button>
-                    <button class="btn-danger-ghost" id="server-info-leave">Покинуть сервер</button>
-                </div>
-            </div>
-
-            <div class="settings-tab-panel" data-server-tab-panel="members">
-                <span class="profile-hint"><span class="legend-dot"></span> — в сети</span>
-                <div id="server-members-list" style="display:flex; flex-direction:column; gap:8px;"></div>
-                <div class="profile-hint" id="server-members-empty" style="display:none;">Никого нет</div>
-                <p class="auth-error" id="server-members-error" style="display:none"></p>
-
-                <!-- Чёрный список: виден только владельцу и модераторам -->
-                <div id="server-bans-section" style="display:none; margin-top:18px;">
-                    <div class="profile-hint" style="margin-bottom:8px;"><b>Чёрный список</b> — этим людям нельзя зайти на сервер</div>
-                    <div id="server-bans-list" style="display:flex; flex-direction:column; gap:8px;"></div>
-                    <div class="profile-hint" id="server-bans-empty" style="display:none;">Список пуст</div>
-                </div>
-            </div>
-
-            <!-- Главное действие внизу; закрытие — крестиком в шапке -->
-            <div class="modal-footer">
-                <button class="btn-primary" id="server-info-save" style="display:none; flex:1;">Сохранить</button>
-            </div>
+            </section>
         </div>
     </div>
 

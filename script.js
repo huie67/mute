@@ -165,10 +165,13 @@ let currentServerInfoRemovePassword = false;
 // см. комментарий у settingsTabButtons.
 const serverInfoTabButtons = document.querySelectorAll('#server-info-tabs .settings-tab');
 const serverInfoTabPanels = document.querySelectorAll('#server-info-modal .settings-tab-panel');
+const SERVER_TAB_TITLES = { general: 'Обзор', members: 'Участники', bans: 'Чёрный список' };
 function switchServerInfoTab(tabName) {
     serverInfoTabButtons.forEach(btn => btn.classList.toggle('active', btn.dataset.serverTab === tabName));
     serverInfoTabPanels.forEach(panel => panel.classList.toggle('active', panel.dataset.serverTabPanel === tabName));
-    // Кнопка «Сохранить» нужна только владельцу и только на вкладке «Настройки»
+    const titleEl = document.getElementById('srv-section-title');
+    if (titleEl) titleEl.textContent = SERVER_TAB_TITLES[tabName] || '';
+    // Кнопка «Сохранить» нужна только владельцу и только на вкладке «Обзор»
     if (serverInfoSaveBtn) {
         serverInfoSaveBtn.style.display = (tabName === 'general' && currentServerInfo && currentServerInfo.isOwner) ? 'block' : 'none';
     }
@@ -180,16 +183,70 @@ serverInfoTabButtons.forEach(btn => {
             showServerError(serverMembersError, '');
             socket.emit('get server members', { code: currentServerInfo.code });
         }
+        if (btn.dataset.serverTab === 'bans') requestServerBans();
     });
 });
 
+// Подвал с «Сохранить» показываем только когда сама кнопка видна (владелец, вкладка «Обзор»)
+const serverInfoFooter = document.querySelector('#server-info-modal .srv-footer');
+if (serverInfoFooter && serverInfoSaveBtn) {
+    const syncFooter = () => { serverInfoFooter.style.display = serverInfoSaveBtn.style.display === 'none' ? 'none' : ''; };
+    new MutationObserver(syncFooter).observe(serverInfoSaveBtn, { attributes: true, attributeFilter: ['style'] });
+    syncFooter();
+}
+
+// Права могут измениться (повысили/разжаловали): вкладка «Чёрный список» только для модераторов
+function syncServerInfoNav() {
+    const bansTab = document.getElementById('srv-bans-tab');
+    const isMod = !!(currentServerInfo && (currentServerInfo.isOwner || currentServerInfo.isAdmin || currentServerInfo.canModerate));
+    if (bansTab) bansTab.style.display = isMod ? '' : 'none';
+    if (!isMod) {
+        const active = document.querySelector('#server-info-tabs .settings-tab.active');
+        if (active && active.dataset.serverTab === 'bans') switchServerInfoTab('general');
+    }
+}
+
 // ---------- Рендер списка участников сервера (кик/повышение) ----------
+let lastServerMembers = [];
+const serverMembersSearch = document.getElementById('srv-members-search');
+serverMembersSearch?.addEventListener('input', () => renderServerMembers(lastServerMembers));
+
+function srvBtn(label, cls, onClick, title) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'srv-btn' + (cls ? ' ' + cls : '');
+    b.textContent = label;
+    if (title) b.title = title;
+    b.addEventListener('click', onClick);
+    return b;
+}
+
 function renderServerMembers(members) {
     if (!serverMembersListEl) return;
+    lastServerMembers = Array.isArray(members) ? members : [];
     serverMembersListEl.innerHTML = '';
 
-    if (!members || members.length === 0) {
-        if (serverMembersEmpty) serverMembersEmpty.style.display = 'block';
+    // Счётчики: бейдж у вкладки и строка «в сети N из M»
+    const total = lastServerMembers.length;
+    const online = lastServerMembers.filter(m => m.online).length;
+    const countEl = document.getElementById('srv-members-count');
+    if (countEl) countEl.textContent = total ? String(total) : '';
+    const summaryEl = document.getElementById('srv-members-summary');
+    if (summaryEl) summaryEl.textContent = total ? `в сети ${online} из ${total}` : '';
+    syncServerInfoNav();
+
+    const query = ((serverMembersSearch && serverMembersSearch.value) || '').trim().toLowerCase();
+    // Порядок: создатель, модераторы, затем те, кто в сети, затем остальные; внутри — по алфавиту
+    const rank = (m) => m.isOwner ? 0 : m.isAdmin ? 1 : m.online ? 2 : 3;
+    const list = lastServerMembers
+        .filter(m => !query || m.username.toLowerCase().includes(query))
+        .sort((x, y) => rank(x) - rank(y) || x.username.localeCompare(y.username));
+
+    if (list.length === 0) {
+        if (serverMembersEmpty) {
+            serverMembersEmpty.textContent = total ? 'Ничего не найдено' : 'Никого нет';
+            serverMembersEmpty.style.display = 'block';
+        }
         return;
     }
     if (serverMembersEmpty) serverMembersEmpty.style.display = 'none';
@@ -198,97 +255,69 @@ function renderServerMembers(members) {
     const iAmOwner = !!(currentServerInfo && currentServerInfo.isOwner);
     const iAmModerator = !!(currentServerInfo && (currentServerInfo.isOwner || currentServerInfo.isAdmin));
 
-    members.forEach(m => {
+    list.forEach(m => {
         const isSelf = m.username.toLowerCase() === meLower;
-
         const row = document.createElement('div');
-        row.style.cssText = 'display:flex; align-items:center; gap:10px; padding:8px; background:var(--bg-input); border-radius:8px;';
+        row.className = 'srv-member';
 
-        const avatarWrap = document.createElement('div');
-        avatarWrap.style.cssText = 'position:relative; flex-shrink:0;';
-        const avatar = document.createElement('img');
-        avatar.src = m.avatar || `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(m.username)}`;
-        avatar.alt = '';
-        avatar.style.cssText = 'width:34px; height:34px; border-radius:50%; object-fit:cover; display:block;';
-        avatarWrap.appendChild(avatar);
-        const statusDot = document.createElement('span');
-        statusDot.title = m.online ? 'В сети' : 'Не в сети';
-        statusDot.style.cssText = `position:absolute; right:-1px; bottom:-1px; width:10px; height:10px; border-radius:50%; border:2px solid var(--bg-input); background:${m.online ? '#3ba55d' : '#6b7280'};`;
-        avatarWrap.appendChild(statusDot);
-        row.appendChild(avatarWrap);
+        const av = document.createElement('div');
+        av.className = 'srv-av';
+        const img = document.createElement('img');
+        img.src = m.avatar || `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(m.username)}`;
+        img.alt = '';
+        av.appendChild(img);
+        const dot = document.createElement('span');
+        dot.className = 'srv-dot' + (m.online ? ' online' : '');
+        dot.title = m.online ? 'В сети' : 'Не в сети';
+        av.appendChild(dot);
+        row.appendChild(av);
 
         const info = document.createElement('div');
-        info.style.cssText = 'flex:1; min-width:0; display:flex; flex-direction:column;';
+        info.className = 'srv-minfo';
         const nameEl = document.createElement('div');
-        nameEl.style.cssText = 'font-weight:600; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
-        nameEl.textContent = m.username + (isSelf ? ' (вы)' : '');
+        nameEl.className = 'srv-mname';
+        const nameText = document.createElement('span');
+        nameText.textContent = m.username + (isSelf ? ' (вы)' : '');
+        nameEl.appendChild(nameText);
+        if (m.isOwner || m.isAdmin) {
+            const badge = document.createElement('span');
+            badge.className = 'srv-badge' + (m.isOwner ? ' owner' : '');
+            badge.textContent = m.isOwner ? 'Создатель' : 'Модератор';
+            nameEl.appendChild(badge);
+        }
         info.appendChild(nameEl);
-        const subParts = [];
-        if (m.isOwner) subParts.push('Создатель');
-        else if (m.isAdmin) subParts.push('Модератор');
-        subParts.push(m.online ? 'в сети' : 'не в сети');
-        const roleEl = document.createElement('div');
-        roleEl.style.cssText = 'font-size:11px; color:var(--text-faint);';
-        roleEl.textContent = subParts.join(' · ');
-        info.appendChild(roleEl);
+        const sub = document.createElement('div');
+        sub.className = 'srv-msub';
+        sub.textContent = m.online ? 'в сети' : 'не в сети';
+        info.appendChild(sub);
         row.appendChild(info);
 
         if (iAmModerator && !m.isOwner && !isSelf) {
             const actions = document.createElement('div');
-            actions.style.cssText = 'display:flex; gap:6px; flex-shrink:0;';
-
+            actions.className = 'srv-mactions';
             if (!m.isAdmin) {
-                const promoteBtn = document.createElement('button');
-                promoteBtn.type = 'button';
-                promoteBtn.className = 'btn-secondary';
-                promoteBtn.style.cssText = 'font-size:11px; padding:5px 8px; white-space:nowrap;';
-                promoteBtn.textContent = 'Повысить';
-                promoteBtn.addEventListener('click', () => {
+                actions.appendChild(srvBtn('Повысить', '', () => {
                     socket.emit('set server admin', { code: currentServerInfo.code, username: m.username, makeAdmin: true });
-                });
-                actions.appendChild(promoteBtn);
+                }, 'Сделать модератором'));
             } else if (iAmOwner) {
-                const demoteBtn = document.createElement('button');
-                demoteBtn.type = 'button';
-                demoteBtn.className = 'btn-secondary';
-                demoteBtn.style.cssText = 'font-size:11px; padding:5px 8px; white-space:nowrap;';
-                demoteBtn.textContent = 'Разжаловать';
-                demoteBtn.addEventListener('click', () => {
+                actions.appendChild(srvBtn('Разжаловать', '', () => {
                     socket.emit('set server admin', { code: currentServerInfo.code, username: m.username, makeAdmin: false });
-                });
-                actions.appendChild(demoteBtn);
+                }, 'Снять права модератора'));
             }
-
             // Модератор не может выгнать другого модератора — только владелец.
             if (iAmOwner || !m.isAdmin) {
-                const kickBtn = document.createElement('button');
-                kickBtn.type = 'button';
-                kickBtn.className = 'action-btn';
-                kickBtn.style.cssText = 'font-size:11px; padding:5px 8px; background:#3a1f24; color:#ff8080; white-space:nowrap;';
-                kickBtn.textContent = 'Выгнать';
-                kickBtn.addEventListener('click', () => {
+                actions.appendChild(srvBtn('Выгнать', 'danger', () => {
                     if (!confirm(`Исключить «${m.username}» с сервера?`)) return;
                     socket.emit('kick server member', { code: currentServerInfo.code, username: m.username });
-                });
-                actions.appendChild(kickBtn);
-
+                }));
                 // «В ЧС»: выгнать и закрыть возможность вернуться на сервер.
-                const banBtn = document.createElement('button');
-                banBtn.type = 'button';
-                banBtn.className = 'action-btn';
-                banBtn.style.cssText = 'font-size:11px; padding:5px 8px; background:#3a1f24; color:#ff8080; white-space:nowrap;';
-                banBtn.textContent = 'В ЧС';
-                banBtn.title = 'Добавить в чёрный список: выгнать и не пускать обратно';
-                banBtn.addEventListener('click', () => {
+                actions.appendChild(srvBtn('В ЧС', 'danger', () => {
                     if (!confirm(`Добавить «${m.username}» в чёрный список? Он будет исключён и не сможет зайти на сервер, пока вы не уберёте его из списка.`)) return;
                     socket.emit('ban server member', { code: currentServerInfo.code, username: m.username });
-                });
-                actions.appendChild(banBtn);
+                }, 'Добавить в чёрный список: выгнать и не пускать обратно'));
             }
-
             row.appendChild(actions);
         }
-
         serverMembersListEl.appendChild(row);
     });
 }
@@ -318,28 +347,24 @@ function renderServerBans(bans) {
     if (serverBansEmpty) serverBansEmpty.style.display = bans.length ? 'none' : 'block';
     bans.forEach(b => {
         const row = document.createElement('div');
-        row.style.cssText = 'display:flex; align-items:center; gap:10px; padding:8px; background:var(--bg-input); border-radius:8px;';
+        row.className = 'srv-member';
         const info = document.createElement('div');
-        info.style.cssText = 'flex:1; min-width:0;';
+        info.className = 'srv-minfo';
         const nameEl = document.createElement('div');
-        nameEl.style.cssText = 'font-weight:600; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
-        nameEl.textContent = b.username;
+        nameEl.className = 'srv-mname';
+        const nameText = document.createElement('span');
+        nameText.textContent = b.username;
+        nameEl.appendChild(nameText);
         info.appendChild(nameEl);
         const sub = document.createElement('div');
-        sub.style.cssText = 'font-size:11px; color:var(--text-faint);';
+        sub.className = 'srv-msub';
         const when = b.bannedAt ? new Date(b.bannedAt).toLocaleDateString() : '';
         sub.textContent = [b.bannedBy ? `добавил(а): ${b.bannedBy}` : '', when].filter(Boolean).join(' · ');
         info.appendChild(sub);
         row.appendChild(info);
-        const unbanBtn = document.createElement('button');
-        unbanBtn.type = 'button';
-        unbanBtn.className = 'btn-secondary';
-        unbanBtn.style.cssText = 'font-size:11px; padding:5px 8px; white-space:nowrap;';
-        unbanBtn.textContent = 'Убрать из ЧС';
-        unbanBtn.addEventListener('click', () => {
+        row.appendChild(srvBtn('Убрать из ЧС', '', () => {
             socket.emit('unban server member', { code: currentServerInfo.code, username: b.username });
-        });
-        row.appendChild(unbanBtn);
+        }));
         serverBansListEl.appendChild(row);
     });
 }
@@ -5381,6 +5406,13 @@ socket.on('custom room info', (data) => {
 
     serverInfoTitle.innerText = data.isOwner ? 'Управление сервером' : 'Сервер';
     serverInfoCode.innerText = data.code;
+    const navAvatar = document.getElementById('srv-nav-avatar');
+    const navName = document.getElementById('srv-nav-name');
+    if (navAvatar) navAvatar.src = data.avatar || '';
+    if (navName) navName.textContent = data.name || data.code;
+    if (serverMembersSearch) serverMembersSearch.value = '';
+    const countEl0 = document.getElementById('srv-members-count');
+    if (countEl0) countEl0.textContent = '';
 
     // Вкладка "Участники" теперь видна всем, кто открыл сервер — кнопки
     // "Выгнать"/"Повысить" в ней всё равно показываются только создателю и
@@ -5389,6 +5421,7 @@ socket.on('custom room info', (data) => {
     if (serverMembersListEl) serverMembersListEl.innerHTML = '';
     if (serverMembersEmpty) serverMembersEmpty.style.display = 'none';
     switchServerInfoTab('general');
+    syncServerInfoNav();
     socket.emit('get server members', { code: data.code });
 
     if (data.isOwner) {
@@ -5500,6 +5533,7 @@ socket.on('custom room deleted', ({ code } = {}) => {
 
 document.getElementById('close-server-info')?.addEventListener('click', () => closeModal(serverInfoModal));
 
+document.getElementById('srv-copy-code')?.addEventListener('click', () => serverInfoCode.click());
 serverInfoCode?.addEventListener('click', async () => {
     const code = serverInfoCode.innerText.trim();
     if (!code) return;
