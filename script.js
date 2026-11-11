@@ -9401,6 +9401,18 @@ makeColumnResizable(
     });
 })();
 
+// Узкая колонка: когда блок с плеером/мутом уже ~270px (сайдбар на минимуме), ставим .dock-narrow —
+// кнопки плеера становятся компактнее, чтобы название и кнопки помещались в одну строку.
+(function initDockNarrow() {
+    const dock = document.querySelector('.left-col > .bottom-actions');
+    if (!dock || typeof ResizeObserver !== 'function') return;
+    const NARROW_PX = 272;
+    const apply = () => dock.classList.toggle('dock-narrow', dock.offsetWidth < NARROW_PX);
+    // ширину блока задаёт колонка, а не его содержимое, поэтому класс не вызывает обратного изменения размера
+    new ResizeObserver(apply).observe(dock);
+    apply();
+})();
+
 // Пока нет ни демонстраций, ни видео участников — всё место справа отдаём чату.
 (function syncVideoArea() {
     const mc = document.querySelector('.main-content');

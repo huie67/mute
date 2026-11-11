@@ -3855,6 +3855,18 @@
             background: var(--btn); color: var(--text); filter: none;
         }
 
+        /* ===== Узкая колонка (минимальная ширина сайдбара): плеер в одну строку =====
+           Класс .dock-narrow ставит JS, когда блок уже 272px. Кнопки 30px и название от 56px —
+           тогда «название + 4 кнопки» помещаются в одну строку и кнопки не уходят вниз с пустотой слева. */
+        .bottom-actions.dock-narrow .playlist-widget-top { gap: 4px; flex-wrap: nowrap; }
+        .bottom-actions.dock-narrow .playlist-widget-info { flex: 1 1 56px; min-width: 0; }
+        .bottom-actions.dock-narrow .playlist-widget-controls { gap: 0; }
+        .bottom-actions.dock-narrow .playlist-widget-controls .playlist-ctrl-btn {
+            width: 30px; height: 30px; min-width: 30px; flex: 0 0 30px;
+        }
+        .bottom-actions.dock-narrow .playlist-widget-controls .playlist-ctrl-btn svg { width: 16px; height: 16px; }
+        .bottom-actions.dock-narrow .playlist-track-sub { letter-spacing: 0; }
+
         /* ===== Бегущая строка для длинных названий треков =====
            Обычное состояние — многоточие. Если название не помещается, JS ставит .is-marquee и считает
            --marq-shift (на сколько сдвинуть) и --marq-dur. Анимируется ТОЛЬКО transform (идёт на
