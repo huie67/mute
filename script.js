@@ -4725,6 +4725,21 @@ function applyGateToMicTrack() {
     }
 }
 
+// Расходится ли реальное состояние исходящего трека с тем, что должно быть (по гейту/рации/мьюту).
+// Таймер закрытия гейта выключает трек сам, а обработчики уровня сравнивали только свой запомненный
+// lastIsSpeaking — если речь начиналась в промежутке между срабатыванием таймера и следующим замером,
+// они видели «ничего не изменилось» и трек оставался выключенным на всю фразу. Эта проверка
+// на каждом замере страхует от такого «залипания».
+function gateTrackNeedsSync() {
+    if (!localMediaStream) return false;
+    const want = micShouldTransmit() || (typeof soundpadTransmitActive === 'function' && soundpadTransmitActive());
+    const tracks = localMediaStream.getAudioTracks();
+    for (let i = 0; i < tracks.length; i++) {
+        if (tracks[i] !== currentDemoAudioTrack && tracks[i].enabled !== want) return true;
+    }
+    return false;
+}
+
 // RMS в дБFS по временной области — честная громкость сигнала, в отличие от простого
 // среднего по частотным бинам (которое из-за квантования в байт легко "залипает" в
 // нуле на тихом звуке и делает порог срабатывания малочувствительным/дёрганым).
@@ -4801,6 +4816,8 @@ function processAudioLevel(node) {
                 if (!myAvatarElem || !myAvatarElem.isConnected) myAvatarElem = document.getElementById(`avatar-${myPeerId}`);
                 if (myAvatarElem) myAvatarElem.classList.toggle('speaking', isSpeaking);
             }
+        } else if (gateTrackNeedsSync()) {
+            applyGateToMicTrack();
         }
     };
 }
@@ -4864,6 +4881,8 @@ function processAudioLevelFallback(node) {
                 if (!myAvatarElem || !myAvatarElem.isConnected) myAvatarElem = document.getElementById(`avatar-${myPeerId}`);
                 if (myAvatarElem) myAvatarElem.classList.toggle('speaking', isSpeaking);
             }
+        } else if (gateTrackNeedsSync()) {
+            applyGateToMicTrack();
         }
     }
     check();
