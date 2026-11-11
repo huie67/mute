@@ -920,7 +920,7 @@ function closeMentionAutocomplete() {
 function setChatEnabled(enabled) {
     messageInput.disabled = !enabled;
     messageInput.placeholder = enabled ? 'Написать в чат...' : 'Выберите сервер слева, чтобы открыть чат';
-    ['attach-file-btn', 'emoji-btn'].forEach(id => {
+    ['attach-file-btn', 'emoji-btn', 'gif-btn'].forEach(id => {
         const b = document.getElementById(id);
         if (b) b.disabled = !enabled;
     });
@@ -7783,7 +7783,7 @@ function ensureEmojiPicker() {
     if (emojiPickerEl) return emojiPickerEl;
     emojiPickerEl = document.createElement('div');
     emojiPickerEl.className = 'emoji-picker';
-    emojiPickerEl.innerHTML = '<div class="emoji-quick"></div><div class="emoji-tabs"></div><div class="emoji-grid"></div>';
+    emojiPickerEl.innerHTML = '<div class="emoji-sections"></div><div class="emoji-quick"></div><div class="emoji-tabs"></div><div class="emoji-grid"></div>';
     document.body.appendChild(emojiPickerEl);
     emojiPickerEl.addEventListener('mousedown', (e) => { if (!e.target.closest('.gif-link-input')) e.preventDefault(); }); // не уводим фокус из поля чата (кроме поля для ссылки на GIF)
     emojiPickerEl.addEventListener('click', (e) => {
@@ -7805,6 +7805,18 @@ function ensureEmojiPicker() {
             if (!keepOpen) closeEmojiPicker();
             else renderEmojiGrid();
             onPick(emoji);
+            return;
+        }
+        const sec = e.target.closest('.emoji-section');
+        if (sec && emojiPickerState) {
+            if (sec.dataset.section === 'gif') {
+                emojiPickerState.tab = gifTabIndex();
+            } else {
+                const last = emojiPickerState.lastEmojiTab;
+                emojiPickerState.tab = (typeof last === 'number') ? last : (loadRecentEmoji().length ? 0 : 1);
+            }
+            renderEmojiGrid();
+            positionEmojiPicker(); // высота окна в разделах разная — держим его у кнопки
             return;
         }
         const tab = e.target.closest('.emoji-tab');
@@ -7850,23 +7862,42 @@ function renderEmojiGrid() {
     if (emojiPickerState.quick) QUICK_REACTIONS.forEach(e => quick.appendChild(mkCell(e)));
 
     // Вкладка 0 — недавние, дальше — категории, в конце (только в чате, не у реакций) — «GIF».
+    const gifTab = gifTabIndex();
+    const isGifTab = !!emojiPickerState.allowGif && emojiPickerState.tab === gifTab;
+    if (!isGifTab) emojiPickerState.lastEmojiTab = emojiPickerState.tab;
+
+    // Верхний переключатель разделов «Смайлики | GIF» (только в чате; у реакций GIF нет).
+    const sections = emojiPickerEl.querySelector('.emoji-sections');
+    sections.innerHTML = '';
+    sections.style.display = emojiPickerState.allowGif ? 'flex' : 'none';
+    if (emojiPickerState.allowGif) {
+        [['emoji', 'Смайлики'], ['gif', 'GIF']].forEach(([key, label]) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'emoji-section' + ((key === 'gif') === isGifTab ? ' active' : '');
+            b.dataset.section = key;
+            b.textContent = label;
+            sections.appendChild(b);
+        });
+    }
+
+    // Вкладка 0 — недавние, дальше — категории. В разделе GIF ряд категорий не нужен.
     const tabs = emojiPickerEl.querySelector('.emoji-tabs');
     tabs.innerHTML = '';
-    const tabIcons = ['🕘', ...EMOJI_CATEGORIES.map(c => c.icon)];
-    if (emojiPickerState.allowGif) tabIcons.push('GIF');
-    const gifTab = gifTabIndex();
-    tabIcons.forEach((icon, i) => {
-        const b = document.createElement('button');
-        b.type = 'button';
-        b.className = 'emoji-tab' + (i === emojiPickerState.tab ? ' active' : '') + (emojiPickerState.allowGif && i === gifTab ? ' emoji-tab-gif' : '');
-        b.dataset.tab = String(i);
-        b.textContent = icon;
-        tabs.appendChild(b);
-    });
+    tabs.style.display = isGifTab ? 'none' : 'flex';
+    if (!isGifTab) {
+        ['🕘', ...EMOJI_CATEGORIES.map(c => c.icon)].forEach((icon, i) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'emoji-tab' + (i === emojiPickerState.tab ? ' active' : '');
+            b.dataset.tab = String(i);
+            b.textContent = icon;
+            tabs.appendChild(b);
+        });
+    }
 
     const grid = emojiPickerEl.querySelector('.emoji-grid');
     grid.innerHTML = '';
-    const isGifTab = !!emojiPickerState.allowGif && emojiPickerState.tab === gifTab;
     grid.classList.toggle('gif-mode', isGifTab);
     updateEmojiBtnIcon();
     if (isGifTab) { renderMyGifGrid(grid); return; }
@@ -7892,8 +7923,12 @@ function openEmojiPicker({ anchor, onPick, quick = false, closeOnPick = true, al
     emojiPickerState = { onPick, closeOnPick, anchor, quick, allowGif, tab: startTab !== null ? startTab : (hasRecent ? 0 : 1) };
     renderEmojiGrid();
     emojiPickerEl.classList.add('open');
+    positionEmojiPicker();
+}
 
-    const r = anchor.getBoundingClientRect();
+function positionEmojiPicker() {
+    if (!emojiPickerEl || !emojiPickerState || !emojiPickerState.anchor) return;
+    const r = emojiPickerState.anchor.getBoundingClientRect();
     const w = emojiPickerEl.offsetWidth || 328;
     const h = emojiPickerEl.offsetHeight || 330;
     let left = Math.min(Math.max(8, r.right - w), window.innerWidth - w - 8);
@@ -7916,6 +7951,14 @@ const emojiBtn = document.getElementById('emoji-btn');
 if (emojiBtn) {
     emojiBtn.addEventListener('click', () => {
         openEmojiPicker({ anchor: emojiBtn, onPick: insertEmojiIntoInput, quick: false, closeOnPick: true, allowGif: true });
+    });
+}
+
+// Отдельная кнопка GIF: то же окно, но сразу на разделе GIF (раздел остаётся и в окне смайликов)
+const gifBtn = document.getElementById('gif-btn');
+if (gifBtn) {
+    gifBtn.addEventListener('click', () => {
+        openEmojiPicker({ anchor: gifBtn, onPick: insertEmojiIntoInput, quick: false, closeOnPick: true, allowGif: true, startTab: gifTabIndex() });
     });
 }
 
@@ -10265,22 +10308,13 @@ function isGifTabOpen() {
     return !!(emojiPickerEl && emojiPickerEl.classList.contains('open') && emojiPickerState && emojiPickerState.allowGif && emojiPickerState.tab === gifTabIndex());
 }
 
-// Иконка кнопки: смайлик, а когда открыт раздел GIF — «GIF» (плюс короткие «подмигивания» ниже)
+// Кнопка GIF подсвечивается, пока открыт раздел GIF (у кнопки смайликов иконка теперь всегда смайлик)
 function updateEmojiBtnIcon() {
-    const btn = document.getElementById('emoji-btn');
-    if (btn) btn.classList.toggle('show-gif', isGifTabOpen());
+    const gb = document.getElementById('gif-btn');
+    if (gb) gb.classList.toggle('active', isGifTabOpen());
+    const eb = document.getElementById('emoji-btn');
+    if (eb) eb.classList.remove('show-gif');
 }
-(function initEmojiBtnTeaser() {
-    const btn = document.getElementById('emoji-btn');
-    if (!btn || (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)) return;
-    setInterval(() => {
-        // не мигаем в скрытом окне, в «Лёгком интерфейсе», при выключенной кнопке и пока открыто окно смайликов
-        if (document.hidden || btn.disabled || document.documentElement.classList.contains('light-ui')) return;
-        if (emojiPickerEl && emojiPickerEl.classList.contains('open')) return;
-        btn.classList.add('show-gif');
-        setTimeout(() => { if (!isGifTabOpen()) btn.classList.remove('show-gif'); }, 2200);
-    }, 9000);
-})();
 
 let gifLinkDraft = ''; // набранное в поле ссылки (сохраняется при перерисовке раздела)
 let gifAddMode = null;  // null — плитка «Добавить GIF»; 'menu' — выбор «Файлом / По ссылке»; 'link' — поле для ссылки
@@ -10519,7 +10553,7 @@ async function addMyGifFiles(files) {
         scheduleMyGifsPush();
         showToast(added === 1 ? 'GIF добавлен в вашу коллекцию' : `Добавлено GIF: ${added}`);
         // окно закрывается при выборе файла (смена фокуса) — открываем его снова на разделе GIF
-        const btn = document.getElementById('emoji-btn');
+        const btn = document.getElementById('gif-btn') || document.getElementById('emoji-btn');
         if (btn && !btn.disabled) {
             if (emojiPickerEl && emojiPickerEl.classList.contains('open')) refreshGifTabIfOpen();
             else openEmojiPicker({ anchor: btn, onPick: insertEmojiIntoInput, quick: false, closeOnPick: true, allowGif: true, startTab: gifTabIndex() });
