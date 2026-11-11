@@ -3834,7 +3834,11 @@
         .left-top { display: flex; flex: 1 1 auto; min-height: 0; }
         .left-top > .servers-rail { flex-shrink: 0; overflow-y: auto; overflow-x: hidden; }
         .left-top > .sidebar { padding-bottom: 8px; }
-        .left-col > .bottom-actions { flex-shrink: 0; margin: 0 8px 8px; }
+        /* Ширину колонки задают только полоска серверов и сайдбар (её двигает ресайзер). Сам блок
+           ширину не «вклинивает»: width:0 убирает его вклад в авто-ширину колонки, а min-width растягивает
+           до колонки за вычетом полей 2×8px. Содержимое (название трека и т.п.) подстраивается под неё. */
+        .left-col > .bottom-actions { flex-shrink: 0; margin: 0 8px 8px; width: 0; min-width: calc(100% - 16px); box-sizing: border-box; }
+        .bottom-actions .playlist-widget, .bottom-actions .listen-session-bar { min-width: 0; }
         /* ===== Кнопки плеера — тот же размер и цвет, что у кнопок мут/звук/GIF ===== */
         .bottom-actions .playlist-widget-controls { gap: 2px; }
         .bottom-actions .playlist-widget-controls .playlist-ctrl-btn {
@@ -3849,6 +3853,30 @@
         }
         .bottom-actions .playlist-ctrl-btn.playlist-play-btn:not(:disabled):hover {
             background: var(--btn); color: var(--text); filter: none;
+        }
+
+        /* ===== Бегущая строка для длинных названий треков =====
+           Обычное состояние — многоточие. Если название не помещается, JS ставит .is-marquee и считает
+           --marq-shift (на сколько сдвинуть) и --marq-dur. Анимируется ТОЛЬКО transform (идёт на
+           композиторе, без перерасчёта вёрстки и перерисовки), с паузами по краям — глазу спокойнее,
+           а нагрузка почти нулевая. В «Лёгком интерфейсе» и при prefers-reduced-motion — просто многоточие. */
+        .marq { display: flex; min-width: 0; overflow: hidden; }
+        .marq > .marq-text { flex: 0 0 auto; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .marq.is-marquee > .marq-text {
+            max-width: none; overflow: visible; text-overflow: clip;
+            will-change: transform;
+            animation: marq-slide var(--marq-dur, 10s) ease-in-out infinite;
+        }
+        @keyframes marq-slide {
+            0%, 20%  { transform: translate3d(0, 0, 0); }
+            50%, 70% { transform: translate3d(var(--marq-shift, 0px), 0, 0); }
+            100%     { transform: translate3d(0, 0, 0); }
+        }
+        html.light-ui .marq.is-marquee > .marq-text {
+            max-width: 100%; overflow: hidden; text-overflow: ellipsis; animation: none !important; will-change: auto;
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .marq.is-marquee > .marq-text { max-width: 100%; overflow: hidden; text-overflow: ellipsis; animation: none; will-change: auto; }
         }
 
         /* ===== Нет демонстраций/видео — вся область отдаётся чату ===== */
@@ -3981,7 +4009,7 @@
                     <div class="listen-session-row-top">
                         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
                         <div class="listen-session-info">
-                            <span class="listen-session-track-name" id="listen-session-track-name">Нет трека</span>
+                            <span class="marq"><span class="listen-session-track-name marq-text" id="listen-session-track-name">Нет трека</span></span>
                             <span class="listen-session-bar-text" id="listen-session-bar-text">Слушаете вместе</span>
                         </div>
                         <button class="listen-session-bar-stop" id="listen-session-bar-stop" type="button" title="Завершить совместное прослушивание">Завершить</button>
@@ -4000,7 +4028,7 @@
                     <div class="playlist-widget-top">
                         <div class="playlist-widget-info" id="playlist-widget-info" title="Открыть настройки плейлиста">
                             <span class="playlist-track-sub" id="playlist-track-sub">Плейлист пуст</span>
-                            <span class="playlist-track-name" id="playlist-track-name">Нет трека</span>
+                            <span class="marq"><span class="playlist-track-name marq-text" id="playlist-track-name">Нет трека</span></span>
                         </div>
                         <div class="playlist-widget-controls">
                             <button class="playlist-ctrl-btn" id="playlist-prev-btn" type="button" title="Предыдущий трек"><svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><polygon points="19 20 9 12 19 4 19 20"></polygon><rect x="5" y="4" width="2" height="16"></rect></svg></button>

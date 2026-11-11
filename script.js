@@ -3831,7 +3831,7 @@ function refreshListenSessionUi() {
     const isGuest = listenSession.role === 'guest';
     listenSessionSeekRow.classList.toggle('visible', isGuest);
     listenSessionVolumeRow.classList.toggle('visible', isGuest);
-    listenSessionTrackName.style.display = isGuest ? '' : 'none';
+    (listenSessionTrackName.closest('.marq') || listenSessionTrackName).style.display = isGuest ? '' : 'none';
     if (isGuest) listenSessionVolume.value = String(Math.min(100, playlistVolumePercent));
 
     // Пока вам транслируют чужой плейлист (вы гость), свой модуль управления
@@ -9347,6 +9347,59 @@ makeColumnResizable(
     document.getElementById('sidebar'),
     { min: 180, max: 420, storageKey: 'mute:sidebarWidth' }
 );
+
+// ---------- Бегущая строка для длинных названий треков ----------
+// Разметка: <span class="marq"><span class="marq-text">название</span></span>. Остальной код по-прежнему
+// пишет в marq-text через textContent. Здесь только меряем: влезает ли текст в обёртку. Если нет — ставим
+// .is-marquee и CSS-переменные (см. стили .marq). Меряем редко: при смене текста и размера обёртки
+// (ресайз колонки, показ/скрытие плеера), а не по таймеру; сама анимация — только transform.
+(function initMarquee() {
+    const SPEED_PX_S = 28;      // скорость прокрутки
+    const MOVE_SHARE = 0.64;    // доля цикла, когда текст движется (остальное — паузы по краям)
+    const wraps = Array.from(document.querySelectorAll('.marq'));
+    if (!wraps.length) return;
+
+    function measure(wrap) {
+        const text = wrap.firstElementChild;
+        if (!text) return;
+        const box = wrap.clientWidth;
+        const over = text.scrollWidth - box;   // scrollWidth даёт полную ширину текста и в сжатом, и в расправленном виде
+        if (box > 0 && over > 1) {
+            const shift = over + 6;            // небольшой запас, чтобы последняя буква не прилипала к краю
+            wrap.style.setProperty('--marq-shift', `-${shift}px`);
+            wrap.style.setProperty('--marq-dur', `${Math.max(7, (2 * shift / SPEED_PX_S) / MOVE_SHARE).toFixed(1)}s`);
+            wrap.classList.add('is-marquee');
+        } else {
+            wrap.classList.remove('is-marquee');
+        }
+    }
+
+    const pending = new Set();
+    let raf = 0;
+    function schedule(wrap) {
+        pending.add(wrap);
+        if (raf) return;
+        raf = requestAnimationFrame(() => {
+            raf = 0;
+            pending.forEach(measure);
+            pending.clear();
+        });
+    }
+
+    wraps.forEach((wrap) => {
+        const text = wrap.firstElementChild;
+        if (!text) return;
+        // новый текст — начинаем показ с начала названия
+        new MutationObserver(() => {
+            text.style.animation = 'none';
+            void text.offsetWidth;
+            text.style.animation = '';
+            schedule(wrap);
+        }).observe(text, { childList: true, characterData: true, subtree: true });
+        if (typeof ResizeObserver === 'function') new ResizeObserver(() => schedule(wrap)).observe(wrap);
+        schedule(wrap);
+    });
+})();
 
 // Пока нет ни демонстраций, ни видео участников — всё место справа отдаём чату.
 (function syncVideoArea() {
