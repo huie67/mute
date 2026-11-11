@@ -3835,6 +3835,22 @@
         .left-top > .servers-rail { flex-shrink: 0; overflow-y: auto; overflow-x: hidden; }
         .left-top > .sidebar { padding-bottom: 8px; }
         .left-col > .bottom-actions { flex-shrink: 0; margin: 0 8px 8px; }
+        /* ===== Кнопки плеера — тот же размер и цвет, что у кнопок мут/звук/GIF ===== */
+        .bottom-actions .playlist-widget-controls { gap: 2px; }
+        .bottom-actions .playlist-widget-controls .playlist-ctrl-btn {
+            width: var(--dock-btn); height: var(--dock-btn); min-width: var(--dock-btn); flex: 0 0 var(--dock-btn);
+            border-radius: var(--radius-sm);
+        }
+        .bottom-actions .playlist-widget-controls .playlist-ctrl-btn svg { width: 18px; height: 18px; }
+        /* пуск/пауза без акцентного цвета — как остальные кнопки */
+        .bottom-actions .playlist-ctrl-btn.playlist-play-btn,
+        .bottom-actions .playlist-ctrl-btn.playlist-play-btn:disabled {
+            background: transparent; color: var(--text-muted); filter: none;
+        }
+        .bottom-actions .playlist-ctrl-btn.playlist-play-btn:not(:disabled):hover {
+            background: var(--btn); color: var(--text); filter: none;
+        }
+
         /* ===== Нет демонстраций/видео — вся область отдаётся чату ===== */
         .main-content:not(.has-videos) .call-area,
         .main-content:not(.has-videos) #chat-resizer { display: none; }
