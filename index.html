@@ -4408,7 +4408,7 @@
                 <video id="stream-preview-video" autoplay muted playsinline></video>
                 <div class="stream-preview-note" id="stream-preview-note"></div>
             </div>
-            <div class="profile-hint" id="stream-screen-note">Какое окно или экран показывать, вы выберете на следующем шаге.</div>
+            <div class="profile-hint" id="stream-screen-note">Конкретное окно или монитор вы выберете в системном окне на следующем шаге — «Что показывать» заранее откроет в нём нужную вкладку.</div>
 
             <div class="stream-options">
                 <div class="input-group" id="stream-device-group" style="display:none;">
@@ -4432,6 +4432,14 @@
                             <option value="60">60 FPS</option>
                         </select>
                     </div>
+                </div>
+                <div class="input-group" id="stream-surface-group">
+                    <label>Что показывать</label>
+                    <select id="stream-surface-select">
+                        <option value="auto">Любой источник</option>
+                        <option value="monitor">Весь экран</option>
+                        <option value="window">Окно приложения</option>
+                    </select>
                 </div>
                 <div class="input-group">
                     <label>Приоритет</label>

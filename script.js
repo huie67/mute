@@ -6667,6 +6667,8 @@ const streamEls = {
     res: document.getElementById('stream-res-select'),
     fps: document.getElementById('stream-fps-select'),
     priority: document.getElementById('stream-priority-select'),
+    surfaceGroup: document.getElementById('stream-surface-group'),
+    surface: document.getElementById('stream-surface-select'),
     audioGroup: document.getElementById('stream-audio-group'),
     audio: document.getElementById('stream-audio-check'),
     deviceGroup: document.getElementById('stream-device-group'),
@@ -6766,6 +6768,7 @@ function applyStreamKind(kind) {
     streamEls.preview.style.display = isCam ? '' : 'none';
     streamEls.screenNote.style.display = isCam ? 'none' : '';
     streamEls.audioGroup.style.display = isCam ? 'none' : '';
+    streamEls.surfaceGroup.style.display = isCam ? 'none' : '';
     if (isCam) {
         refreshStreamCameraList().then(() => { if (streamModalOpen() && streamKind === 'cam') startStreamPreview(); });
     } else {
@@ -6777,6 +6780,7 @@ function openStreamModal() {
     const saved = loadVideoSettings();
     streamEls.priority.value = saved.streamPriority || 'auto';
     streamEls.audio.checked = saved.streamAudio !== false;
+    streamEls.surface.value = saved.streamSurface || 'auto';
     streamSelectModal.style.display = 'flex';
     applyStreamKind(saved.streamKind === 'cam' ? 'cam' : 'screen');
 }
@@ -6798,7 +6802,8 @@ streamEls.startBtn.addEventListener('click', async () => {
     const deviceId = streamEls.device.value;
 
     // Запоминаем выбор: следующий запуск открывается с теми же настройками, а страница настроек видео остаётся в синхроне
-    const patch = { streamKind: kind, streamPriority: priority, streamAudio: withAudio };
+    const surface = streamEls.surface.value;
+    const patch = { streamKind: kind, streamPriority: priority, streamAudio: withAudio, streamSurface: surface };
     if (kind === 'screen') { patch.screenQuality = key; if (screenQualitySelect) screenQualitySelect.value = key; }
     else { patch.cameraQuality = key; if (cameraQualitySelect) cameraQualitySelect.value = key; if (deviceId) patch.cameraDeviceId = deviceId; }
     saveVideoSettings(patch);
@@ -6808,6 +6813,8 @@ streamEls.startBtn.addEventListener('click', async () => {
         const video = { width: { ideal: preset.width }, height: { ideal: preset.height }, frameRate: { ideal: preset.frameRate } };
         let stream;
         if (kind === 'screen') {
+            // displaySurface — только подсказка: системное окно выбора заранее откроет вкладку «Экран» или «Окно»
+            if (surface !== 'auto') video.displaySurface = surface;
             stream = await navigator.mediaDevices.getDisplayMedia({ video, audio: withAudio });
         } else {
             try {
