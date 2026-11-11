@@ -418,6 +418,8 @@ document.documentElement.classList.toggle('light-ui', lightUiEnabled);
 function applyLowPerfState() {
     document.documentElement.classList.toggle('low-perf-active', lowPerfActive());
     applyRemoteMeterRate();
+    // освобождение памяти (объявлено ниже в файле; на самой первой загрузке его ещё нет)
+    if (typeof window.__syncMemoryRelease === 'function') window.__syncMemoryRelease();
 }
 
 // Как часто метры ЧУЖИХ голосов (только свечение "говорит") шлют отчёты главному потоку:
@@ -955,6 +957,11 @@ let pendingAvatarFile = null; // выбранный файл аватарки, �
             windowHasFocus = await tauriWindow.isFocused();
         } catch (e) { /* ignore */ }
         applyLowPerfState();
+    };
+    // Для освобождения памяти: окно реально не на экране (свёрнуто или спрятано в трей) — спрашиваем у Tauri,
+    // потому что visibilitychange в WebView2 в этих случаях приходит не всегда.
+    window.__nativeWindowHidden = async () => {
+        try { return (await tauriWindow.isMinimized()) || !(await tauriWindow.isVisible()); } catch (e) { return false; }
     };
     try { tauriWindow.onFocusChanged(({ payload }) => { windowHasFocus = !!payload; if (payload) windowMinimized = false; applyLowPerfState(); }); } catch (e) { /* ignore */ }
     try { tauriWindow.onResized(refreshWindowActivity); } catch (e) { /* ignore */ }
@@ -10223,8 +10230,10 @@ function spTogglePop(force) {
 
 
 // ---------- Освобождение памяти, когда вкладка/окно неактивны ----------
-// Если окно скрыто (свёрнуто или вкладка не на виду) дольше 30 секунд, освобождаем то, что тяжелее всего
-// и легко восстанавливается:
+// Если окно неактивно дольше 30 секунд, освобождаем то, что тяжелее всего и легко восстанавливается.
+// Срабатывает и по нативным событиям Tauri (свернули, спрятали в трей), а не только по visibilitychange:
+// в WebView2 он при сворачивании приходит не всегда. Если окно просто потеряло фокус, но видно на экране —
+// ленту чата не трогаем (её могут читать), чистим только незаметное: звуки саундпада, кэш каналов, окно GIF.
 //  • ленту чата вместе с картинками и GIF (декодированные кадры занимают больше всего памяти) —
 //    при возврате история заново загружается с сервера (кэша каналов больше нет);
 //  • декодированные звуки саундпада (AudioBuffer до сотен МБ у длинных файлов) — декодируются снова
@@ -10233,28 +10242,46 @@ function spTogglePop(force) {
 const MEMORY_RELEASE_AFTER_MS = 30 * 1000;
 let memoryReleaseTimer = null;
 
-function releaseInactiveMemory() {
+// Окно «не на экране» — свёрнуто или скрыто (не просто потеряло фокус: на втором мониторе чат читают).
+function windowIsOffscreen() { return document.hidden || windowMinimized; }
+
+async function releaseInactiveMemory() {
     memoryReleaseTimer = null;
-    if (!document.hidden) return;
+    if (!windowIsInactive()) return; // успели вернуться в окно
+    let offscreen = windowIsOffscreen();
+    if (!offscreen && typeof window.__nativeWindowHidden === 'function') offscreen = await window.__nativeWindowHidden();
+    if (!windowIsInactive()) return; // пока ждали ответ Tauri, вернулись в окно
     const freed = [];
-    if (selectedRoom && messagesDiv && messagesDiv.firstElementChild) {
-        rememberChatReadPosition(chatRenderedRoom); // запоминаем, докуда дочитали
-        clearChatMessages();                          // убирает и src картинок, и сами узлы
-        lastMessageDateKey = null;
-        chatRenderedRoom = null;
-        chatMemoryReleased = true;
-        freed.push('лента чата');
-    }
+
+    // Безопасно даже если окно видно, но без фокуса: пользователь этого не заметит.
     if (typeof spBuffers !== 'undefined' && spBuffers.size && spPlaying.size === 0) {
         spBuffers.clear();
         freed.push('звуки саундпада');
     }
-    chatHistoryCache.clear();
-    if (freed.length) console.log('[Память] Окно неактивно 30 с — освобождено:', freed.join(', '));
+    if (chatHistoryCache.size) { chatHistoryCache.clear(); freed.push('кэш истории каналов'); }
+    if (emojiPickerEl) {
+        const grid = emojiPickerEl.querySelector('.emoji-grid');
+        if (grid && grid.firstChild) { closeEmojiPicker(); grid.innerHTML = ''; freed.push('окно смайликов/GIF'); }
+    }
+
+    // Только когда окно действительно не на экране: лента чата вместе с картинками и GIF.
+    if (offscreen) {
+        if (selectedRoom && messagesDiv && messagesDiv.firstElementChild) {
+            rememberChatReadPosition(chatRenderedRoom); // запоминаем, докуда дочитали
+            clearChatMessages();                          // убирает и src картинок, и сами узлы
+            lastMessageDateKey = null;
+            chatRenderedRoom = null;
+            chatMemoryReleased = true;
+            freed.push('лента чата');
+        }
+    } else {
+        // Окно видно, но без фокуса — проверим ещё раз позже: вдруг его свернут/спрячут в трей без события.
+        memoryReleaseTimer = setTimeout(releaseInactiveMemory, 60 * 1000);
+    }
+    if (freed.length) console.log('[Память] Окно неактивно — освобождено:', freed.join(', '));
 }
 
 function restoreAfterInactive() {
-    if (memoryReleaseTimer) { clearTimeout(memoryReleaseTimer); memoryReleaseTimer = null; }
     if (!chatMemoryReleased) return;
     chatMemoryReleased = false;
     if (!selectedRoom) return;
@@ -10263,13 +10290,19 @@ function restoreAfterInactive() {
     if (socket && socket.connected) socket.emit('select chat room', { room: selectedRoom });
 }
 
-document.addEventListener('visibilitychange', () => {
-    if (document.hidden) {
+// Единая точка: вызывается из applyLowPerfState — то есть по visibilitychange, blur/focus
+// и нативным событиям окна Tauri (сворачивание, фокус, resize).
+function syncMemoryRelease() {
+    if (!windowIsOffscreen()) restoreAfterInactive(); // окно снова на экране — вернуть ленту чата
+    if (windowIsInactive()) {
         if (!memoryReleaseTimer) memoryReleaseTimer = setTimeout(releaseInactiveMemory, MEMORY_RELEASE_AFTER_MS);
-    } else {
-        restoreAfterInactive();
+    } else if (memoryReleaseTimer) {
+        clearTimeout(memoryReleaseTimer);
+        memoryReleaseTimer = null;
     }
-});
+}
+window.__syncMemoryRelease = syncMemoryRelease;
+syncMemoryRelease();
 
 
 // ---------- Мои GIF: раздел окна смайликов ----------
